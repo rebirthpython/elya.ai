@@ -35,11 +35,13 @@
   <div class="backdrop-art" aria-hidden="true">
     <span class="glow glow--a"></span>
     <span class="glow glow--b"></span>
+    <span class="glow glow--c"></span>
+    <span class="glow glow--think"></span>
   </div>
 
   <div class="app" id="app" hidden>
-    <header class="topbar">
-      <div class="orb orb--sm" id="avatar" aria-hidden="true"><span class="orb__letter">Э</span></div>
+    <header class="topbar" id="topbar">
+      <div class="orb orb--sm" id="avatar" aria-hidden="true"><span class="orb__body"><span class="orb__blob orb__blob--a"></span><span class="orb__blob orb__blob--b"></span><span class="orb__blob orb__blob--c"></span><span class="orb__gloss"></span></span><span class="orb__letter">Э</span></div>
       <div class="topbar__text">
         <div class="topbar__name" id="assistant-name">Эля</div>
         <div class="status" id="status" data-state="online">
@@ -47,7 +49,7 @@
           <span class="status__label" id="status-label">на связи</span>
         </div>
       </div>
-      <button class="icon-btn" id="menu-btn" type="button" aria-label="Настройки" aria-haspopup="dialog">
+      <button class="icon-btn ripple" id="menu-btn" type="button" aria-label="Настройки" aria-haspopup="dialog">
         <svg><use href="#i-more"/></svg>
       </button>
     </header>
@@ -55,26 +57,26 @@
     <main class="chat" id="chat">
       <div class="chat__inner">
         <section class="welcome" id="welcome" hidden>
-          <div class="orb orb--hero" aria-hidden="true"><span class="orb__ring"></span></div>
+          <div class="orb orb--hero" id="hero-orb" aria-hidden="true"><span class="orb__ring"></span><span class="orb__ring orb__ring--late"></span><span class="orb__body"><span class="orb__blob orb__blob--a"></span><span class="orb__blob orb__blob--b"></span><span class="orb__blob orb__blob--c"></span><span class="orb__gloss"></span></span></div>
           <h1 class="welcome__title" id="welcome-title">Привет!</h1>
           <p class="welcome__text">Я <b id="welcome-name">Эля</b>, твой ИИ-ассистент. Спроси о чём угодно или выбери, с чего начнём.</p>
           <div class="suggestions" id="suggestions">
-            <button class="suggestion" type="button" data-prompt="Помоги спланировать мой день. Сначала спроси, какие у меня дела и сколько на них времени.">
+            <button class="suggestion ripple" type="button" data-prompt="Помоги спланировать мой день. Сначала спроси, какие у меня дела и сколько на них времени.">
               <span class="suggestion__icon"><svg><use href="#i-calendar"/></svg></span>
               <span class="suggestion__title">Спланировать день</span>
               <span class="suggestion__text">Разложу дела по времени</span>
             </button>
-            <button class="suggestion" type="button" data-prompt="Хочу разобраться в одной теме. Спроси, в какой именно, и объясни простыми словами с примерами.">
+            <button class="suggestion ripple" type="button" data-prompt="Хочу разобраться в одной теме. Спроси, в какой именно, и объясни простыми словами с примерами.">
               <span class="suggestion__icon"><svg><use href="#i-bulb"/></svg></span>
               <span class="suggestion__title">Объяснить сложное</span>
               <span class="suggestion__text">Простыми словами, с примерами</span>
             </button>
-            <button class="suggestion" type="button" data-prompt="Помоги написать текст. Спроси, для кого он, о чём и в каком тоне.">
+            <button class="suggestion ripple" type="button" data-prompt="Помоги написать текст. Спроси, для кого он, о чём и в каком тоне.">
               <span class="suggestion__icon"><svg><use href="#i-pen"/></svg></span>
               <span class="suggestion__title">Написать текст</span>
               <span class="suggestion__text">Сообщение, пост или письмо</span>
             </button>
-            <button class="suggestion" type="button" data-prompt="Давай просто поболтаем. Спроси, как прошёл мой день.">
+            <button class="suggestion ripple" type="button" data-prompt="Давай просто поболтаем. Спроси, как прошёл мой день.">
               <span class="suggestion__icon"><svg><use href="#i-chat"/></svg></span>
               <span class="suggestion__title">Просто поболтать</span>
               <span class="suggestion__text">Выслушаю и поддержу беседу</span>
@@ -86,16 +88,18 @@
       </div>
     </main>
 
-    <button class="scroll-down" id="scroll-down" type="button" aria-label="К последним сообщениям" hidden>
+    <button class="scroll-down ripple" id="scroll-down" type="button" aria-label="К последним сообщениям" tabindex="-1">
       <svg><use href="#i-down"/></svg>
     </button>
 
     <footer class="composer">
       <div class="composer__box" id="composer-box">
+        <span class="composer__glow" aria-hidden="true"></span>
         <textarea class="composer__input" id="input" rows="1" maxlength="4000"
                   placeholder="Напиши сообщение…" aria-label="Сообщение" autocomplete="off"></textarea>
         <span class="composer__counter" id="counter" hidden></span>
-        <button class="send-btn" id="send" type="button" aria-label="Отправить" disabled>
+        <button class="send-btn ripple" id="send" type="button" aria-label="Отправить" disabled>
+          <span class="send-btn__spinner" aria-hidden="true"></span>
           <svg><use href="#i-send"/></svg>
         </button>
       </div>
@@ -105,10 +109,10 @@
 
   <div class="sheet-backdrop" id="sheet-backdrop" hidden></div>
   <section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden>
-    <div class="sheet__grip" aria-hidden="true"></div>
-    <header class="sheet__head">
+    <div class="sheet__grip" id="sheet-grip" aria-hidden="true"></div>
+    <header class="sheet__head" id="sheet-head">
       <h2 class="sheet__title" id="sheet-title">Настройки</h2>
-      <button class="icon-btn icon-btn--soft" id="sheet-close" type="button" aria-label="Закрыть">
+      <button class="icon-btn icon-btn--soft ripple" id="sheet-close" type="button" aria-label="Закрыть">
         <svg><use href="#i-close"/></svg>
       </button>
     </header>
@@ -135,15 +139,15 @@
       <section class="block">
         <h3 class="block__title">История</h3>
         <div class="danger" id="clear-box">
-          <button class="row-btn row-btn--danger" id="clear-btn" type="button">
+          <button class="row-btn row-btn--danger ripple" id="clear-btn" type="button">
             <svg><use href="#i-trash"/></svg>
             <span>Очистить историю диалога</span>
           </button>
           <div class="confirm" id="clear-confirm" hidden>
             <p>Удалить всю переписку? Вернуть её не получится.</p>
             <div class="confirm__actions">
-              <button class="btn btn--ghost" id="clear-cancel" type="button">Отмена</button>
-              <button class="btn btn--danger" id="clear-yes" type="button">Удалить</button>
+              <button class="btn btn--ghost ripple" id="clear-cancel" type="button">Отмена</button>
+              <button class="btn btn--danger ripple" id="clear-yes" type="button">Удалить</button>
             </div>
           </div>
         </div>
@@ -160,10 +164,10 @@
 
   <!-- Экран загрузки и состояний, когда чат недоступен -->
   <div class="gate" id="gate">
-    <div class="orb orb--hero orb--thinking" aria-hidden="true"><span class="orb__ring"></span></div>
+    <div class="orb orb--hero orb--thinking" aria-hidden="true"><span class="orb__ring"></span><span class="orb__ring orb__ring--late"></span><span class="orb__body"><span class="orb__blob orb__blob--a"></span><span class="orb__blob orb__blob--b"></span><span class="orb__blob orb__blob--c"></span><span class="orb__gloss"></span></span></div>
     <h1 class="gate__title" id="gate-title">Эля просыпается…</h1>
     <p class="gate__text" id="gate-text"></p>
-    <button class="btn btn--primary" id="gate-btn" type="button" hidden></button>
+    <button class="btn btn--primary ripple" id="gate-btn" type="button" hidden></button>
   </div>
 
   <noscript><p class="noscript">Для работы приложения нужен JavaScript.</p></noscript>

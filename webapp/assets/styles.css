@@ -2,12 +2,26 @@
    Эля — Telegram Mini App
    Палитра «рассвет»: коралловый → розовый → сиреневый на тёплом тёмном или
    кремовом фоне. Тема переключается атрибутом data-theme на <html>.
+   Движение: пружинные кривые для появления, мягкие — для исчезновения;
+   анимируются только transform и opacity, чтобы всё шло плавно и на слабых телефонах.
    ========================================================================== */
+
+@property --angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
 
 :root {
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-display: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Кривые движения */
+  --spring: cubic-bezier(0.22, 1.28, 0.36, 1);
+  --spring-soft: cubic-bezier(0.3, 1.12, 0.4, 1);
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in: cubic-bezier(0.5, 0, 0.75, 0);
 
   --coral: #ff8f70;
   --rose: #ff5f9e;
@@ -17,7 +31,6 @@
   --grad-ink: linear-gradient(135deg, #cf3476 0%, #6f47e6 100%);
 
   --bg: #100d16;
-  --bg-bar: rgba(16, 13, 22, 0.86);
   --surface: #1e1928;
   --surface-2: #2a2337;
   --surface-3: #372e47;
@@ -31,12 +44,15 @@
   --danger: #ff7b8a;
   --danger-bg: rgba(255, 123, 138, 0.12);
   --code-bg: #15111d;
-  --glow-a: rgba(255, 143, 112, 0.2);
-  --glow-b: rgba(155, 107, 255, 0.22);
+  --glow-a: rgba(255, 143, 112, 0.22);
+  --glow-b: rgba(155, 107, 255, 0.24);
+  --glow-c: rgba(255, 95, 158, 0.14);
   --shadow-pop: 0 18px 48px -12px rgba(0, 0, 0, 0.7);
+  --shadow-bubble: 0 10px 30px -18px rgba(0, 0, 0, 0.9);
   --focus: rgba(255, 95, 158, 0.55);
+  --ripple: rgba(255, 255, 255, 0.22);
 
-  --radius-bubble: 20px;
+  --radius-bubble: 22px;
   --pad-x: 14px;
   --app-height: var(--tg-viewport-height, 100dvh);
   --safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--tg-safe-area-inset-bottom, 0px));
@@ -50,7 +66,6 @@
   --violet: #8455f5;
 
   --bg: #fbf6f3;
-  --bg-bar: rgba(251, 246, 243, 0.88);
   --surface: #ffffff;
   --surface-2: #f5edea;
   --surface-3: #ebe0dd;
@@ -64,10 +79,13 @@
   --danger: #d12f4a;
   --danger-bg: rgba(209, 47, 74, 0.08);
   --code-bg: #f6efec;
-  --glow-a: rgba(255, 127, 92, 0.2);
-  --glow-b: rgba(132, 85, 245, 0.16);
+  --glow-a: rgba(255, 127, 92, 0.22);
+  --glow-b: rgba(132, 85, 245, 0.17);
+  --glow-c: rgba(242, 80, 143, 0.12);
   --shadow-pop: 0 18px 48px -14px rgba(74, 40, 90, 0.28);
+  --shadow-bubble: 0 10px 28px -18px rgba(74, 40, 90, 0.4);
   --focus: rgba(242, 80, 143, 0.45);
+  --ripple: rgba(120, 60, 120, 0.16);
 
   color-scheme: light;
 }
@@ -101,6 +119,7 @@ body {
   -webkit-text-size-adjust: 100%;
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior: none;
+  transition: background-color 0.45s ease, color 0.45s ease;
 }
 
 button,
@@ -116,6 +135,8 @@ button {
   background: none;
   cursor: pointer;
   touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 :focus {
@@ -140,7 +161,41 @@ svg {
   overflow: hidden;
 }
 
-/* ---------- Фоновое свечение ---------- */
+/* ---------- Волна от касания ---------- */
+
+.ripple,
+.option,
+.chip-btn,
+.notice__retry,
+.continue-btn {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.ripple-wave {
+  position: absolute;
+  z-index: -1;
+  border-radius: 50%;
+  background: var(--ripple);
+  pointer-events: none;
+  transform: scale(0);
+  animation: ripple 0.6s var(--ease-out) forwards;
+}
+
+.send-btn .ripple-wave,
+.btn--primary .ripple-wave,
+.btn--danger .ripple-wave {
+  z-index: 1;
+  background: rgba(255, 255, 255, 0.3);
+}
+
+@keyframes ripple {
+  60% { opacity: 1; }
+  to { transform: scale(1); opacity: 0; }
+}
+
+/* ---------- Фон: медленное «северное сияние» ---------- */
 
 .backdrop-art {
   position: fixed;
@@ -162,25 +217,57 @@ svg {
   top: -70vmax;
   left: -50vmax;
   background: radial-gradient(closest-side, var(--glow-a), transparent);
-  animation: drift-a 26s ease-in-out infinite alternate;
+  animation: drift-a 24s ease-in-out infinite alternate;
 }
 
 .glow--b {
   right: -62vmax;
   bottom: -78vmax;
   background: radial-gradient(closest-side, var(--glow-b), transparent);
-  animation: drift-b 32s ease-in-out infinite alternate;
+  animation: drift-b 30s ease-in-out infinite alternate;
+}
+
+.glow--c {
+  top: 10vmax;
+  right: -80vmax;
+  background: radial-gradient(closest-side, var(--glow-c), transparent);
+  animation: drift-c 36s ease-in-out infinite alternate;
+}
+
+/* Свечение, которое разгорается, пока Эля думает */
+.glow--think {
+  left: 50%;
+  bottom: -60vmax;
+  width: 110vmax;
+  height: 90vmax;
+  margin-left: -55vmax;
+  background: radial-gradient(closest-side, var(--glow-c), var(--glow-b) 45%, transparent);
+  opacity: 0;
+  transition: opacity 0.8s ease;
+}
+
+body.is-thinking .glow--think {
+  opacity: 1;
+  animation: think-pulse 2.6s ease-in-out infinite;
 }
 
 @keyframes drift-a {
-  to { transform: translate3d(9vmax, 6vmax, 0); }
+  to { transform: translate3d(10vmax, 7vmax, 0) scale(1.08); }
 }
 
 @keyframes drift-b {
-  to { transform: translate3d(-8vmax, -7vmax, 0); }
+  to { transform: translate3d(-9vmax, -8vmax, 0) scale(1.1); }
 }
 
-/* ---------- Сфера — «лицо» Эли ---------- */
+@keyframes drift-c {
+  to { transform: translate3d(-14vmax, 18vmax, 0) scale(0.92); }
+}
+
+@keyframes think-pulse {
+  50% { transform: translate3d(0, -4vmax, 0) scale(1.06); }
+}
+
+/* ---------- Сфера — «лицо» Эли: живое жидкое свечение ---------- */
 
 .orb {
   position: relative;
@@ -189,29 +276,69 @@ svg {
   place-items: center;
   border-radius: 50%;
   isolation: isolate;
-  background:
-    radial-gradient(circle at 30% 26%, rgba(255, 226, 205, 0.95) 0%, rgba(255, 226, 205, 0) 44%),
-    radial-gradient(circle at 76% 80%, var(--violet) 0%, rgba(155, 107, 255, 0) 58%),
-    var(--grad);
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.18),
-    inset 0 -6px 14px -6px rgba(72, 28, 140, 0.55),
-    0 6px 22px -6px rgba(255, 95, 158, 0.6);
+  transition: transform 0.5s var(--spring), filter 0.5s ease;
 }
 
-/* Блик, который медленно обходит сферу по кругу */
-.orb::before {
-  content: "";
+.orb__body {
   position: absolute;
   inset: 0;
-  z-index: -1;
-  border-radius: inherit;
-  background: radial-gradient(circle at 74% 22%, rgba(255, 255, 255, 0.55) 0%, rgba(255, 255, 255, 0) 40%);
-  mix-blend-mode: soft-light;
-  animation: spin 9s linear infinite;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--grad);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.18),
+    0 6px 22px -6px rgba(255, 95, 158, 0.6);
+  /* Safari обрезает анимированных детей по радиусу только с маской */
+  -webkit-mask-image: radial-gradient(circle, #000 70%, #000 100%);
+}
+
+.orb__blob {
+  position: absolute;
+  width: 90%;
+  height: 90%;
+  border-radius: 50%;
+  will-change: transform;
+}
+
+.orb__blob--a {
+  top: -25%;
+  left: -20%;
+  background: radial-gradient(closest-side, rgba(255, 200, 160, 0.95), rgba(255, 143, 112, 0) 100%);
+  transform-origin: 75% 80%;
+  animation: swirl 7s linear infinite;
+}
+
+.orb__blob--b {
+  right: -25%;
+  bottom: -25%;
+  background: radial-gradient(closest-side, rgba(126, 82, 255, 0.95), rgba(155, 107, 255, 0) 100%);
+  transform-origin: 20% 20%;
+  animation: swirl 9s linear infinite reverse;
+}
+
+.orb__blob--c {
+  top: 20%;
+  left: 15%;
+  width: 70%;
+  height: 70%;
+  background: radial-gradient(closest-side, rgba(255, 80, 150, 0.85), rgba(255, 95, 158, 0) 100%);
+  transform-origin: 60% 30%;
+  animation: swirl 5.5s linear infinite;
+}
+
+.orb__gloss {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 32% 24%, rgba(255, 245, 235, 0.85) 0%, rgba(255, 245, 235, 0) 30%),
+    radial-gradient(circle at 50% 120%, rgba(60, 20, 120, 0.45) 0%, rgba(60, 20, 120, 0) 60%);
+  box-shadow: inset 0 -8px 18px -8px rgba(72, 28, 140, 0.55);
 }
 
 .orb__letter {
+  position: relative;
+  z-index: 1;
   font-family: var(--font-display);
   font-weight: 700;
   color: #fff;
@@ -220,8 +347,8 @@ svg {
 }
 
 .orb--sm {
-  width: 40px;
-  height: 40px;
+  width: 42px;
+  height: 42px;
 }
 
 .orb--sm .orb__letter {
@@ -229,17 +356,19 @@ svg {
 }
 
 .orb--hero {
-  width: 104px;
-  height: 104px;
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.2),
-    inset 0 -14px 30px -12px rgba(72, 28, 140, 0.6),
-    0 18px 60px -10px rgba(255, 95, 158, 0.65),
-    0 0 90px 6px rgba(155, 107, 255, 0.24);
+  width: 108px;
+  height: 108px;
   animation: float 6s ease-in-out infinite;
 }
 
-/* Расходящееся кольцо вокруг большой сферы */
+.orb--hero .orb__body {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.2),
+    0 18px 60px -10px rgba(255, 95, 158, 0.65),
+    0 0 90px 6px rgba(155, 107, 255, 0.26);
+}
+
+/* Расходящиеся кольца вокруг большой сферы */
 .orb__ring {
   position: absolute;
   inset: -14px;
@@ -247,36 +376,49 @@ svg {
   border-radius: 50%;
   border: 1.5px solid var(--rose);
   opacity: 0;
-  animation: ring 3.6s ease-out infinite;
+  animation: ring 3.6s var(--ease-out) infinite;
 }
 
-.orb--thinking::before {
-  animation-duration: 2.2s;
+.orb__ring--late {
+  animation-delay: 1.8s;
+  border-color: var(--violet);
 }
 
-.orb--thinking .orb__ring {
-  animation-duration: 1.8s;
-}
+/* Думает: всё внутри закручивается быстрее, сфера дышит */
+.orb--thinking .orb__blob--a { animation-duration: 2.2s; }
+.orb--thinking .orb__blob--b { animation-duration: 2.8s; }
+.orb--thinking .orb__blob--c { animation-duration: 1.7s; }
+.orb--thinking .orb__ring { animation-duration: 1.6s; }
+.orb--thinking .orb__ring--late { animation-delay: 0.8s; }
 
 .orb--sm.orb--thinking {
-  animation: breathe 1.5s ease-in-out infinite;
+  animation: breathe 1.4s ease-in-out infinite;
 }
 
-@keyframes spin {
+/* Слушает: пока пользователь печатает, сфера чуть ярче и ближе */
+.orb--listening {
+  transform: scale(1.06);
+  filter: saturate(1.25) brightness(1.08);
+}
+
+.orb--hero.orb--listening .orb__blob--a { animation-duration: 3.5s; }
+.orb--hero.orb--listening .orb__blob--b { animation-duration: 4.5s; }
+
+@keyframes swirl {
   to { transform: rotate(360deg); }
 }
 
 @keyframes float {
-  50% { transform: translateY(-7px); }
+  50% { translate: 0 -8px; }
 }
 
 @keyframes breathe {
-  50% { transform: scale(1.08); }
+  50% { transform: scale(1.09); }
 }
 
 @keyframes ring {
-  0% { transform: scale(0.86); opacity: 0.55; }
-  100% { transform: scale(1.3); opacity: 0; }
+  0% { transform: scale(0.84); opacity: 0.6; }
+  100% { transform: scale(1.38); opacity: 0; }
 }
 
 /* ---------- Каркас ---------- */
@@ -294,15 +436,61 @@ svg {
   margin: 0 auto;
 }
 
+/* Появление интерфейса после загрузки */
+.app.is-entering .topbar {
+  animation: enter-down 0.6s var(--spring-soft) both;
+}
+
+.app.is-entering .composer {
+  animation: enter-up 0.65s var(--spring-soft) 0.08s both;
+}
+
+.app.is-entering .messages {
+  animation: fade-up 0.6s var(--ease-out) 0.12s both;
+}
+
+@keyframes enter-down {
+  from { opacity: 0; transform: translateY(-18px); }
+}
+
+@keyframes enter-up {
+  from { opacity: 0; transform: translateY(28px); }
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(14px); }
+}
+
 /* ---------- Шапка ---------- */
 
 .topbar {
+  position: relative;
+  z-index: 2;
   flex: none;
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 10px var(--pad-x) 10px;
   padding-top: calc(10px + var(--tg-content-safe-area-inset-top, 0px));
+}
+
+/* Тонкая линия появляется, когда лента прокручена */
+.topbar::after {
+  content: "";
+  position: absolute;
+  left: var(--pad-x);
+  right: var(--pad-x);
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--line-strong) 20%, var(--line-strong) 80%, transparent);
+  opacity: 0;
+  transform: scaleX(0.6);
+  transition: opacity 0.35s ease, transform 0.5s var(--ease-out);
+}
+
+.topbar.is-scrolled::after {
+  opacity: 1;
+  transform: none;
 }
 
 .topbar__text {
@@ -327,28 +515,51 @@ svg {
   line-height: 1.3;
 }
 
+.status__label {
+  display: inline-block;
+}
+
 .status__dot {
+  position: relative;
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--ok);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent);
-  transition: background 0.3s;
+  transition: background 0.35s ease;
+}
+
+/* Мягкий «пульс» вокруг точки статуса */
+.status__dot::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: currentColor;
+  color: var(--ok);
+  opacity: 0.25;
+  animation: halo 2.4s var(--ease-out) infinite;
 }
 
 .status[data-state="typing"] .status__dot {
   background: var(--rose);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--rose) 24%, transparent);
-  animation: pulse-dot 1s ease-in-out infinite;
+}
+
+.status[data-state="typing"] .status__dot::after {
+  color: var(--rose);
+  animation-duration: 1s;
 }
 
 .status[data-state="offline"] .status__dot {
   background: var(--text-3);
-  box-shadow: none;
 }
 
-@keyframes pulse-dot {
-  50% { opacity: 0.35; }
+.status[data-state="offline"] .status__dot::after {
+  display: none;
+}
+
+@keyframes halo {
+  0% { transform: scale(0.6); opacity: 0.4; }
+  100% { transform: scale(1.8); opacity: 0; }
 }
 
 .icon-btn {
@@ -360,12 +571,11 @@ svg {
   border-radius: 50%;
   color: var(--text-2);
   font-size: 22px;
-  transition: background 0.18s, color 0.18s, transform 0.12s;
+  transition: background 0.2s, color 0.2s, transform 0.35s var(--spring);
 }
 
 .icon-btn:active {
-  transform: scale(0.92);
-  background: var(--surface-2);
+  transform: scale(0.88);
 }
 
 .icon-btn--soft {
@@ -375,11 +585,23 @@ svg {
   font-size: 18px;
 }
 
+.icon-btn--soft:active {
+  transform: scale(0.88) rotate(90deg);
+}
+
 @media (hover: hover) {
   .icon-btn:hover {
     background: var(--surface-2);
     color: var(--text);
   }
+
+  .icon-btn--soft:hover svg {
+    transform: rotate(90deg);
+  }
+}
+
+.icon-btn svg {
+  transition: transform 0.4s var(--spring);
 }
 
 /* ---------- Лента сообщений ---------- */
@@ -393,8 +615,8 @@ svg {
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
   /* Сообщения мягко растворяются у шапки и поля ввода */
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 22px, #000 calc(100% - 18px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 22px, #000 calc(100% - 18px), transparent 100%);
 }
 
 .chat::-webkit-scrollbar {
@@ -426,8 +648,16 @@ svg {
   text-align: center;
 }
 
+.welcome .orb--hero {
+  animation: orb-pop 0.9s var(--spring) both, float 6s ease-in-out 0.9s infinite;
+}
+
+@keyframes orb-pop {
+  from { opacity: 0; scale: 0.4; }
+}
+
 .welcome__title {
-  margin: 30px 0 8px;
+  margin: 32px 0 8px;
   font-family: var(--font-display);
   font-size: 28px;
   font-weight: 700;
@@ -435,23 +665,41 @@ svg {
   line-height: 1.15;
 }
 
+.welcome__title .word {
+  display: inline-block;
+  white-space: pre;
+  animation: word-in 0.7s var(--spring) both;
+  animation-delay: calc(0.2s + var(--i, 0) * 0.07s);
+}
+
+@keyframes word-in {
+  from { opacity: 0; transform: translateY(16px) scale(0.9); filter: blur(6px); }
+}
+
 .welcome__text {
   max-width: 330px;
   margin: 0 0 26px;
   color: var(--text-2);
   font-size: 16px;
+  animation: fade-up 0.7s var(--ease-out) 0.45s both;
 }
 
 .welcome__text b {
   font-weight: 650;
   background: var(--grad);
+  background-size: 200% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+  animation: gradient-pan 4s ease-in-out infinite alternate;
 }
 
 :root[data-theme="light"] .welcome__text b {
   background-image: var(--grad-ink);
+}
+
+@keyframes gradient-pan {
+  to { background-position: 100% 0; }
 }
 
 .suggestions {
@@ -470,37 +718,70 @@ svg {
   min-width: 0;
   padding: 14px 14px 13px;
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 20px;
   background: color-mix(in srgb, var(--surface) 82%, transparent);
   text-align: left;
-  transition: transform 0.14s, border-color 0.2s, background 0.2s;
-  animation: rise 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  transition: transform 0.4s var(--spring), border-color 0.25s, background 0.25s, box-shadow 0.3s;
+  animation: card-in 0.7s var(--spring) both;
+  animation-delay: calc(0.55s + var(--i, 0) * 0.07s);
 }
 
-.suggestion:nth-child(2) { animation-delay: 0.06s; }
-.suggestion:nth-child(3) { animation-delay: 0.12s; }
-.suggestion:nth-child(4) { animation-delay: 0.18s; }
+.suggestion:nth-child(1) { --i: 0; }
+.suggestion:nth-child(2) { --i: 1; }
+.suggestion:nth-child(3) { --i: 2; }
+.suggestion:nth-child(4) { --i: 3; }
+
+/* Блик, один раз пробегающий по карточке после появления */
+.suggestion::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(105deg, transparent 35%, rgba(255, 255, 255, 0.09) 50%, transparent 65%);
+  transform: translateX(-110%);
+  animation: shine 1.3s var(--ease-out) both;
+  animation-delay: calc(1.2s + var(--i, 0) * 0.12s);
+  pointer-events: none;
+}
+
+:root[data-theme="light"] .suggestion::after {
+  background: linear-gradient(105deg, transparent 35%, rgba(255, 255, 255, 0.85) 50%, transparent 65%);
+}
 
 .suggestion:active {
-  transform: scale(0.97);
-  border-color: var(--line-strong);
+  transform: scale(0.96);
   background: var(--surface-2);
 }
 
 @media (hover: hover) {
   .suggestion:hover {
+    transform: translateY(-3px);
     border-color: color-mix(in srgb, var(--rose) 50%, transparent);
+    box-shadow: 0 14px 30px -18px color-mix(in srgb, var(--rose) 80%, transparent);
   }
+
+  .suggestion:hover .suggestion__icon {
+    transform: scale(1.1) rotate(-6deg);
+  }
+}
+
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(22px) scale(0.94); }
+}
+
+@keyframes shine {
+  to { transform: translateX(110%); }
 }
 
 .suggestion__icon {
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   margin-bottom: 9px;
-  border-radius: 11px;
+  border-radius: 12px;
   font-size: 19px;
+  transition: transform 0.45s var(--spring);
 }
 
 .suggestion:nth-child(1) .suggestion__icon { color: var(--coral); background: color-mix(in srgb, var(--coral) 16%, transparent); }
@@ -520,21 +801,21 @@ svg {
   line-height: 1.3;
 }
 
-@keyframes rise {
-  from { opacity: 0; transform: translateY(12px); }
-}
-
 /* ---------- Сообщения ---------- */
 
 .day {
   align-self: center;
   margin: 14px 0 8px;
-  padding: 4px 11px;
+  padding: 4px 12px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--surface) 75%, transparent);
   color: var(--text-2);
   font-size: 12.5px;
   font-weight: 500;
+}
+
+.day--new {
+  animation: pop-in 0.5s var(--spring) both;
 }
 
 .msg {
@@ -551,15 +832,38 @@ svg {
   align-items: flex-start;
 }
 
-.msg--new {
-  animation: msg-in 0.34s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+.msg--user.msg--new .bubble {
+  transform-origin: 100% 100%;
+  animation: bubble-in-user 0.55s var(--spring) both;
 }
 
-@keyframes msg-in {
-  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+.msg--assistant.msg--new .bubble {
+  transform-origin: 0% 100%;
+  animation: bubble-in-bot 0.6s var(--spring) both;
+}
+
+.msg--new .msg__meta {
+  animation: fade-in 0.4s ease 0.2s both;
+}
+
+@keyframes bubble-in-user {
+  from { opacity: 0; transform: translate(10px, 22px) scale(0.86); }
+}
+
+@keyframes bubble-in-bot {
+  from { opacity: 0; transform: translate(-6px, 12px) scale(0.88); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+}
+
+@keyframes pop-in {
+  from { opacity: 0; transform: scale(0.85); }
 }
 
 .bubble {
+  position: relative;
   max-width: min(86%, 620px);
   padding: 10px 14px;
   border-radius: var(--radius-bubble);
@@ -568,22 +872,60 @@ svg {
 }
 
 .msg--user .bubble {
-  border-bottom-right-radius: 7px;
+  border-bottom-right-radius: 8px;
   background: var(--grad-ink);
+  background-size: 140% 140%;
   color: #fff;
   white-space: pre-wrap;
-  box-shadow: 0 6px 20px -10px rgba(207, 52, 118, 0.7);
+  box-shadow: 0 8px 24px -12px rgba(207, 52, 118, 0.75);
 }
 
 .msg--assistant .bubble {
   max-width: min(92%, 660px);
   border: 1px solid var(--line);
-  border-bottom-left-radius: 7px;
+  border-bottom-left-radius: 8px;
   background: var(--surface);
+  box-shadow: var(--shadow-bubble);
+  transition: background 0.45s ease, border-color 0.45s ease;
+}
+
+/* Пока ответ «печатается», пузырь плавно растёт */
+.msg.is-streaming .bubble {
+  overflow: hidden;
+}
+
+/* Мерцающая точка-курсор в конце печатающегося ответа */
+.msg.is-streaming .md > :not(ul, ol, .code, .table-wrap, hr):last-child::after,
+.msg.is-streaming .md > :is(ul, ol):last-child > li:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 0.5em;
+  height: 0.5em;
+  margin-left: 0.3em;
+  border-radius: 50%;
+  background: var(--grad);
+  box-shadow: 0 0 10px var(--rose);
+  vertical-align: 0.05em;
+  animation: caret 0.9s ease-in-out infinite;
+}
+
+@keyframes caret {
+  50% { opacity: 0.35; transform: scale(0.7); }
 }
 
 .msg--failed .bubble {
-  opacity: 0.6;
+  opacity: 0.55;
+  filter: saturate(0.6);
+  transition: opacity 0.3s, filter 0.3s;
+}
+
+.messages > .is-leaving {
+  animation: msg-out 0.35s var(--ease-in) both;
+  animation-delay: calc(var(--i, 0) * 0.035s);
+}
+
+@keyframes msg-out {
+  to { opacity: 0; transform: translateY(-10px) scale(0.92); filter: blur(4px); }
 }
 
 .msg__meta {
@@ -613,11 +955,11 @@ svg {
   align-items: center;
   gap: 5px;
   height: 26px;
-  padding: 0 8px;
+  padding: 0 9px;
   border-radius: 999px;
   color: var(--text-3);
   font-size: 12px;
-  transition: background 0.18s, color 0.18s;
+  transition: background 0.2s, color 0.2s, transform 0.35s var(--spring);
 }
 
 .chip-btn svg {
@@ -625,12 +967,28 @@ svg {
 }
 
 .chip-btn:active {
+  transform: scale(0.92);
   background: var(--surface-2);
   color: var(--text);
 }
 
 .chip-btn.is-done {
   color: var(--ok);
+}
+
+/* Галочка «рисуется» */
+.chip-btn.is-done svg {
+  stroke-dasharray: 24;
+  animation: draw 0.45s var(--ease-out) both;
+}
+
+.chip-btn.is-done span {
+  animation: fade-in 0.25s ease both;
+}
+
+@keyframes draw {
+  from { stroke-dashoffset: 24; }
+  to { stroke-dashoffset: 0; }
 }
 
 @media (hover: hover) {
@@ -649,9 +1007,12 @@ svg {
   color: var(--text);
   font-size: 14px;
   font-weight: 500;
+  animation: pop-in 0.5s var(--spring) both;
+  transition: transform 0.35s var(--spring);
 }
 
 .continue-btn:active {
+  transform: scale(0.95);
   background: var(--surface-2);
 }
 
@@ -660,24 +1021,54 @@ svg {
 .typing .bubble {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 15px 16px;
+  gap: 10px;
+  padding: 14px 16px;
+  min-height: 46px;
 }
 
-.typing .bubble span {
+/* Переливающийся отблеск по пузырю, пока модель думает */
+.typing .bubble::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--rose) 10%, transparent) 50%, transparent 70%);
+  background-size: 250% 100%;
+  animation: shimmer 1.8s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -150% 0; }
+}
+
+.typing__dots {
+  display: flex;
+  gap: 5px;
+}
+
+.typing__dots span {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--grad);
-  animation: bounce 1.15s ease-in-out infinite;
+  animation: bounce 1.2s ease-in-out infinite;
 }
 
-.typing .bubble span:nth-child(2) { animation-delay: 0.15s; }
-.typing .bubble span:nth-child(3) { animation-delay: 0.3s; }
+.typing__dots span:nth-child(2) { animation-delay: 0.15s; }
+.typing__dots span:nth-child(3) { animation-delay: 0.3s; }
 
 @keyframes bounce {
-  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
-  30% { transform: translateY(-5px); opacity: 1; }
+  0%, 60%, 100% { transform: translateY(0) scale(0.9); opacity: 0.45; }
+  30% { transform: translateY(-6px) scale(1.1); opacity: 1; }
+}
+
+.typing__hint {
+  color: var(--text-2);
+  font-size: 13.5px;
+  white-space: nowrap;
+  animation: fade-in 0.5s ease both;
 }
 
 /* Ошибка отправки */
@@ -690,9 +1081,21 @@ svg {
   margin: 6px 0 8px;
   padding: 12px 14px;
   border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
-  border-radius: 16px;
+  border-radius: 18px;
   background: var(--danger-bg);
   font-size: 14.5px;
+  animation: notice-in 0.6s var(--spring) both, shake 0.5s ease 0.35s;
+}
+
+@keyframes notice-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.95); }
+}
+
+@keyframes shake {
+  20% { translate: -5px 0; }
+  40% { translate: 4px 0; }
+  60% { translate: -3px 0; }
+  80% { translate: 2px 0; }
 }
 
 .notice > svg {
@@ -722,14 +1125,20 @@ svg {
   color: var(--text);
   font-size: 14px;
   font-weight: 600;
+  transition: transform 0.35s var(--spring);
 }
 
 .notice__retry svg {
   font-size: 15px;
+  transition: transform 0.6s var(--spring);
 }
 
 .notice__retry:active {
-  transform: scale(0.96);
+  transform: scale(0.95);
+}
+
+.notice__retry:active svg {
+  transform: rotate(-180deg);
 }
 
 /* ---------- Разметка ответа (Markdown) ---------- */
@@ -890,28 +1299,45 @@ svg {
   z-index: 3;
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
+  width: 40px;
+  height: 40px;
   border: 1px solid var(--line-strong);
   border-radius: 50%;
   background: var(--surface);
   color: var(--text);
   font-size: 18px;
   box-shadow: var(--shadow-pop);
-  animation: pop 0.2s ease-out both;
+  opacity: 0;
+  transform: translateY(12px) scale(0.7);
+  pointer-events: none;
+  transition: opacity 0.25s ease, transform 0.45s var(--spring);
 }
 
-.scroll-down:active {
-  transform: scale(0.92);
+.scroll-down.is-visible {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
 }
 
-@keyframes pop {
-  from { opacity: 0; transform: scale(0.8); }
+.scroll-down.is-visible:active {
+  transform: scale(0.88);
+}
+
+.scroll-down svg {
+  animation: nudge 2.4s ease-in-out infinite;
+}
+
+@keyframes nudge {
+  0%, 70%, 100% { transform: none; }
+  80% { transform: translateY(3px); }
+  90% { transform: translateY(-1px); }
 }
 
 /* ---------- Поле ввода ---------- */
 
 .composer {
+  position: relative;
+  z-index: 2;
   flex: none;
   padding: 4px var(--pad-x) calc(6px + var(--safe-bottom));
 }
@@ -925,12 +1351,37 @@ svg {
   border: 1px solid var(--line-strong);
   border-radius: 26px;
   background: var(--surface);
-  transition: border-color 0.2s, box-shadow 0.2s;
+  box-shadow: 0 10px 30px -22px rgba(0, 0, 0, 0.8);
+  transition: border-color 0.3s, box-shadow 0.4s, transform 0.4s var(--spring), background 0.45s ease;
 }
 
 .composer__box:focus-within {
-  border-color: color-mix(in srgb, var(--rose) 65%, transparent);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--rose) 14%, transparent), 0 8px 28px -14px var(--rose);
+  border-color: transparent;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--rose) 12%, transparent), 0 12px 32px -14px var(--rose);
+}
+
+/* Переливающаяся градиентная рамка при фокусе */
+.composer__glow {
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(from var(--angle), var(--coral), var(--rose), var(--violet), var(--rose), var(--coral));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.35s ease;
+  animation: spin-angle 4s linear infinite;
+}
+
+.composer__box:focus-within .composer__glow {
+  opacity: 1;
+}
+
+@keyframes spin-angle {
+  to { --angle: 360deg; }
 }
 
 .composer__input {
@@ -945,6 +1396,7 @@ svg {
   line-height: 22px;
   resize: none;
   scrollbar-width: none;
+  transition: height 0.2s var(--ease-out);
 }
 
 .composer__input::-webkit-scrollbar {
@@ -957,11 +1409,17 @@ svg {
 
 .composer__input::placeholder {
   color: var(--text-3);
+  transition: opacity 0.25s, transform 0.3s var(--ease-out);
+}
+
+.composer__input:focus::placeholder {
+  opacity: 0.6;
+  transform: translateX(4px);
 }
 
 .composer__counter {
   position: absolute;
-  top: -22px;
+  top: -24px;
   right: 14px;
   padding: 1px 8px;
   border-radius: 999px;
@@ -969,10 +1427,12 @@ svg {
   color: var(--text-2);
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
+  animation: pop-in 0.35s var(--spring) both;
 }
 
 .composer__counter.is-over {
   color: var(--danger);
+  animation: shake 0.4s ease;
 }
 
 .send-btn {
@@ -983,25 +1443,75 @@ svg {
   height: 40px;
   border-radius: 50%;
   background: var(--grad-ink);
+  background-size: 160% 160%;
   color: #fff;
   font-size: 20px;
-  box-shadow: 0 6px 18px -6px rgba(207, 52, 118, 0.8);
-  transition: transform 0.14s, opacity 0.2s, background 0.2s, box-shadow 0.2s;
+  box-shadow: 0 8px 20px -6px rgba(207, 52, 118, 0.8);
+  transition: transform 0.45s var(--spring), background-position 0.6s ease, box-shadow 0.3s, color 0.2s;
 }
 
-.send-btn:active:not(:disabled) {
-  transform: scale(0.9);
+.send-btn > svg,
+.send-btn__spinner {
+  grid-area: 1 / 1;
 }
 
-.send-btn:disabled {
+.send-btn svg {
+  transition: transform 0.45s var(--spring), opacity 0.2s ease;
+}
+
+.send-btn:not(:disabled):active {
+  transform: scale(0.86);
+}
+
+@media (hover: hover) {
+  .send-btn:not(:disabled):hover {
+    background-position: 100% 100%;
+  }
+}
+
+/* Нечего отправлять — кнопка «гаснет» и чуть уменьшается */
+.send-btn:disabled:not(.is-busy) {
   background: var(--surface-2);
   color: var(--text-3);
   box-shadow: none;
+  transform: scale(0.9);
   cursor: default;
 }
 
+/* Отправлено — стрелка улетает, вокруг кнопки бежит кольцо */
 .send-btn.is-busy {
-  animation: breathe 1.4s ease-in-out infinite;
+  cursor: default;
+}
+
+.send-btn.is-busy svg {
+  transform: translateY(-130%);
+  opacity: 0;
+}
+
+.send-btn__spinner {
+  width: 22px;
+  height: 22px;
+  border: 2.2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  opacity: 0;
+  transform: scale(0.4);
+  transition: opacity 0.2s ease, transform 0.4s var(--spring);
+}
+
+.send-btn.is-busy .send-btn__spinner {
+  opacity: 1;
+  transform: none;
+  animation: swirl 0.8s linear infinite;
+}
+
+/* Ответ получен — стрелка возвращается снизу */
+.send-btn.is-landing svg {
+  animation: arrow-in 0.5s var(--spring) both;
+}
+
+@keyframes arrow-in {
+  from { transform: translateY(110%); opacity: 0; }
 }
 
 .composer__hint {
@@ -1019,7 +1529,8 @@ svg {
   inset: 0;
   z-index: 20;
   background: rgba(8, 5, 12, 0.55);
-  animation: fade 0.22s ease-out both;
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
 }
 
 .sheet {
@@ -1035,39 +1546,35 @@ svg {
   margin: 0 auto;
   border: 1px solid var(--line);
   border-bottom: 0;
-  border-radius: 26px 26px 0 0;
+  border-radius: 28px 28px 0 0;
   background: var(--surface);
   box-shadow: var(--shadow-pop);
-  animation: sheet-in 0.3s cubic-bezier(0.2, 0.85, 0.25, 1) both;
-}
-
-.sheet.is-closing {
-  animation: sheet-out 0.2s ease-in both;
-}
-
-.sheet-backdrop.is-closing {
-  animation: fade 0.2s ease-in reverse both;
-}
-
-@keyframes sheet-in {
-  from { transform: translateY(100%); }
-}
-
-@keyframes sheet-out {
-  to { transform: translateY(100%); }
-}
-
-@keyframes fade {
-  from { opacity: 0; }
+  will-change: transform;
 }
 
 .sheet__grip {
   flex: none;
-  width: 38px;
-  height: 4px;
-  margin: 9px auto 2px;
+  width: 100%;
+  height: 22px;
+  margin-bottom: -8px;
+  touch-action: none;
+  cursor: grab;
+}
+
+.sheet__grip::before {
+  content: "";
+  display: block;
+  width: 40px;
+  height: 5px;
+  margin: 9px auto 0;
   border-radius: 999px;
   background: var(--surface-3);
+  transition: width 0.3s var(--spring), background 0.2s;
+}
+
+.sheet.is-dragging .sheet__grip::before {
+  width: 56px;
+  background: var(--text-3);
 }
 
 .sheet__head {
@@ -1076,6 +1583,7 @@ svg {
   align-items: center;
   justify-content: space-between;
   padding: 8px 14px 8px 20px;
+  touch-action: none;
 }
 
 .sheet__title {
@@ -1091,6 +1599,16 @@ svg {
   overscroll-behavior: contain;
   padding: 4px 16px calc(20px + var(--safe-bottom));
 }
+
+/* Блоки настроек появляются по очереди */
+.sheet.is-opening .block {
+  animation: fade-up 0.55s var(--ease-out) both;
+}
+
+.sheet.is-opening .block:nth-child(1) { animation-delay: 0.08s; }
+.sheet.is-opening .block:nth-child(2) { animation-delay: 0.14s; }
+.sheet.is-opening .block:nth-child(3) { animation-delay: 0.2s; }
+.sheet.is-opening .block:nth-child(4) { animation-delay: 0.26s; }
 
 .block {
   margin-top: 16px;
@@ -1114,7 +1632,7 @@ svg {
 
 .options {
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 18px;
   background: var(--surface-2);
   overflow: hidden;
 }
@@ -1124,18 +1642,18 @@ svg {
   align-items: center;
   gap: 12px;
   width: 100%;
-  min-height: 54px;
+  min-height: 56px;
   padding: 9px 14px;
   text-align: left;
-  transition: background 0.15s;
+  transition: background 0.25s;
 }
 
 .option + .option {
   border-top: 1px solid var(--line);
 }
 
-.option:active {
-  background: var(--surface-3);
+.option[aria-checked="true"] {
+  background: color-mix(in srgb, var(--rose) 7%, transparent);
 }
 
 .option__text {
@@ -1167,25 +1685,37 @@ svg {
   flex: none;
   display: grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border: 1.5px solid var(--line-strong);
   border-radius: 50%;
   color: transparent;
   font-size: 14px;
-  transition: background 0.2s, border-color 0.2s, color 0.2s;
+  transition: background 0.25s, border-color 0.25s, color 0.2s, transform 0.5s var(--spring);
+}
+
+.option__mark svg {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  transition: stroke-dashoffset 0.4s var(--ease-out) 0.08s;
 }
 
 .option[aria-checked="true"] .option__mark {
   border-color: transparent;
   background: var(--grad-ink);
   color: #fff;
+  transform: scale(1.08);
+  box-shadow: 0 4px 12px -4px rgba(207, 52, 118, 0.8);
+}
+
+.option[aria-checked="true"] .option__mark svg {
+  stroke-dashoffset: 0;
 }
 
 .usage {
   padding: 14px 14px 12px;
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 18px;
   background: var(--surface-2);
 }
 
@@ -1202,7 +1732,7 @@ svg {
 
 .usage__value {
   font-family: var(--font-display);
-  font-size: 26px;
+  font-size: 28px;
   font-weight: 700;
   line-height: 1;
 }
@@ -1213,7 +1743,7 @@ svg {
 }
 
 .usage__bar {
-  height: 6px;
+  height: 7px;
   margin-top: 12px;
   border-radius: 999px;
   background: var(--surface-3);
@@ -1221,17 +1751,32 @@ svg {
 }
 
 .usage__bar span {
+  position: relative;
   display: block;
   width: 0;
   height: 100%;
   border-radius: inherit;
   background: var(--grad);
-  transition: width 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+  overflow: hidden;
+  transition: width 0.9s var(--spring-soft);
+}
+
+.usage__bar span::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  transform: translateX(-100%);
+  animation: bar-shine 2.6s ease-in-out 1s infinite;
+}
+
+@keyframes bar-shine {
+  60%, 100% { transform: translateX(100%); }
 }
 
 .danger {
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 18px;
   background: var(--surface-2);
   overflow: hidden;
 }
@@ -1250,18 +1795,21 @@ svg {
 
 .row-btn svg {
   font-size: 20px;
+  transition: transform 0.45s var(--spring);
 }
 
 .row-btn--danger {
   color: var(--danger);
+  --ripple: color-mix(in srgb, var(--danger) 22%, transparent);
 }
 
-.row-btn:active {
-  background: var(--surface-3);
+.row-btn:active svg {
+  transform: rotate(-12deg) scale(1.1);
 }
 
 .confirm {
   padding: 14px;
+  animation: fade-up 0.4s var(--spring) both;
 }
 
 .confirm p {
@@ -1279,16 +1827,16 @@ svg {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 44px;
+  min-height: 46px;
   padding: 0 20px;
-  border-radius: 14px;
+  border-radius: 15px;
   font-size: 15.5px;
   font-weight: 600;
-  transition: transform 0.12s, opacity 0.2s;
+  transition: transform 0.4s var(--spring), opacity 0.2s;
 }
 
 .btn:active {
-  transform: scale(0.97);
+  transform: scale(0.95);
 }
 
 .btn:disabled {
@@ -1335,11 +1883,19 @@ svg {
   font-weight: 500;
   text-align: center;
   transform: translateX(-50%);
-  animation: toast-in 0.26s cubic-bezier(0.2, 0.85, 0.25, 1) both;
+  animation: toast-in 0.5s var(--spring) both;
+}
+
+.toast.is-leaving {
+  animation: toast-out 0.25s var(--ease-in) both;
 }
 
 @keyframes toast-in {
-  from { opacity: 0; transform: translate(-50%, -12px); }
+  from { opacity: 0; transform: translate(-50%, -18px) scale(0.9); }
+}
+
+@keyframes toast-out {
+  to { opacity: 0; transform: translate(-50%, -12px) scale(0.95); }
 }
 
 /* ---------- Экран загрузки и состояний ---------- */
@@ -1356,6 +1912,10 @@ svg {
   text-align: center;
 }
 
+.gate .orb {
+  animation: orb-pop 0.8s var(--spring) both, float 6s ease-in-out 0.8s infinite;
+}
+
 .gate__title {
   margin: 34px 0 8px;
   font-family: var(--font-display);
@@ -1363,6 +1923,7 @@ svg {
   font-weight: 700;
   letter-spacing: -0.02em;
   line-height: 1.2;
+  animation: fade-up 0.6s var(--ease-out) 0.15s both;
 }
 
 .gate__text {
@@ -1370,15 +1931,38 @@ svg {
   margin: 0 0 22px;
   color: var(--text-2);
   font-size: 15.5px;
+  animation: fade-up 0.6s var(--ease-out) 0.25s both;
 }
 
 .gate__text:empty {
   display: none;
 }
 
+.gate .btn {
+  animation: fade-up 0.6s var(--spring) 0.35s both;
+}
+
+/* Уход экрана загрузки: сфера раздувается и растворяется */
 .gate.is-leaving {
-  animation: fade 0.3s ease-in reverse both;
+  animation: fade-out 0.45s ease 0.1s both;
   pointer-events: none;
+}
+
+.gate.is-leaving .orb {
+  animation: orb-leave 0.5s var(--ease-in) both;
+}
+
+.gate.is-leaving .gate__title,
+.gate.is-leaving .gate__text {
+  animation: fade-out 0.2s ease both;
+}
+
+@keyframes fade-out {
+  to { opacity: 0; }
+}
+
+@keyframes orb-leave {
+  to { scale: 2.2; opacity: 0; filter: blur(8px); }
 }
 
 .noscript {
@@ -1402,29 +1986,24 @@ svg {
     max-width: 520px;
   }
 
+  /* Панель становится диалогом по центру */
   .sheet {
-    bottom: 50%;
+    inset: 0;
+    height: fit-content;
+    margin: auto;
     border-bottom: 1px solid var(--line);
-    border-radius: 26px;
-    transform: translateY(50%);
-    animation-name: dialog-in;
-  }
-
-  .sheet.is-closing {
-    animation-name: dialog-out;
+    border-radius: 28px;
   }
 
   .sheet__grip {
     visibility: hidden;
+    height: 8px;
+    margin: 0;
   }
-}
 
-@keyframes dialog-in {
-  from { opacity: 0; transform: translateY(calc(50% + 16px)) scale(0.98); }
-}
-
-@keyframes dialog-out {
-  to { opacity: 0; transform: translateY(calc(50% + 12px)) scale(0.98); }
+  .sheet__head {
+    touch-action: auto;
+  }
 }
 
 @media (max-width: 350px) {
@@ -1464,12 +2043,15 @@ svg {
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
 
-  .orb__ring {
+  .orb__ring,
+  .suggestion::after,
+  .usage__bar span::after {
     display: none;
   }
 }

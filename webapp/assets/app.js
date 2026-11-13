@@ -16,6 +16,8 @@
   const $ = (id) => document.getElementById(id);
   const dom = {
     app: $('app'),
+    topbar: $('topbar'),
+    heroOrb: $('hero-orb'),
     avatar: $('avatar'),
     assistantName: $('assistant-name'),
     status: $('status'),
@@ -36,6 +38,8 @@
     backdrop: $('sheet-backdrop'),
     sheet: $('sheet'),
     sheetClose: $('sheet-close'),
+    sheetGrip: $('sheet-grip'),
+    sheetHead: $('sheet-head'),
     modelList: $('model-list'),
     usageValue: $('usage-value'),
     usageLimit: $('usage-limit'),
@@ -70,6 +74,10 @@
     finishReveal: null,
     notice: null,
     gateAction: null,
+    touching: false,
+    wheelAt: 0,
+    sheetAnim: null,
+    sheetClosing: false,
   };
 
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -94,6 +102,28 @@
   }
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const SPRING = 'cubic-bezier(0.22, 1.2, 0.36, 1)';
+  const isWide = () => window.matchMedia('(min-width: 640px)').matches;
+
+  /* Web Animations с учётом «меньше движения»: возвращает анимацию или null. */
+  function motion(node, keyframes, options) {
+    if (reducedMotion || !node || typeof node.animate !== 'function') return null;
+    return node.animate(keyframes, options);
+  }
+
+  function countUp(node, to) {
+    if (reducedMotion || to <= 0) {
+      node.textContent = String(to);
+      return;
+    }
+    const started = performance.now();
+    const duration = 750;
+    (function step(now) {
+      const t = Math.min(1, (now - started) / duration);
+      node.textContent = String(Math.round(to * (1 - Math.pow(1 - t, 3))));
+      if (t < 1) requestAnimationFrame(step);
+    })(started);
+  }
   const nowTs = () => Math.floor(Date.now() / 1000);
 
   function supports(version) {
@@ -268,7 +298,7 @@
   function hideGate() {
     if (dom.gate.hidden) return;
     dom.gate.classList.add('is-leaving');
-    setTimeout(() => { dom.gate.hidden = true; }, reducedMotion ? 0 : 300);
+    setTimeout(() => { dom.gate.hidden = true; }, reducedMotion ? 0 : 560);
   }
 
   function showLoadError(error, retry) {
@@ -324,7 +354,15 @@
   function onScroll() {
     const distance = distanceFromBottom();
     state.stick = distance < STICK_DISTANCE;
-    dom.scrollDown.hidden = distance < 320;
+    const showDown = distance > 320;
+    dom.scrollDown.classList.toggle('is-visible', showDown);
+    dom.scrollDown.tabIndex = showDown ? 0 : -1;
+    dom.topbar.classList.toggle('is-scrolled', dom.chat.scrollTop > 8);
+  }
+
+  /* Пока пользователь сам листает ленту, не тянем её вниз. */
+  function userIsScrolling() {
+    return state.touching || Date.now() - state.wheelAt < 300;
   }
 
   /* ---------- Сообщения ---------- */
@@ -335,23 +373,71 @@
 
   function setStatus(kind) {
     const labels = { online: 'на связи', typing: 'печатает…', offline: 'нет связи' };
+    if (dom.status.dataset.state !== kind) {
+      motion(dom.statusLabel, [
+        { opacity: 0, transform: 'translateY(6px)' },
+        { opacity: 1, transform: 'none' },
+      ], { duration: 320, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' });
+    }
     dom.status.dataset.state = kind;
     dom.statusLabel.textContent = labels[kind];
     dom.avatar.classList.toggle('orb--thinking', kind === 'typing');
+    document.body.classList.toggle('is-thinking', kind === 'typing');
   }
+
+  /* Заголовок разбивается на слова, чтобы они появлялись по очереди. */
+  function setWelcomeTitle(text) {
+    const parts = [];
+    text.split(' ').forEach((word, index) => {
+      if (index) parts.push(' ');
+      const span = el('span', 'word', word);
+      span.style.setProperty('--i', index);
+      parts.push(span);
+    });
+    dom.welcomeTitle.replaceChildren(...parts);
+  }
+
+  let welcomeExit = null;
 
   function updateWelcome() {
     const empty = dom.messages.childElementCount === 0;
-    dom.welcome.hidden = !empty;
-    if (empty) dom.welcomeTitle.textContent = greeting();
+    if (empty) {
+      if (welcomeExit) {
+        welcomeExit.cancel();
+        welcomeExit = null;
+        dom.welcome.hidden = true;
+      }
+      if (dom.welcome.hidden) {
+        setWelcomeTitle(greeting());
+        dom.welcome.hidden = false;
+      }
+      return;
+    }
+    if (dom.welcome.hidden || welcomeExit) return;
+    // Приветствие растворяется, пока появляется первое сообщение.
+    welcomeExit = motion(dom.welcome, [
+      { opacity: 1, transform: 'none', filter: 'blur(0)' },
+      { opacity: 0, transform: 'translateY(-18px) scale(0.95)', filter: 'blur(6px)' },
+    ], { duration: 280, easing: 'cubic-bezier(0.5, 0, 0.75, 0)', fill: 'forwards' });
+    if (!welcomeExit) {
+      dom.welcome.hidden = true;
+      return;
+    }
+    const exit = welcomeExit;
+    exit.onfinish = () => {
+      if (welcomeExit !== exit) return;
+      dom.welcome.hidden = true;
+      exit.cancel();
+      welcomeExit = null;
+    };
   }
 
-  function addDay(ts) {
+  function addDay(ts, fresh) {
     const date = new Date(ts * 1000);
     const key = dayKey(date);
     if (key === state.lastDay) return;
     state.lastDay = key;
-    dom.messages.append(el('div', 'day', dayLabel(date)));
+    dom.messages.append(el('div', 'day' + (fresh ? ' day--new' : ''), dayLabel(date)));
   }
 
   function copyChip(text, label) {
@@ -364,7 +450,7 @@
 
   function addMessage(message, options) {
     const fresh = Boolean(options && options.fresh);
-    addDay(message.ts);
+    addDay(message.ts, fresh);
 
     const root = el('article', 'msg msg--' + message.role + (fresh ? ' msg--new' : ''));
     const bubble = el('div', 'bubble');
@@ -390,8 +476,9 @@
     return { root, bubble };
   }
 
-  /* Ответ появляется постепенно, как будто Эля печатает. */
-  function reveal(bubble, text, onDone) {
+  /* Ответ появляется постепенно, как будто Эля печатает: пузырь плавно растёт,
+     в конце текста мерцает курсор, лента сама следует за ответом. */
+  function reveal(root, bubble, text, onDone) {
     const full = () => window.ElyaMarkdown.render(text);
     if (reducedMotion || text.length < 30) {
       bubble.replaceChildren(full());
@@ -399,18 +486,41 @@
       return null;
     }
 
-    const step = Math.max(3, Math.ceil(text.length / 80));
+    const step = Math.max(3, Math.ceil(text.length / 90));
     let shown = 0;
     let timer = null;
+    let frame = 0;
+    let grow = null;
     let finished = false;
+    root.classList.add('is-streaming');
+
+    function render(source) {
+      const from = bubble.offsetHeight;
+      if (grow) grow.cancel();
+      bubble.replaceChildren(window.ElyaMarkdown.render(source));
+      const to = bubble.offsetHeight;
+      grow = from && Math.abs(to - from) > 1
+        ? motion(bubble, [{ height: from + 'px' }, { height: to + 'px' }], { duration: 200, easing: 'ease-out' })
+        : null;
+    }
+
+    function pin() {
+      if (state.stick && !userIsScrolling()) dom.chat.scrollTop = dom.chat.scrollHeight;
+      if (!finished) frame = requestAnimationFrame(pin);
+    }
 
     function finish() {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
-      const stick = state.stick;
-      bubble.replaceChildren(full());
-      if (stick) scrollToBottom(false);
+      cancelAnimationFrame(frame);
+      render(text);
+      const settle = () => {
+        root.classList.remove('is-streaming');
+        if (state.stick && !userIsScrolling()) scrollToBottom(false);
+      };
+      if (grow) grow.onfinish = settle;
+      else settle();
       onDone();
     }
 
@@ -422,19 +532,18 @@
         finish();
         return;
       }
-      const stick = state.stick;
-      bubble.replaceChildren(window.ElyaMarkdown.render(text.slice(0, shown)));
-      if (stick) scrollToBottom(false);
-      timer = setTimeout(tick, 26);
+      render(text.slice(0, shown));
+      timer = setTimeout(tick, 28);
     }
 
     tick();
+    frame = requestAnimationFrame(pin);
     return finish;
   }
 
   function addAssistantReply(reply) {
     const item = addMessage(reply, { fresh: true, reveal: true });
-    state.finishReveal = reveal(item.bubble, reply.content, () => {
+    state.finishReveal = reveal(item.root, item.bubble, reply.content, () => {
       state.finishReveal = null;
       if (reply.truncated) addContinueButton();
     });
@@ -452,13 +561,38 @@
     if (stick) scrollToBottom(true);
   }
 
+  const TYPING_HINTS = [
+    [4000, 'думаю…'],
+    [12000, 'подбираю слова…'],
+    [30000, 'модель отвечает дольше обычного…'],
+  ];
+
   function showTyping() {
     const root = el('article', 'msg msg--assistant msg--new typing');
     const bubble = el('div', 'bubble');
-    bubble.append(el('span'), el('span'), el('span'));
+    const dots = el('span', 'typing__dots');
+    dots.append(el('span'), el('span'), el('span'));
+    bubble.append(dots);
     bubble.setAttribute('aria-label', state.assistantName + ' печатает');
     root.append(bubble);
     dom.messages.append(root);
+
+    // Если модель долго думает, рядом с точками появляется пояснение.
+    const timers = TYPING_HINTS.map(([delay, text]) => setTimeout(() => {
+      const from = bubble.offsetWidth;
+      let hint = bubble.querySelector('.typing__hint');
+      if (!hint) {
+        hint = el('span', 'typing__hint');
+        bubble.append(hint);
+      }
+      hint.textContent = text;
+      motion(hint, [{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: 350, easing: 'ease-out' });
+      motion(bubble, [{ width: from + 'px' }, { width: bubble.offsetWidth + 'px' }], { duration: 450, easing: SPRING });
+    }, delay));
+    root.dismiss = () => {
+      timers.forEach(clearTimeout);
+      root.remove();
+    };
     return root;
   }
 
@@ -503,8 +637,14 @@
   /* ---------- Отправка ---------- */
 
   function setBusy(busy) {
+    const was = state.busy;
     state.busy = busy;
     dom.send.classList.toggle('is-busy', busy);
+    if (was && !busy && !reducedMotion) {
+      // Стрелка возвращается на кнопку снизу.
+      dom.send.classList.add('is-landing');
+      setTimeout(() => dom.send.classList.remove('is-landing'), 600);
+    }
     setStatus(busy ? 'typing' : 'online');
     updateComposer();
   }
@@ -546,14 +686,15 @@
 
     try {
       const data = await backend.chat(text, state.model);
-      typing.remove();
+      typing.dismiss();
       addAssistantReply(data.reply);
+      haptic('impact', 'soft');
       if (data.usage) state.usage = data.usage;
       state.signature = '';
       state.syncedAt = Date.now();
       setBusy(false);
     } catch (error) {
-      typing.remove();
+      typing.dismiss();
       setBusy(false);
       haptic('notify', 'error');
       if (error.status === 401 || error.status === 403) {
@@ -607,7 +748,7 @@
       return;
     }
     haptic('select');
-    const saved = Array.from(button.childNodes);
+    const saved = Array.from(button.childNodes).filter((node) => !(node.classList && node.classList.contains('ripple-wave')));
     button.classList.add('is-done');
     button.replaceChildren(icon('i-check'), el('span', '', 'Скопировано'));
     setTimeout(() => {
@@ -622,11 +763,18 @@
 
   function showToast(text) {
     clearTimeout(toastTimer);
+    dom.toast.classList.remove('is-leaving');
     dom.toast.hidden = true;
     dom.toast.textContent = text;
     void dom.toast.offsetWidth; // перезапуск анимации
     dom.toast.hidden = false;
-    toastTimer = setTimeout(() => { dom.toast.hidden = true; }, 2400);
+    toastTimer = setTimeout(() => {
+      dom.toast.classList.add('is-leaving');
+      toastTimer = setTimeout(() => {
+        dom.toast.hidden = true;
+        dom.toast.classList.remove('is-leaving');
+      }, reducedMotion ? 0 : 260);
+    }, 2400);
   }
 
   /* ---------- Настройки ---------- */
@@ -660,7 +808,7 @@
   function renderUsage() {
     const used = state.usage.used;
     const limit = state.usage.limit;
-    dom.usageValue.textContent = String(used);
+    countUp(dom.usageValue, used);
     dom.usageLimit.textContent = limit ? 'из ' + limit : 'без дневного лимита';
     dom.usageBar.hidden = !limit;
     dom.usageFill.style.width = limit ? Math.min(100, Math.round((used / limit) * 100)) + '%' : '0';
@@ -675,27 +823,123 @@
   function openSheet() {
     renderModels();
     resetClearConfirm();
-    dom.sheet.classList.remove('is-closing');
-    dom.backdrop.classList.remove('is-closing');
+    if (state.sheetAnim) state.sheetAnim.cancel();
+    state.sheetClosing = false;
+    dom.sheet.getAnimations().forEach((animation) => animation.cancel());
+    dom.backdrop.getAnimations().forEach((animation) => animation.cancel());
+    dom.sheet.style.transform = '';
+    dom.backdrop.style.opacity = '';
     dom.backdrop.hidden = false;
     dom.sheet.hidden = false;
+    dom.sheet.classList.remove('is-opening');
+    void dom.sheet.offsetWidth;
+    dom.sheet.classList.add('is-opening');
     dom.input.blur();
-    // Полоска заполняется уже на глазах.
+
+    state.sheetAnim = motion(dom.sheet, isWide()
+      ? [{ opacity: 0, transform: 'translateY(18px) scale(0.95)' }, { opacity: 1, transform: 'none' }]
+      : [{ transform: 'translateY(100%)' }, { transform: 'none' }],
+    { duration: isWide() ? 420 : 560, easing: 'cubic-bezier(0.2, 1.08, 0.32, 1)' });
+    motion(dom.backdrop, [{ opacity: 0 }, { opacity: 1 }], { duration: 300, easing: 'ease-out' });
+
+    // Полоска и число заполняются уже на глазах.
     dom.usageFill.style.width = '0';
-    requestAnimationFrame(renderUsage);
+    dom.usageValue.textContent = '0';
+    setTimeout(renderUsage, reducedMotion ? 0 : 180);
     if (supports('6.1')) tg.BackButton.show();
     haptic('impact', 'light');
   }
 
   function closeSheet() {
-    if (dom.sheet.hidden || dom.sheet.classList.contains('is-closing')) return;
-    dom.sheet.classList.add('is-closing');
-    dom.backdrop.classList.add('is-closing');
+    if (dom.sheet.hidden || state.sheetClosing) return;
+    state.sheetClosing = true;
     if (supports('6.1')) tg.BackButton.hide();
-    setTimeout(() => {
+
+    const fromTransform = dom.sheet.style.transform || 'none';
+    const fromOpacity = dom.backdrop.style.opacity || '1';
+    if (state.sheetAnim) state.sheetAnim.cancel();
+
+    const sheetOut = motion(dom.sheet, isWide()
+      ? [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateY(14px) scale(0.96)' }]
+      : [{ transform: fromTransform }, { transform: 'translateY(100%)' }],
+    { duration: 260, easing: 'cubic-bezier(0.4, 0, 0.9, 0.6)', fill: 'forwards' });
+    const backdropOut = motion(dom.backdrop, [{ opacity: fromOpacity }, { opacity: 0 }], { duration: 260, fill: 'forwards' });
+
+    const done = () => {
       dom.sheet.hidden = true;
       dom.backdrop.hidden = true;
-    }, reducedMotion ? 0 : 200);
+      if (sheetOut) sheetOut.cancel();
+      if (backdropOut) backdropOut.cancel();
+      dom.sheet.style.transform = '';
+      dom.backdrop.style.opacity = '';
+      dom.sheet.classList.remove('is-opening', 'is-dragging');
+      state.sheetClosing = false;
+    };
+    if (sheetOut) sheetOut.onfinish = done;
+    else done();
+  }
+
+  /* Панель можно смахнуть вниз за «ручку» или заголовок. */
+  function bindSheetDrag() {
+    let pointer = null;
+    let startY = 0;
+    let lastY = 0;
+    let lastTime = 0;
+    let velocity = 0;
+    let height = 0;
+
+    function down(event) {
+      if (isWide() || event.button > 0 || event.target.closest('button') || state.sheetClosing) return;
+      pointer = event.pointerId;
+      startY = lastY = event.clientY;
+      lastTime = event.timeStamp;
+      velocity = 0;
+      height = dom.sheet.offsetHeight;
+      if (state.sheetAnim) {
+        state.sheetAnim.cancel();
+        state.sheetAnim = null;
+      }
+      event.currentTarget.setPointerCapture(pointer);
+      dom.sheet.classList.add('is-dragging');
+    }
+
+    function move(event) {
+      if (event.pointerId !== pointer) return;
+      const dy = event.clientY - startY;
+      const offset = dy > 0 ? dy : dy / 5; // вверх — с сопротивлением
+      dom.sheet.style.transform = 'translateY(' + offset + 'px)';
+      dom.backdrop.style.opacity = String(Math.max(0, 1 - Math.max(0, offset) / height));
+      const dt = event.timeStamp - lastTime;
+      if (dt > 0) velocity = (event.clientY - lastY) / dt;
+      lastY = event.clientY;
+      lastTime = event.timeStamp;
+    }
+
+    function up(event) {
+      if (event.pointerId !== pointer) return;
+      pointer = null;
+      dom.sheet.classList.remove('is-dragging');
+      const dy = event.clientY - startY;
+      if (dy > Math.min(140, height * 0.3) || (dy > 10 && velocity > 0.5)) {
+        haptic('impact', 'light');
+        closeSheet();
+        return;
+      }
+      // Не дотянули — панель пружинит обратно.
+      const fromTransform = dom.sheet.style.transform || 'none';
+      const fromOpacity = dom.backdrop.style.opacity || '1';
+      dom.sheet.style.transform = '';
+      dom.backdrop.style.opacity = '';
+      motion(dom.sheet, [{ transform: fromTransform }, { transform: 'none' }], { duration: 480, easing: SPRING });
+      motion(dom.backdrop, [{ opacity: fromOpacity }, { opacity: 1 }], { duration: 300, easing: 'ease-out' });
+    }
+
+    [dom.sheetGrip, dom.sheetHead].forEach((handle) => {
+      handle.addEventListener('pointerdown', down);
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', up);
+      handle.addEventListener('pointercancel', up);
+    });
   }
 
   async function clearHistory() {
@@ -708,8 +952,14 @@
       haptic('notify', 'error');
       return;
     }
-    renderHistory([]);
     closeSheet();
+    const nodes = Array.from(dom.messages.children).slice(-14).reverse();
+    nodes.forEach((node, index) => {
+      node.style.setProperty('--i', index);
+      node.classList.add('is-leaving');
+    });
+    if (nodes.length && !reducedMotion) await sleep(380 + nodes.length * 35);
+    renderHistory([]);
     showToast('История очищена');
     haptic('notify', 'success');
   }
@@ -755,6 +1005,10 @@
     }
     applyState(data);
     dom.app.hidden = false;
+    if (!reducedMotion) {
+      dom.app.classList.add('is-entering');
+      setTimeout(() => dom.app.classList.remove('is-entering'), 1100);
+    }
     setStatus('online');
     renderHistory(data.history || []);
     updateComposer();
@@ -792,6 +1046,10 @@
     dom.input.addEventListener('input', () => {
       autosize();
       updateComposer();
+      // Сфера «прислушивается», пока пользователь печатает.
+      const typing = dom.input.value.trim().length > 0;
+      dom.heroOrb.classList.toggle('orb--listening', typing);
+      dom.avatar.classList.toggle('orb--listening', typing && !state.busy);
     });
     dom.input.addEventListener('keydown', (event) => {
       // На компьютере Enter отправляет, на телефоне — перенос строки.
@@ -824,6 +1082,26 @@
     });
 
     dom.chat.addEventListener('scroll', onScroll, { passive: true });
+    dom.chat.addEventListener('touchstart', () => { state.touching = true; }, { passive: true });
+    dom.chat.addEventListener('touchend', () => { state.touching = false; }, { passive: true });
+    dom.chat.addEventListener('touchcancel', () => { state.touching = false; }, { passive: true });
+    dom.chat.addEventListener('wheel', () => { state.wheelAt = Date.now(); }, { passive: true });
+
+    // Волна от касания на кнопках.
+    document.addEventListener('pointerdown', (event) => {
+      if (reducedMotion) return;
+      const target = event.target.closest('.ripple, .option, .chip-btn, .notice__retry, .continue-btn');
+      if (!target || target.disabled) return;
+      const rect = target.getBoundingClientRect();
+      const size = Math.max(rect.width, rect.height) * 2.2;
+      const wave = el('span', 'ripple-wave');
+      wave.style.width = wave.style.height = size + 'px';
+      wave.style.left = event.clientX - rect.left - size / 2 + 'px';
+      wave.style.top = event.clientY - rect.top - size / 2 + 'px';
+      target.append(wave);
+      wave.addEventListener('animationend', () => wave.remove());
+    }, { passive: true });
+    bindSheetDrag();
     dom.scrollDown.addEventListener('click', () => scrollToBottom(true));
 
     dom.menuBtn.addEventListener('click', openSheet);
