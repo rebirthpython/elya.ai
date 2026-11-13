@@ -141,6 +141,21 @@ async def test_start_shows_greeting_and_privacy(env):
     assert "Привет, Аня!" in text and "Эля" in text and "Echo AI" in text
 
 
+async def test_start_has_no_app_button_when_mini_app_is_off(env):
+    dp = env["make"]()
+    await dp.feed_update(env["bot"], _message_update("/start"))
+    assert env["session"].requests[0].reply_markup is None
+
+
+async def test_start_offers_mini_app_when_enabled(env):
+    dp = env["make"](_settings(webapp_url="https://elya.example/"))
+    await dp.feed_update(env["bot"], _message_update("/start"))
+    message = env["session"].requests[0]
+    button = message.reply_markup.inline_keyboard[0][0]
+    assert button.web_app.url == "https://elya.example/"
+    assert "приложение" in message.text
+
+
 async def test_chat_uses_history_and_formats_reply(env):
     dp = env["make"]()
     await dp.feed_update(env["bot"], _message_update("первый вопрос"))

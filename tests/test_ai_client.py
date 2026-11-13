@@ -205,3 +205,20 @@ async def test_daily_limit_counts_every_attempt():
     with pytest.raises(DailyLimitExceededError):
         await client.complete(MESSAGES)
     assert usage.used == 3
+
+
+async def test_preferred_model_is_tried_first_then_usual_order():
+    a = FakeProvider("a", ["a1", "a2"], {"a1": ["from a1"], "a2": ["from a2"]})
+    b = FakeProvider("b", ["b1"], {"b1": [_rate("b", "b1")]})
+    client = AIClient([a, b], max_tokens=10, temperature=0.1, clock=Clock())
+
+    assert [(p.name, m) for p, m in client.available_models] == [("a", "a1"), ("a", "a2"), ("b", "b1")]
+    assert (await client.complete(MESSAGES, prefer=("a", "a2"))).text == "from a2"
+    assert a.calls == ["a2"]
+
+    # выбранная модель упёрлась в лимит — отвечает первая по обычному порядку
+    assert (await client.complete(MESSAGES, prefer=("b", "b1"))).text == "from a1"
+    assert b.calls == ["b1"] and a.calls == ["a2", "a1"]
+
+    # незнакомая модель ничего не меняет
+    assert (await client.complete(MESSAGES, prefer=("zzz", "nope"))).text == "from a1"

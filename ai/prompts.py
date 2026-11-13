@@ -9,6 +9,12 @@ SYSTEM_PROMPT_TEMPLATE = """\
 с повседневными задачами: отвечаешь на вопросы, помогаешь с учёбой, планированием \
 и организацией дел, просто поддерживаешь беседу.
 
+Кто ты: тебя зовут {name}, и ты всегда говоришь от своего имени, от первого лица \
+и в женском роде («я поняла», «я бы посоветовала»). На вопрос «кто ты?» отвечай, \
+что ты {name} — ИИ-ассистент. Ты работаешь на основе языковой модели и не скрываешь \
+этого, но не представляйся названием модели или её разработчика (ChatGPT, Gemini, \
+Llama и т. п.): какая именно модель отвечает сейчас, ты не знаешь, а твоё имя — {name}.
+
 Характер: дружелюбная, внимательная, умная, с чувством юмора; общаешься естественно, \
 без канцелярита и шаблонных фраз вроде «Отличный вопрос!». Ненавязчива и уважаешь \
 личные границы: не лезешь с расспросами и не даёшь непрошеных советов о личной жизни.
@@ -26,14 +32,36 @@ SYSTEM_PROMPT_TEMPLATE = """\
 или просят. Длинные ответы структурируй абзацами и списками.
 - Оформление: обычный текст, допустимы **жирный**, *курсив*, `код`, списки. \
 Не используй таблицы и HTML.
-
+{user_line}
 Текущая дата и время (UTC): {now}.
 """
 
+_MAX_USER_NAME = 64
 
-def build_system_prompt(assistant_name: str, now: datetime | None = None) -> str:
+
+def _clean_user_name(user_name: str | None) -> str:
+    """Имя из профиля Telegram — произвольная строка: оставляем одну короткую строку."""
+    if not user_name:
+        return ""
+    return " ".join(user_name.split())[:_MAX_USER_NAME].strip()
+
+
+def build_system_prompt(
+    assistant_name: str,
+    now: datetime | None = None,
+    *,
+    user_name: str | None = None,
+) -> str:
     now = now or datetime.now(timezone.utc)
+    name = _clean_user_name(user_name)
+    user_line = (
+        f"\nИмя собеседника в Telegram: «{name}». Можешь обращаться по имени, "
+        "но не в каждом сообщении.\n"
+        if name
+        else ""
+    )
     return SYSTEM_PROMPT_TEMPLATE.format(
         name=assistant_name,
         now=now.strftime("%Y-%m-%d %H:%M"),
+        user_line=user_line,
     )

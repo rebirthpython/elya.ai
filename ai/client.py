@@ -85,48 +85,66 @@ class AIClient:
             delay = self._base_cooldown * 2 ** (strikes - 1)
         self._cooldowns[key] = (self._clock() + min(delay, self._max_cooldown), strikes, error)
 
-    async def complete(self, messages: list[ChatMessage]) -> CompletionResult:
+    @property
+    def available_models(self) -> list[tuple[BaseProvider, str]]:
+        """Все пары (провайдер, модель) в порядке приоритета."""
+        return [(provider, model) for provider in self._providers for model in provider.models]
+
+    def _candidates(self, prefer: tuple[str, str] | None) -> list[tuple[BaseProvider, str]]:
+        candidates = self.available_models
+        if prefer is not None:
+            # Стабильная сортировка: выбранная модель первой, остальные — в прежнем порядке.
+            candidates.sort(key=lambda pair: (pair[0].name, pair[1]) != prefer)
+        return candidates
+
+    async def complete(
+        self, messages: list[ChatMessage], *, prefer: tuple[str, str] | None = None
+    ) -> CompletionResult:
+        """Возвращает ответ первой сработавшей модели.
+
+        prefer=(провайдер, модель) — с какой модели начать; при её отказе
+        остальные пробуются в обычном порядке.
+        """
         errors: list[ProviderError] = []
 
-        for provider in self._providers:
-            if paused := self._cooling_error((provider.name, None)):
-                errors.append(paused)
-                continue
-            for model in provider.models:
-                key = (provider.name, model)
-                if paused := self._cooling_error(key):
+        for provider, model in self._candidates(prefer):
+            key = (provider.name, model)
+            paused = self._cooling_error((provider.name, None)) or self._cooling_error(key)
+            if paused is not None:
+                # Пауза провайдера даёт одну и ту же ошибку для всех его моделей.
+                if not any(paused is seen for seen in errors):
                     errors.append(paused)
-                    continue
-                if self._usage and not await self._usage.try_consume():
-                    raise DailyLimitExceededError(self._usage.daily_limit)
+                continue
+            if self._usage and not await self._usage.try_consume():
+                raise DailyLimitExceededError(self._usage.daily_limit)
 
-                started = self._clock()
-                try:
-                    result = await provider.complete(
-                        messages,
-                        model=model,
-                        max_tokens=self._max_tokens,
-                        temperature=self._temperature,
-                    )
-                except ProviderError as exc:
-                    logger.warning("AI request failed: %s", exc)
-                    errors.append(exc)
-                    if exc.provider_level:
-                        self._cool_down((provider.name, None), exc, self._base_cooldown * 10)
-                        break
-                    if isinstance(exc, RateLimitError):
-                        self._cool_down(key, exc, exc.retry_after)
-                    continue
-
-                self._cooldowns.pop(key, None)
-                self._cooldowns.pop((provider.name, None), None)
-                logger.info(
-                    "AI response: provider=%s model=%s chars=%d time=%.1fs",
-                    result.provider,
-                    result.model,
-                    len(result.text),
-                    self._clock() - started,
+            started = self._clock()
+            try:
+                result = await provider.complete(
+                    messages,
+                    model=model,
+                    max_tokens=self._max_tokens,
+                    temperature=self._temperature,
                 )
-                return result
+            except ProviderError as exc:
+                logger.warning("AI request failed: %s", exc)
+                errors.append(exc)
+                if exc.provider_level:
+                    # Остальные модели этого провайдера будут пропущены как «на паузе».
+                    self._cool_down((provider.name, None), exc, self._base_cooldown * 10)
+                elif isinstance(exc, RateLimitError):
+                    self._cool_down(key, exc, exc.retry_after)
+                continue
+
+            self._cooldowns.pop(key, None)
+            self._cooldowns.pop((provider.name, None), None)
+            logger.info(
+                "AI response: provider=%s model=%s chars=%d time=%.1fs",
+                result.provider,
+                result.model,
+                len(result.text),
+                self._clock() - started,
+            )
+            return result
 
         raise AllProvidersFailedError(errors)

@@ -2,26 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from collections import defaultdict
 
 from aiogram import Bot, F, Router
 from aiogram.types import Message
 from aiogram.utils.chat_action import ChatActionSender
 
-from ai.client import AIClient, AllProvidersFailedError, DailyLimitExceededError
-from ai.context import build_context
-from ai.prompts import build_system_prompt
+from ai.client import AllProvidersFailedError, DailyLimitExceededError
 from bot.utils.sender import send_long_text
-from config.settings import Settings
-from memory.manager import MemoryManager
+from services.chat import ChatService
 
 logger = logging.getLogger(__name__)
-
-# Сообщения одного пользователя обрабатываются строго по очереди,
-# чтобы история диалога сохранялась в правильном порядке.
-_user_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 _FAILURE_TEXTS = {
     "rate_limit": (
@@ -39,43 +30,27 @@ _FAILURE_TEXTS = {
 }
 
 
-async def handle_text(
-    message: Message,
-    bot: Bot,
-    settings: Settings,
-    ai_client: AIClient,
-    memory: MemoryManager,
-) -> None:
+async def handle_text(message: Message, bot: Bot, chat_service: ChatService) -> None:
     if message.from_user is None or not message.text or not message.text.strip():
         return
-    user_id = message.from_user.id
-    user_text = message.text.strip()
 
-    async with _user_locks[user_id]:
-        history = await memory.get_history(user_id)
-        context = build_context(
-            build_system_prompt(settings.assistant_name),
-            history,
-            user_text,
-            max_messages=settings.history_max_messages,
-            max_chars=settings.history_max_chars,
-        )
-
-        try:
-            async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
-                result = await ai_client.complete(context)
-        except DailyLimitExceededError as exc:
-            await message.answer(
-                f"📵 Достигнут дневной лимит запросов к ИИ ({exc.limit}). "
-                "Он обновится в 00:00 по UTC. Это защита от перерасхода бесплатной квоты."
+    try:
+        async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
+            result = await chat_service.ask(
+                message.from_user.id,
+                message.text.strip(),
+                user_name=message.from_user.first_name,
             )
-            return
-        except AllProvidersFailedError as exc:
-            logger.error("All AI providers failed (%s)", exc.kind)
-            await message.answer(_FAILURE_TEXTS[exc.kind])
-            return
-
-        await memory.save_exchange(user_id, user_text, result.text)
+    except DailyLimitExceededError as exc:
+        await message.answer(
+            f"📵 Достигнут дневной лимит запросов к ИИ ({exc.limit}). "
+            "Он обновится в 00:00 по UTC. Это защита от перерасхода бесплатной квоты."
+        )
+        return
+    except AllProvidersFailedError as exc:
+        logger.error("All AI providers failed (%s)", exc.kind)
+        await message.answer(_FAILURE_TEXTS[exc.kind])
+        return
 
     reply = result.text
     if result.truncated:

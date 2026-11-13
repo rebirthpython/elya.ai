@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -39,6 +40,15 @@ class Settings:
     rate_limit_per_minute: int
     daily_request_limit: int
     log_level: str
+    # Mini App (HTML5-интерфейс внутри Telegram). Пустой webapp_url — Mini App выключен.
+    webapp_url: str = ""
+    webapp_host: str = "0.0.0.0"
+    webapp_port: int = 8080
+    webapp_auth_max_age: int = 86400
+
+    @property
+    def webapp_enabled(self) -> bool:
+        return bool(self.webapp_url)
 
 
 # Известные провайдеры с OpenAI-совместимым API (POST {base_url}/chat/completions).
@@ -58,6 +68,11 @@ KNOWN_PROVIDERS: dict[str, dict[str, str]] = {
         "title": "Groq",
         "base_url": "https://api.groq.com/openai/v1",
         "models": "",
+    },
+    "mistral": {
+        "title": "Mistral AI",
+        "base_url": "https://api.mistral.ai/v1",
+        "models": "mistral-small-latest",
     },
     "custom": {
         "title": "Custom OpenAI-compatible API",
@@ -109,6 +124,28 @@ def _parse_user_ids(raw: str) -> frozenset[int]:
         except ValueError as exc:
             raise ConfigError(f"ALLOWED_USER_IDS: некорректный Telegram ID {item!r}") from exc
     return frozenset(ids)
+
+
+def _load_webapp_url() -> str:
+    """Публичный адрес Mini App. Telegram открывает Mini App только по HTTPS."""
+    url = _get_str("WEBAPP_URL")
+    if not url:
+        return ""
+    parts = urlsplit(url)
+    if parts.scheme != "https" or not parts.netloc or parts.query or parts.fragment:
+        raise ConfigError(
+            "WEBAPP_URL должен быть публичным HTTPS-адресом без параметров "
+            f"(например, https://elya.example.com), получено: {url!r}"
+        )
+    # Интерфейс подключает файлы по относительным путям, поэтому адрес — всегда «папка».
+    return url.rstrip("/") + "/"
+
+
+def _load_webapp_port() -> int:
+    port = _get_int("WEBAPP_PORT", 8080, minimum=1)
+    if port > 65535:
+        raise ConfigError(f"WEBAPP_PORT должен быть в диапазоне 1–65535, получено: {port}")
+    return port
 
 
 def _load_provider(name: str) -> ProviderConfig | None:
@@ -188,4 +225,8 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         rate_limit_per_minute=_get_int("RATE_LIMIT_PER_MINUTE", 10, minimum=1),
         daily_request_limit=_get_int("DAILY_REQUEST_LIMIT", 300, minimum=0),
         log_level=_get_str("LOG_LEVEL", "INFO").upper() or "INFO",
+        webapp_url=_load_webapp_url(),
+        webapp_host=_get_str("WEBAPP_HOST", "0.0.0.0") or "0.0.0.0",
+        webapp_port=_load_webapp_port(),
+        webapp_auth_max_age=_get_int("WEBAPP_AUTH_MAX_AGE", 86400, minimum=60),
     )

@@ -6,6 +6,8 @@ ENV_KEYS = [
     "BOT_TOKEN", "ALLOWED_USER_IDS", "AI_PROVIDERS", "GEMINI_API_KEY", "GEMINI_MODELS",
     "OPENROUTER_API_KEY", "OPENROUTER_MODELS", "GROQ_API_KEY", "GROQ_MODELS",
     "CUSTOM_BASE_URL", "CUSTOM_API_KEY", "CUSTOM_MODELS", "DAILY_REQUEST_LIMIT", "TEMPERATURE",
+    "MISTRAL_API_KEY", "MISTRAL_MODELS", "WEBAPP_URL", "WEBAPP_HOST", "WEBAPP_PORT",
+    "WEBAPP_AUTH_MAX_AGE",
 ]
 
 
@@ -43,6 +45,10 @@ def test_provider_order_and_custom_without_key(monkeypatch):
         {"AI_PROVIDERS": "unknown", "GEMINI_API_KEY": "k"},
         {"AI_PROVIDERS": "openrouter", "OPENROUTER_API_KEY": "k"},  # нет моделей
         {"GEMINI_API_KEY": "k", "TEMPERATURE": "5"},
+        {"GEMINI_API_KEY": "k", "WEBAPP_URL": "http://elya.example"},  # Telegram требует HTTPS
+        {"GEMINI_API_KEY": "k", "WEBAPP_URL": "elya.example"},
+        {"GEMINI_API_KEY": "k", "WEBAPP_URL": "https://elya.example/?demo"},
+        {"GEMINI_API_KEY": "k", "WEBAPP_PORT": "70000"},
         {},  # ни одного ключа
     ],
 )
@@ -51,3 +57,28 @@ def test_invalid_configs(monkeypatch, env):
         monkeypatch.setenv(key, value)
     with pytest.raises(ConfigError):
         load_settings(env_file=None)
+
+
+def test_mini_app_is_off_by_default(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+    settings = load_settings(env_file=None)
+    assert settings.webapp_url == "" and settings.webapp_enabled is False
+
+
+def test_mini_app_settings(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+    monkeypatch.setenv("WEBAPP_URL", "https://elya.example/app/")
+    monkeypatch.setenv("WEBAPP_PORT", "9000")
+    settings = load_settings(env_file=None)
+    assert settings.webapp_enabled is True
+    assert settings.webapp_url == "https://elya.example/app/"
+    assert (settings.webapp_host, settings.webapp_port) == ("0.0.0.0", 9000)
+    assert settings.webapp_auth_max_age == 86400
+
+
+def test_mistral_provider_has_default_model(monkeypatch):
+    monkeypatch.setenv("AI_PROVIDERS", "mistral")
+    monkeypatch.setenv("MISTRAL_API_KEY", "m-key")
+    provider = load_settings(env_file=None).providers[0]
+    assert provider.base_url == "https://api.mistral.ai/v1"
+    assert provider.models == ("mistral-small-latest",)

@@ -11,7 +11,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from ai.client import AIClient
-from bot.keyboards.common import ClearHistoryCallback, clear_confirm_keyboard
+from bot.keyboards.common import (
+    ClearHistoryCallback,
+    clear_confirm_keyboard,
+    open_app_keyboard,
+)
 from config.settings import Settings
 from memory.manager import MemoryManager
 from services.usage import UsageTracker
@@ -34,13 +38,25 @@ async def cmd_start(
     await state.clear()
     first_name = message.from_user.first_name if message.from_user else ""
     greeting = f"Привет, {escape(first_name)}!" if first_name else "Привет!"
+    app_note = (
+        "У меня есть удобное приложение прямо в Telegram — открой его кнопкой ниже "
+        "или пиши здесь, память у нас общая.\n\n"
+        if settings.webapp_enabled
+        else ""
+    )
     await message.answer(
         f"{greeting} Я — {escape(settings.assistant_name)}, твой персональный ИИ-ассистент. 👋\n\n"
         "Просто пиши мне обычными сообщениями: могу ответить на вопрос, помочь с учёбой, "
         "спланировать день или просто поболтать. Я помню контекст нашего разговора.\n\n"
+        f"{app_note}"
         f"{_privacy_note(ai_client)}\n\n"
         "Все команды — в /help.",
         parse_mode=ParseMode.HTML,
+        reply_markup=(
+            open_app_keyboard(settings.webapp_url, settings.assistant_name)
+            if settings.webapp_enabled
+            else None
+        ),
     )
 
 
