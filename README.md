@@ -201,6 +201,34 @@ API приложения (все запросы — с заголовком `Aut
 | `POST` | `/api/clear` | удалить историю диалога |
 | `POST` | `/api/preferences` | `{"style": "...", "verbosity": "..."}` — стиль общения и полнота ответа |
 
+## Бесплатный запуск на Android (Termux)
+
+Бот и приложение работают, пока на телефоне запущен Termux. База хранится в памяти
+телефона (`data/assistant.db`) и переживает перезапуски.
+
+```bash
+# 1. Один раз: пакеты (сборка pydantic-core может занять 10–20 минут)
+pkg update && pkg upgrade
+pkg install python git rust binutils build-essential cloudflared termux-api
+export ANDROID_API_LEVEL=$(getprop ro.build.version.sdk)
+
+# 2. Один раз: код и зависимости
+git clone -b ccr-84f2fee0-3viifm https://github.com/rebirthpython/elya.ai
+cd elya.ai
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# 3. Один раз: настройки
+cp .env.example .env && nano .env   # BOT_TOKEN, ALLOWED_USER_IDS, GEMINI_API_KEY
+
+# 4. Каждый раз: запуск (сам поднимает туннель и подставляет адрес)
+./termux/start.sh
+```
+
+Адрес туннеля `trycloudflare.com` меняется при каждом запуске, скрипт подставляет его
+сам, а бот обновляет кнопку меню. Чтобы Android не убивал Termux, в настройках
+приложения выбери «Без ограничений» для батареи и не смахивай Termux из недавних.
+
 ## Хостинг на Railway
 
 Бот собирается из `Dockerfile`, рабочая папка в контейнере — `/app`, база по умолчанию —
