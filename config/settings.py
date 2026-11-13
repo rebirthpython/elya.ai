@@ -142,7 +142,8 @@ def _load_webapp_url() -> str:
 
 
 def _load_webapp_port() -> int:
-    port = _get_int("WEBAPP_PORT", 8080, minimum=1)
+    # Хостинги (Render, Railway, Koyeb) сообщают нужный порт через PORT.
+    port = _get_int("WEBAPP_PORT", _get_int("PORT", 8080, minimum=1), minimum=1)
     if port > 65535:
         raise ConfigError(f"WEBAPP_PORT должен быть в диапазоне 1–65535, получено: {port}")
     return port
