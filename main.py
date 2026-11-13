@@ -31,6 +31,7 @@ from database.session import (
 from memory.manager import MemoryManager
 from memory.repository import MessageRepository
 from services.chat import ChatService
+from services.longterm import LongTermMemory
 from services.preferences import PreferencesStore
 from services.rate_limit import SlidingWindowLimiter
 from services.usage import UsageTracker
@@ -41,6 +42,8 @@ logger = logging.getLogger("assistant")
 BOT_COMMANDS = [
     BotCommand(command="start", description="Запуск и приветствие"),
     BotCommand(command="help", description="Что я умею"),
+    BotCommand(command="memory", description="Что я о тебе помню"),
+    BotCommand(command="forget", description="Забыть всё, что я о тебе помню"),
     BotCommand(command="clear", description="Очистить историю диалога"),
     BotCommand(command="cancel", description="Отменить текущее действие"),
 ]
@@ -54,6 +57,7 @@ def create_dispatcher(
     *,
     chat_service: ChatService | None = None,
     limiter: SlidingWindowLimiter | None = None,
+    long_memory: LongTermMemory | None = None,
 ) -> Dispatcher:
     """chat_service и limiter передаются снаружи, когда их делит с ботом Mini App."""
     dp = Dispatcher(storage=MemoryStorage())
@@ -61,6 +65,7 @@ def create_dispatcher(
     dp["ai_client"] = ai_client
     dp["memory"] = memory
     dp["usage"] = usage
+    dp["long_memory"] = long_memory
     dp["chat_service"] = chat_service or ChatService(settings, ai_client, memory)
 
     dp.update.outer_middleware(AccessMiddleware(settings.allowed_user_ids))
@@ -121,12 +126,19 @@ async def run(settings: Settings) -> None:
     )
 
     preferences = PreferencesStore(session_factory)
-    chat_service = ChatService(settings, ai_client, memory, preferences)
+    long_memory = LongTermMemory(session_factory, ai_client)
+    chat_service = ChatService(settings, ai_client, memory, preferences, long_memory)
     limiter = SlidingWindowLimiter(settings.rate_limit_per_minute)
 
     bot = Bot(token=settings.bot_token)
     dp = create_dispatcher(
-        settings, ai_client, memory, usage, chat_service=chat_service, limiter=limiter
+        settings,
+        ai_client,
+        memory,
+        usage,
+        chat_service=chat_service,
+        limiter=limiter,
+        long_memory=long_memory,
     )
     web_runner = None
 
@@ -145,7 +157,14 @@ async def run(settings: Settings) -> None:
             try:
                 web_runner = await start_web_server(
                     create_web_app(
-                        settings, chat_service, memory, usage, ai_client, limiter, preferences
+                        settings,
+                        chat_service,
+                        memory,
+                        usage,
+                        ai_client,
+                        limiter,
+                        preferences,
+                        long_memory,
                     ),
                     settings.webapp_host,
                     settings.webapp_port,

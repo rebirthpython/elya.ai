@@ -15,6 +15,7 @@ from bot.keyboards.common import ClearHistoryCallback
 from config.settings import ProviderConfig, Settings
 from database.session import create_engine, create_session_factory, init_db
 from main import create_dispatcher
+from services.longterm import LongTermMemory
 from memory.manager import MemoryManager
 from memory.repository import MessageRepository
 from services.usage import UsageTracker
@@ -85,12 +86,16 @@ async def env(tmp_path):
     session = RecordingSession()
     bot = Bot(token="42:TEST", session=session)
 
+    long_memory = LongTermMemory(session_factory)
+
     def make(settings=None):
-        return create_dispatcher(settings or _settings(), ai_client, memory, usage)
+        return create_dispatcher(
+            settings or _settings(), ai_client, memory, usage, long_memory=long_memory
+        )
 
     yield {
         "bot": bot, "session": session, "provider": provider, "memory": memory,
-        "usage": usage, "make": make,
+        "usage": usage, "make": make, "long_memory": long_memory,
     }
     await engine.dispose()
 
@@ -217,3 +222,44 @@ async def test_ai_failure_gives_friendly_message_and_keeps_history_clean(env):
     await dp.feed_update(env["bot"], _message_update("ты тут?"))
     assert "не отвечает" in env["session"].sent_texts()[-1]
     assert await env["memory"].get_history(OWNER_ID) == []
+
+
+async def test_memory_command_toggle_and_forget(env):
+    from bot.keyboards.common import MemoryCallback
+
+    dp = env["make"]()
+    lt = env["long_memory"]
+
+    await dp.feed_update(env["bot"], _message_update("/memory"))
+    first = [m for m in env["session"].requests if isinstance(m, SendMessage)][-1]
+    assert "выключена" in first.text and "Если включить" in first.text
+    assert first.reply_markup.inline_keyboard[0][0].text == "🧠 Включить память"
+    assert len(first.reply_markup.inline_keyboard) == 1  # «забыть всё» не нужно, фактов нет
+
+    await dp.feed_update(env["bot"], _callback_update(MemoryCallback(action="toggle").pack()))
+    assert await lt.is_enabled(OWNER_ID) is True
+    assert "Память включена" in env["session"].sent_texts()[-1]
+    assert "Пока ничего не запомнила" in env["session"].sent_texts()[-1]
+
+    await lt.add(OWNER_ID, "Любит <чай> & кофе")
+    await dp.feed_update(env["bot"], _message_update("/memory"))
+    listing = env["session"].sent_texts()[-1]
+    assert "• Любит &lt;чай&gt; &amp; кофе" in listing  # разметка экранируется
+
+    await dp.feed_update(env["bot"], _message_update("/forget"))
+    confirm = [m for m in env["session"].requests if isinstance(m, SendMessage)][-1]
+    assert "Забыть всё" in confirm.text and confirm.reply_markup is not None
+    assert len(await lt.list(OWNER_ID)) == 1  # без подтверждения ничего не удалено
+
+    await dp.feed_update(env["bot"], _callback_update(MemoryCallback(action="forget_yes").pack()))
+    assert await lt.list(OWNER_ID) == []
+    assert "Пока ничего не запомнила" in env["session"].sent_texts()[-1]
+
+    await dp.feed_update(env["bot"], _message_update("/forget"))
+    assert "нечего забывать" in env["session"].sent_texts()[-1]
+
+
+async def test_memory_commands_are_blocked_for_strangers(env):
+    dp = env["make"]()
+    await dp.feed_update(env["bot"], _message_update("/memory", user_id=STRANGER_ID))
+    assert env["session"].requests == []

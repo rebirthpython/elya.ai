@@ -20,6 +20,7 @@ from config.settings import Settings
 from database.models import Message
 from memory.manager import MemoryManager
 from services.chat import ChatService
+from services.longterm import MAX_FACT_LENGTH, MAX_FACTS, LongTermMemory, MemoryFullError
 from services.preferences import PreferencesStore
 from services.preferences import options as preference_options
 from services.rate_limit import SlidingWindowLimiter
@@ -40,6 +41,7 @@ USAGE = web.AppKey("usage", UsageTracker)
 AI_CLIENT = web.AppKey("ai_client", AIClient)
 LIMITER = web.AppKey("limiter", SlidingWindowLimiter)
 PREFERENCES = web.AppKey("preferences", PreferencesStore)
+LONG_MEMORY = web.AppKey("long_memory", LongTermMemory)
 
 _USER_KEY = web.RequestKey("tg_user", WebAppUser)
 
@@ -160,6 +162,15 @@ def _resolve_model(ai_client: AIClient, model_id: Any) -> tuple[str, str] | None
     return None
 
 
+async def _memory_payload(memory: LongTermMemory, user_id: int) -> dict[str, Any]:
+    return {
+        "enabled": await memory.is_enabled(user_id),
+        "facts": [{"id": f.id, "text": f.text} for f in await memory.list(user_id)],
+        "max_facts": MAX_FACTS,
+        "max_fact_length": MAX_FACT_LENGTH,
+    }
+
+
 async def get_state(request: web.Request) -> web.Response:
     """Всё, что нужно интерфейсу при открытии: имя, история, модели, счётчики."""
     app = request.app
@@ -179,6 +190,7 @@ async def get_state(request: web.Request) -> web.Response:
             "usage": {"used": await usage.used_today(), "limit": usage.daily_limit},
             "limits": {"max_text_length": MAX_TEXT_LENGTH},
             "preferences": (await app[PREFERENCES].get(user.id)).as_dict(),
+            "memory": await _memory_payload(app[LONG_MEMORY], user.id),
             "preference_options": preference_options(),
         }
     )
@@ -259,6 +271,57 @@ async def post_preferences(request: web.Request) -> web.Response:
     return web.json_response({"preferences": prefs.as_dict()})
 
 
+_FACT_ERRORS = {
+    "too_short": "Слишком коротко: напиши факт хотя бы в паре слов.",
+    "too_long": f"Слишком длинно: уложись в {MAX_FACT_LENGTH} символов.",
+    "sensitive": "Пароли, номера карт и ключи я не запоминаю.",
+}
+
+
+async def post_memory(request: web.Request) -> web.Response:
+    """Включает и выключает долговременную память."""
+    user: WebAppUser = request[_USER_KEY]
+    payload = await _read_json(request)
+    enabled = payload.get("enabled") if payload else None
+    if not isinstance(enabled, bool):
+        return _error(400, "bad_request", "Некорректный запрос.")
+    memory = request.app[LONG_MEMORY]
+    await memory.set_enabled(user.id, enabled)
+    return web.json_response(await _memory_payload(memory, user.id))
+
+
+async def post_memory_add(request: web.Request) -> web.Response:
+    user: WebAppUser = request[_USER_KEY]
+    payload = await _read_json(request)
+    text = payload.get("text") if payload else None
+    if not isinstance(text, str):
+        return _error(400, "bad_request", "Некорректный запрос.")
+    memory = request.app[LONG_MEMORY]
+    try:
+        fact = await memory.add(user.id, text, source="manual")
+    except ValueError as exc:
+        return _error(400, str(exc), _FACT_ERRORS.get(str(exc), "Не получилось сохранить."))
+    except MemoryFullError:
+        return _error(409, "memory_full", f"Память заполнена ({MAX_FACTS}): удали что-нибудь лишнее.")
+    data = await _memory_payload(memory, user.id)
+    data["added"] = {"id": fact.id, "text": fact.text} if fact else None
+    return web.json_response(data)
+
+
+async def post_memory_delete(request: web.Request) -> web.Response:
+    """{"id": N} удаляет один факт, {"all": true} — все."""
+    user: WebAppUser = request[_USER_KEY]
+    payload = await _read_json(request)
+    memory = request.app[LONG_MEMORY]
+    if payload and payload.get("all") is True:
+        await memory.clear(user.id)
+    elif payload and isinstance(payload.get("id"), int) and not isinstance(payload.get("id"), bool):
+        await memory.delete(user.id, payload["id"])
+    else:
+        return _error(400, "bad_request", "Некорректный запрос.")
+    return web.json_response(await _memory_payload(memory, user.id))
+
+
 async def post_clear(request: web.Request) -> web.Response:
     user: WebAppUser = request[_USER_KEY]
     deleted = await request.app[MEMORY].clear_history(user.id)
@@ -281,6 +344,7 @@ def create_web_app(
     ai_client: AIClient,
     limiter: SlidingWindowLimiter,
     preferences: PreferencesStore,
+    long_memory: LongTermMemory,
 ) -> web.Application:
     app = web.Application(
         middlewares=[security_headers, api_guard], client_max_size=MAX_BODY_BYTES
@@ -292,6 +356,7 @@ def create_web_app(
     app[AI_CLIENT] = ai_client
     app[LIMITER] = limiter
     app[PREFERENCES] = preferences
+    app[LONG_MEMORY] = long_memory
 
     app.router.add_get("/", index)
     app.router.add_get("/healthz", health)
@@ -299,6 +364,9 @@ def create_web_app(
     app.router.add_post("/api/chat", post_chat)
     app.router.add_post("/api/clear", post_clear)
     app.router.add_post("/api/preferences", post_preferences)
+    app.router.add_post("/api/memory", post_memory)
+    app.router.add_post("/api/memory/add", post_memory_add)
+    app.router.add_post("/api/memory/delete", post_memory_delete)
     app.router.add_static("/assets/", WEBAPP_DIR / "assets")
     return app
 

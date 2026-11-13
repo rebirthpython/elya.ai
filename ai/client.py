@@ -98,12 +98,18 @@ class AIClient:
         return candidates
 
     async def complete(
-        self, messages: list[ChatMessage], *, prefer: tuple[str, str] | None = None
+        self,
+        messages: list[ChatMessage],
+        *,
+        prefer: tuple[str, str] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> CompletionResult:
         """Возвращает ответ первой сработавшей модели.
 
         prefer=(провайдер, модель) — с какой модели начать; при её отказе
-        остальные пробуются в обычном порядке.
+        остальные пробуются в обычном порядке. temperature и max_tokens
+        переопределяют значения по умолчанию для служебных запросов.
         """
         errors: list[ProviderError] = []
 
@@ -123,8 +129,8 @@ class AIClient:
                 result = await provider.complete(
                     messages,
                     model=model,
-                    max_tokens=self._max_tokens,
-                    temperature=self._temperature,
+                    max_tokens=max_tokens if max_tokens is not None else self._max_tokens,
+                    temperature=temperature if temperature is not None else self._temperature,
                 )
             except ProviderError as exc:
                 logger.warning("AI request failed: %s", exc)

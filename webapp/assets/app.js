@@ -47,6 +47,17 @@
     styleList: $('style-list'),
     verbosityControl: $('verbosity-control'),
     verbosityNote: $('verbosity-note'),
+    memory: document.querySelector('.memory'),
+    memoryToggle: $('memory-toggle'),
+    memorySub: $('memory-sub'),
+    memoryBody: $('memory-body'),
+    facts: $('facts'),
+    factsEmpty: $('facts-empty'),
+    factForm: $('fact-form'),
+    factInput: $('fact-input'),
+    factAdd: $('fact-add'),
+    factsClear: $('facts-clear'),
+    factsClearLabel: $('facts-clear-label'),
     usageValue: $('usage-value'),
     usageLimit: $('usage-limit'),
     usageBar: $('usage-bar'),
@@ -87,6 +98,9 @@
     theme: 'auto',
     preferences: { style: 'friendly', verbosity: 'normal' },
     preferenceOptions: { style: [], verbosity: [] },
+    memory: { enabled: false, facts: [], max_facts: 50, max_fact_length: 200 },
+    memoryTimers: [],
+    clearArmed: null,
   };
 
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -257,6 +271,10 @@
     chat: (text, model) => request('api/chat', model === AUTO ? { text } : { text, model }),
     clear: () => request('api/clear', {}),
     savePreferences: (patch) => request('api/preferences', patch),
+    memorySet: (enabled) => request('api/memory', { enabled }),
+    memoryAdd: (text) => request('api/memory/add', { text }),
+    memoryDelete: (id) => request('api/memory/delete', { id }),
+    memoryClear: () => request('api/memory/delete', { all: true }),
   };
 
   /* Демо-режим: тот же интерфейс, но без сервера и настоящей модели. */
@@ -279,6 +297,9 @@
     let used = 12;
     let turn = 0;
     let preferences = { style: 'friendly', verbosity: 'normal' };
+    let memory = { enabled: false, facts: [], max_facts: 50, max_fact_length: 200 };
+    let factId = 0;
+    const memoryView = () => JSON.parse(JSON.stringify(memory));
 
     return {
       async state() {
@@ -296,6 +317,7 @@
           usage: { used, limit: 300 },
           limits: { max_text_length: 4000 },
           preferences: Object.assign({}, preferences),
+          memory: memoryView(),
           preference_options: {
             style: [
               { id: 'friendly', title: 'Дружелюбный', description: 'Тепло, с лёгким юмором' },
@@ -316,6 +338,31 @@
         preferences = Object.assign({}, preferences, patch);
         return { preferences: Object.assign({}, preferences) };
       },
+      async memorySet(enabled) {
+        await sleep(200);
+        memory.enabled = enabled;
+        return memoryView();
+      },
+      async memoryAdd(text) {
+        await sleep(200);
+        const value = String(text).trim();
+        if (value.length < 3) throw new ApiError('too_short', 'Слишком коротко: напиши факт хотя бы в паре слов.', 400);
+        if (/парол|карт/i.test(value)) throw new ApiError('sensitive', 'Пароли, номера карт и ключи я не запоминаю.', 400);
+        factId += 1;
+        const added = { id: factId, text: value };
+        memory.facts.push(added);
+        return Object.assign(memoryView(), { added });
+      },
+      async memoryDelete(id) {
+        await sleep(150);
+        memory.facts = memory.facts.filter((fact) => fact.id !== id);
+        return memoryView();
+      },
+      async memoryClear() {
+        await sleep(150);
+        memory.facts = [];
+        return memoryView();
+      },
       async chat(text, model) {
         await sleep(1100 + Math.random() * 700);
         if (/ошибк/i.test(text)) {
@@ -324,6 +371,12 @@
         const content = replies[turn % replies.length];
         turn += 1;
         used += 1;
+        if (memory.enabled && /(^|\s)(я|мне|люблю|живу)(\s|$)/i.test(text)) {
+          setTimeout(() => {
+            factId += 1;
+            memory.facts.push({ id: factId, text: 'Рассказал: ' + text.slice(0, 50) });
+          }, 1200);
+        }
         history.push({ role: 'user', content: text, ts: nowTs() }, { role: 'assistant', content, ts: nowTs() });
         return {
           reply: {
@@ -810,6 +863,7 @@
       addAssistantReply(data.reply);
       haptic('impact', 'soft');
       if (data.usage) state.usage = data.usage;
+      watchNewMemories();
       state.signature = '';
       state.syncedAt = Date.now();
       setBusy(false);
@@ -973,6 +1027,168 @@
     setSegment(dom.themeControl, state.theme);
   }
 
+  /* ---------- Память ---------- */
+
+  function memoryText(count) {
+    const max = state.memory.max_facts;
+    return state.memory.enabled
+      ? (count ? 'Помню ' + count + ' из ' + max : 'Включено, пока ничего не помню')
+      : 'Выключено' + (count ? ': ' + count + ' сохранено, не использую' : '');
+  }
+
+  /* options.fresh — id только что добавленных фактов (мигают), options.stagger — первая отрисовка. */
+  function renderMemory(options) {
+    const opts = options || {};
+    const memory = state.memory;
+    const facts = memory.facts;
+    dom.memory.classList.toggle('is-on', memory.enabled);
+    dom.memoryToggle.setAttribute('aria-checked', String(memory.enabled));
+    dom.memorySub.textContent = memoryText(facts.length);
+
+    dom.facts.replaceChildren(...facts.map((fact, index) => {
+      const fresh = opts.fresh && opts.fresh.has(fact.id);
+      const li = el('li', 'fact' + (fresh ? ' fact--fresh' : opts.stagger ? ' fact--in' : ''));
+      li.style.setProperty('--i', index);
+      li.dataset.id = String(fact.id);
+      const remove = el('button', 'fact__remove ripple');
+      remove.type = 'button';
+      remove.dataset.remove = String(fact.id);
+      remove.setAttribute('aria-label', 'Забыть: ' + fact.text);
+      remove.append(icon('i-close'));
+      li.append(el('span', 'fact__text', fact.text), remove);
+      return li;
+    }));
+
+    dom.factsEmpty.hidden = facts.length > 0;
+    dom.factsEmpty.textContent = memory.enabled
+      ? 'Пока ничего не запомнила. Расскажи о себе в разговоре или добавь факт ниже.'
+      : 'Включи память, и я начну запоминать важное. Можно и самому добавить факт ниже.';
+    dom.factsClear.hidden = facts.length === 0;
+    dom.factInput.maxLength = memory.max_fact_length;
+    dom.factAdd.disabled = !dom.factInput.value.trim();
+    disarmClear();
+  }
+
+  function disarmClear() {
+    clearTimeout(state.clearArmed);
+    state.clearArmed = null;
+    dom.factsClear.classList.remove('is-armed');
+    dom.factsClearLabel.textContent = 'Забыть всё';
+  }
+
+  /* Ответ сервера с обновлённой памятью. */
+  function takeMemory(data, options) {
+    state.memory = Object.assign({}, state.memory, {
+      enabled: data.enabled,
+      facts: data.facts || [],
+      max_facts: data.max_facts || state.memory.max_facts,
+      max_fact_length: data.max_fact_length || state.memory.max_fact_length,
+    });
+    renderMemory(options);
+  }
+
+  async function toggleMemory() {
+    const next = !state.memory.enabled;
+    state.memory.enabled = next;
+    renderMemory();
+    haptic('select');
+    try {
+      takeMemory(await backend.memorySet(next));
+    } catch (error) {
+      state.memory.enabled = !next;
+      renderMemory();
+      showToast(error.message);
+      haptic('notify', 'error');
+    }
+  }
+
+  async function addFact() {
+    const text = dom.factInput.value.trim();
+    if (!text) return;
+    dom.factAdd.disabled = true;
+    try {
+      const data = await backend.memoryAdd(text);
+      dom.factInput.value = '';
+      if (data.added) {
+        takeMemory(data, { fresh: new Set([data.added.id]) });
+        haptic('notify', 'success');
+      } else {
+        takeMemory(data);
+        showToast('Это я уже помню');
+      }
+    } catch (error) {
+      renderMemory();
+      showToast(error.message);
+      haptic('notify', 'error');
+    }
+  }
+
+  async function removeFact(id) {
+    const item = dom.facts.querySelector('[data-id="' + id + '"]');
+    if (item) item.classList.add('is-leaving');
+    haptic('impact', 'light');
+    try {
+      const [data] = await Promise.all([backend.memoryDelete(id), sleep(reducedMotion ? 0 : 300)]);
+      takeMemory(data);
+    } catch (error) {
+      if (item) item.classList.remove('is-leaving');
+      showToast(error.message);
+      haptic('notify', 'error');
+    }
+  }
+
+  async function clearMemory() {
+    // Первое нажатие «взводит» кнопку, второе в течение 3 секунд подтверждает.
+    if (!state.clearArmed) {
+      dom.factsClear.classList.add('is-armed');
+      dom.factsClearLabel.textContent = 'Нажми ещё раз — забуду всё';
+      haptic('notify', 'warning');
+      state.clearArmed = setTimeout(disarmClear, 3000);
+      return;
+    }
+    disarmClear();
+    dom.facts.querySelectorAll('.fact').forEach((li, i) => {
+      li.style.setProperty('--i', i);
+      li.classList.add('is-leaving');
+    });
+    try {
+      const [data] = await Promise.all([backend.memoryClear(), sleep(reducedMotion ? 0 : 340)]);
+      takeMemory(data);
+      showToast('Всё забыла');
+      haptic('notify', 'success');
+    } catch (error) {
+      renderMemory();
+      showToast(error.message);
+    }
+  }
+
+  /* После ответа Эля могла что-то запомнить (это идёт в фоне), поэтому чуть позже
+     заглядываем в память и, если там появилось новое, говорим об этом. */
+  function watchNewMemories() {
+    state.memoryTimers.forEach(clearTimeout);
+    state.memoryTimers = [];
+    if (!state.memory.enabled) return;
+    [6000, 15000].forEach((delay) => {
+      state.memoryTimers.push(setTimeout(async () => {
+        if (!state.memory.enabled) return;
+        let data;
+        try {
+          data = await backend.state();
+        } catch (error) {
+          return;
+        }
+        if (!data.memory) return;
+        const known = new Set(state.memory.facts.map((fact) => fact.id));
+        const added = data.memory.facts.filter((fact) => !known.has(fact.id));
+        if (!added.length) return;
+        state.memoryTimers.forEach(clearTimeout);
+        takeMemory(data.memory, { fresh: new Set(added.map((fact) => fact.id)) });
+        const first = added[0].text.length > 60 ? added[0].text.slice(0, 57) + '…' : added[0].text;
+        showToast('🧠 Запомнила: ' + first + (added.length > 1 ? ' (+' + (added.length - 1) + ')' : ''));
+      }, delay));
+    });
+  }
+
   async function savePreferences(patch) {
     const previous = state.preferences;
     state.preferences = Object.assign({}, previous, patch);
@@ -1007,6 +1223,7 @@
   function openSheet() {
     renderModels();
     renderPreferences();
+    renderMemory({ stagger: true });
     resetClearConfirm();
     if (state.sheetAnim) state.sheetAnim.cancel();
     state.sheetClosing = false;
@@ -1159,6 +1376,7 @@
     state.usage = data.usage || state.usage;
     state.maxLength = (data.limits && data.limits.max_text_length) || 4000;
     if (data.preferences) state.preferences = data.preferences;
+    if (data.memory) state.memory = Object.assign({}, state.memory, data.memory);
     if (data.preference_options) state.preferenceOptions = data.preference_options;
     state.syncedAt = Date.now();
 
@@ -1215,6 +1433,7 @@
     }
     if (state.busy || state.finishReveal) return;
     state.usage = data.usage || state.usage;
+    if (data.memory && dom.sheet.hidden) state.memory = Object.assign({}, state.memory, data.memory);
     setStatus('online');
     const history = data.history || [];
     const signature = historySignature(history);
@@ -1297,6 +1516,20 @@
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') closeSheet();
     });
+
+    dom.memoryToggle.addEventListener('click', toggleMemory);
+    dom.factForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      addFact();
+    });
+    dom.factInput.addEventListener('input', () => {
+      dom.factAdd.disabled = !dom.factInput.value.trim();
+    });
+    dom.facts.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-remove]');
+      if (button) removeFact(Number(button.dataset.remove));
+    });
+    dom.factsClear.addEventListener('click', clearMemory);
 
     dom.themeControl.addEventListener('click', (event) => {
       const item = event.target.closest('[data-value]');

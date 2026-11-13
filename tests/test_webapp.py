@@ -17,6 +17,7 @@ from database.session import create_engine, create_session_factory, init_db
 from memory.manager import MemoryManager
 from memory.repository import MessageRepository
 from services.chat import ChatService
+from services.longterm import MAX_FACTS, LongTermMemory
 from services.preferences import PreferencesStore
 from services.rate_limit import SlidingWindowLimiter
 from services.usage import UsageTracker
@@ -86,6 +87,7 @@ async def env(tmp_path):
     session_factory = create_session_factory(engine)
     memory = MemoryManager(MessageRepository(session_factory, store_limit=500), history_limit=30)
     preferences = PreferencesStore(session_factory)
+    long_memory = LongTermMemory(session_factory)
     clients: list[TestClient] = []
 
     async def make(*, providers=None, daily_limit=100, rate_limit=10, **settings_overrides):
@@ -98,19 +100,22 @@ async def env(tmp_path):
         ai_client = AIClient(providers, max_tokens=256, temperature=0.5, usage=usage)
         app = create_web_app(
             settings,
-            ChatService(settings, ai_client, memory, preferences),
+            ChatService(settings, ai_client, memory, preferences, long_memory),
             memory,
             usage,
             ai_client,
             SlidingWindowLimiter(rate_limit),
             preferences,
+            long_memory,
         )
         client = TestClient(TestServer(app))
         await client.start_server()
         clients.append(client)
         return client, providers
 
-    yield {"make": make, "memory": memory, "preferences": preferences}
+    yield {
+        "make": make, "memory": memory, "preferences": preferences, "long_memory": long_memory,
+    }
     for client in clients:
         await client.close()
     await engine.dispose()
@@ -239,6 +244,9 @@ async def test_state_describes_assistant_models_and_history(env):
     assert data["usage"] == {"used": 0, "limit": 100}
     assert data["limits"] == {"max_text_length": MAX_TEXT_LENGTH}
     assert data["preferences"] == {"style": "friendly", "verbosity": "normal"}
+    assert data["memory"] == {
+        "enabled": False, "facts": [], "max_facts": MAX_FACTS, "max_fact_length": 200,
+    }
     assert [o["id"] for o in data["preference_options"]["style"]] == [
         "friendly", "caring", "playful", "business",
     ]
@@ -421,3 +429,98 @@ async def test_preferences_are_per_user(env):
     await client.post("/api/preferences", json={"style": "playful"}, headers=auth())
     assert (await env["preferences"].get(OWNER_ID)).style == "playful"
     assert (await env["preferences"].get(222)).style == "friendly"
+
+
+# ---------- долговременная память ----------
+
+
+async def test_memory_toggle_add_list_delete(env):
+    client, _ = await env["make"]()
+
+    response = await client.post("/api/memory", json={"enabled": True}, headers=auth())
+    assert (await response.json())["enabled"] is True
+
+    response = await client.post("/api/memory/add", json={"text": "  Любит чай без сахара "}, headers=auth())
+    data = await response.json()
+    assert response.status == 200 and data["added"]["text"] == "Любит чай без сахара"
+    first_id = data["added"]["id"]
+    await client.post("/api/memory/add", json={"text": "Живёт в Казани"}, headers=auth())
+
+    again = await (await client.post("/api/memory/add", json={"text": "любит чай без сахара"}, headers=auth())).json()
+    assert again["added"] is None and len(again["facts"]) == 2  # дубликат не добавлен
+
+    state = await (await client.get("/api/state", headers=auth())).json()
+    assert state["memory"]["enabled"] is True
+    assert [f["text"] for f in state["memory"]["facts"]] == ["Любит чай без сахара", "Живёт в Казани"]
+
+    data = await (await client.post("/api/memory/delete", json={"id": first_id}, headers=auth())).json()
+    assert [f["text"] for f in data["facts"]] == ["Живёт в Казани"]
+    data = await (await client.post("/api/memory/delete", json={"all": True}, headers=auth())).json()
+    assert data["facts"] == [] and data["enabled"] is True
+
+
+@pytest.mark.parametrize(
+    ("text", "code"),
+    [("да", "too_short"), ("а" * 250, "too_long"), ("мой пароль 12345", "sensitive")],
+)
+async def test_memory_add_validates(env, text, code):
+    client, _ = await env["make"]()
+    response = await client.post("/api/memory/add", json={"text": text}, headers=auth())
+    assert response.status == 400
+    assert (await response.json())["error"]["code"] == code
+    assert await env["long_memory"].list(OWNER_ID) == []
+
+
+async def test_memory_full_returns_409(env):
+    client, _ = await env["make"]()
+    import random
+
+    rng = random.Random(1)
+    for i in range(MAX_FACTS):
+        # непохожие друг на друга, иначе их склеит защита от дубликатов
+        text = "".join(rng.choice("абвгдежзиклмнопрстуфхцчшэюя") for _ in range(16))
+        data = await (await client.post("/api/memory/add", json={"text": text}, headers=auth())).json()
+        assert data["added"] is not None, text
+    response = await client.post("/api/memory/add", json={"text": "Совсем другой факт про собаку"}, headers=auth())
+    assert response.status == 409 and (await response.json())["error"]["code"] == "memory_full"
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/api/memory", {"enabled": "yes"}),
+        ("/api/memory", {}),
+        ("/api/memory/add", {"text": 5}),
+        ("/api/memory/delete", {"id": "1"}),
+        ("/api/memory/delete", {"id": True}),
+        ("/api/memory/delete", {}),
+    ],
+)
+async def test_memory_endpoints_reject_bad_input(env, path, body):
+    client, _ = await env["make"]()
+    response = await client.post(path, json=body, headers=auth())
+    assert response.status == 400
+
+
+async def test_memory_is_private_per_user_and_requires_access(env):
+    client, _ = await env["make"](allowed_user_ids=frozenset({OWNER_ID, 222}))
+    await client.post("/api/memory/add", json={"text": "Мой секретный факт"}, headers=auth())
+    mine = (await env["long_memory"].list(OWNER_ID))[0]
+
+    other = auth(sign_init_data(222))
+    state = await (await client.get("/api/state", headers=other)).json()
+    assert state["memory"]["facts"] == []
+    await client.post("/api/memory/delete", json={"id": mine.id}, headers=other)  # чужой факт не удалить
+    assert len(await env["long_memory"].list(OWNER_ID)) == 1
+
+    for path in ("/api/memory", "/api/memory/add", "/api/memory/delete"):
+        assert (await client.post(path, json={}, headers={})).status == 401
+        assert (await client.post(path, json={}, headers=auth(sign_init_data(STRANGER_ID)))).status == 403
+
+
+async def test_enabled_memory_reaches_the_prompt_via_the_app(env):
+    client, providers = await env["make"]()
+    await client.post("/api/memory", json={"enabled": True}, headers=auth())
+    await client.post("/api/memory/add", json={"text": "Любит чай без сахара"}, headers=auth())
+    await client.post("/api/chat", json={"text": "привет"}, headers=auth())
+    assert "Любит чай без сахара" in providers[0].calls[0][1][0].content

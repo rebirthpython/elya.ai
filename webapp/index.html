@@ -30,6 +30,7 @@
     <symbol id="i-bulb" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 17.5h6M10 21h4M12 3a6.5 6.5 0 0 0-4 11.6c.6.5 1 1.2 1 2v.9h6v-.9c0-.8.4-1.5 1-2A6.5 6.5 0 0 0 12 3Z"/></g></symbol>
     <symbol id="i-pen" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4.2L19.3 8.9a2.4 2.4 0 0 0 0-3.4l-.8-.8a2.4 2.4 0 0 0-3.4 0L4 15.8V20Z"/><path d="m13.5 6.5 4 4"/></g></symbol>
     <symbol id="i-chat" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 11.5c0 4.1-3.8 7.5-8.5 7.5-1.1 0-2.2-.2-3.2-.5L4 20l1.3-3.6c-1.1-1.3-1.8-3-1.8-4.9C3.5 7.4 7.3 4 12 4s8.5 3.4 8.5 7.5Z"/><path d="M8.5 11.5h.01M12 11.5h.01M15.5 11.5h.01"/></g></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
     <symbol id="i-sun" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.8v2M12 19.2v2M2.8 12h2M19.2 12h2M5.5 5.5l1.4 1.4M17.1 17.1l1.4 1.4M5.5 18.5l1.4-1.4M17.1 6.9l1.4-1.4"/></g></symbol>
     <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></symbol>
     <symbol id="i-auto" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="8.5"/></g><path d="M12 3.5a8.5 8.5 0 0 1 0 17Z" fill="currentColor"/></symbol>
@@ -143,6 +144,33 @@
           <span class="segmented__thumb" aria-hidden="true"></span>
         </div>
         <p class="block__note" id="verbosity-note"></p>
+      </section>
+
+      <section class="block" id="memory-block">
+        <h3 class="block__title">Память</h3>
+        <div class="memory">
+          <button class="switch-row ripple" id="memory-toggle" type="button" role="switch" aria-checked="false">
+            <span class="switch-row__text">
+              <span class="switch-row__title">Запоминать о тебе</span>
+              <span class="switch-row__sub" id="memory-sub">Выключено</span>
+            </span>
+            <span class="switch" aria-hidden="true"><span class="switch__knob"></span></span>
+          </button>
+          <div class="memory__body" id="memory-body">
+            <ul class="facts" id="facts" aria-label="Что помнит Эля"></ul>
+            <p class="memory__empty" id="facts-empty" hidden></p>
+            <form class="fact-form" id="fact-form" autocomplete="off">
+              <input class="fact-form__input" id="fact-input" type="text" maxlength="200" enterkeyhint="done"
+                     placeholder="Добавить: например, «Люблю чай»" aria-label="Новый факт">
+              <button class="fact-form__btn ripple" id="fact-add" type="submit" aria-label="Добавить" disabled><svg><use href="#i-plus"/></svg></button>
+            </form>
+            <button class="row-btn row-btn--danger ripple" id="facts-clear" type="button" hidden>
+              <svg><use href="#i-trash"/></svg>
+              <span id="facts-clear-label">Забыть всё</span>
+            </button>
+          </div>
+        </div>
+        <p class="block__note">Эля запоминает важное из разговоров: имя, близких, вкусы, планы. Пароли и номера карт — никогда. Всё можно посмотреть и удалить. Память общая для чата с ботом и приложения.</p>
       </section>
 
       <section class="block">

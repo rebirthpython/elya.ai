@@ -33,7 +33,7 @@ Llama и т. п.): какая именно модель отвечает сей�
 - {length_rule}
 - Оформление: обычный текст, допустимы **жирный**, *курсив*, `код`, списки. \
 Не используй таблицы и HTML.
-{user_line}
+{user_line}{memory_block}
 Текущая дата и время (UTC): {now}.
 """
 
@@ -85,6 +85,7 @@ def build_system_prompt(
     user_name: str | None = None,
     style: str = "friendly",
     verbosity: str = "normal",
+    memory: str = "",
 ) -> str:
     now = now or datetime.now(timezone.utc)
     name = _clean_user_name(user_name)
@@ -98,6 +99,7 @@ def build_system_prompt(
         name=assistant_name,
         now=now.strftime("%Y-%m-%d %H:%M"),
         user_line=user_line,
+        memory_block=memory,
         style_rule=STYLE_RULES.get(style, STYLE_RULES["friendly"]),
         length_rule=LENGTH_RULES.get(verbosity, LENGTH_RULES["normal"]),
     )

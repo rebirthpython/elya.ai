@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -58,3 +58,24 @@ class UserPreferences(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class MemoryFact(Base):
+    """Факт о пользователе, который Эля помнит между диалогами."""
+
+    __tablename__ = "memory_facts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    text: Mapped[str] = mapped_column(String(300))
+    source: Mapped[str] = mapped_column(String(8))  # "auto" — выделила Эля, "manual" — добавлен вручную
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MemorySettings(Base):
+    """Согласие пользователя на долговременную память (по умолчанию выключена)."""
+
+    __tablename__ = "memory_settings"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
