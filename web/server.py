@@ -22,6 +22,14 @@ from memory.manager import MemoryManager
 from services.chat import ChatService
 from services.longterm import MAX_FACT_LENGTH, MAX_FACTS, LongTermMemory, MemoryFullError
 from services.preferences import PreferencesStore
+from services.reminders import (
+    MAX_AHEAD,
+    MAX_PENDING,
+    MAX_TEXT,
+    REPEATS,
+    Reminders,
+    TooManyRemindersError,
+)
 from services.preferences import options as preference_options
 from services.rate_limit import SlidingWindowLimiter
 from services.usage import UsageTracker
@@ -42,6 +50,7 @@ AI_CLIENT = web.AppKey("ai_client", AIClient)
 LIMITER = web.AppKey("limiter", SlidingWindowLimiter)
 PREFERENCES = web.AppKey("preferences", PreferencesStore)
 LONG_MEMORY = web.AppKey("long_memory", LongTermMemory)
+REMINDERS = web.AppKey("reminders", Reminders)
 
 _USER_KEY = web.RequestKey("tg_user", WebAppUser)
 
@@ -171,6 +180,18 @@ async def _memory_payload(memory: LongTermMemory, user_id: int) -> dict[str, Any
     }
 
 
+async def _reminders_payload(reminders: Reminders, user_id: int) -> dict[str, Any]:
+    return {
+        "timezone": await reminders.get_timezone(user_id),
+        "items": [
+            {"id": i.id, "text": i.text, "due": int(i.due_at.timestamp()), "repeat": i.repeat}
+            for i in await reminders.list_pending(user_id)
+        ],
+        "max": MAX_PENDING,
+        "max_text": MAX_TEXT,
+    }
+
+
 async def get_state(request: web.Request) -> web.Response:
     """Всё, что нужно интерфейсу при открытии: имя, история, модели, счётчики."""
     app = request.app
@@ -191,6 +212,7 @@ async def get_state(request: web.Request) -> web.Response:
             "limits": {"max_text_length": MAX_TEXT_LENGTH},
             "preferences": (await app[PREFERENCES].get(user.id)).as_dict(),
             "memory": await _memory_payload(app[LONG_MEMORY], user.id),
+            "reminders": await _reminders_payload(app[REMINDERS], user.id),
             "preference_options": preference_options(),
         }
     )
@@ -322,6 +344,69 @@ async def post_memory_delete(request: web.Request) -> web.Response:
     return web.json_response(await _memory_payload(memory, user.id))
 
 
+async def post_timezone(request: web.Request) -> web.Response:
+    """Приложение присылает часовой пояс телефона (IANA-имя)."""
+    user: WebAppUser = request[_USER_KEY]
+    payload = await _read_json(request)
+    name = payload.get("tz") if payload else None
+    if not isinstance(name, str) or len(name) > 64:
+        return _error(400, "bad_request", "Некорректный запрос.")
+    reminders = request.app[REMINDERS]
+    if await reminders.set_timezone(user.id, name) is None:
+        return _error(400, "bad_timezone", "Не знаю такого часового пояса.")
+    return web.json_response(await _reminders_payload(reminders, user.id))
+
+
+async def post_reminder_add(request: web.Request) -> web.Response:
+    """{"text": "...", "when": "ГГГГ-ММ-ДДTЧЧ:ММ" (местное время), "repeat": "none|daily|..."}"""
+    user: WebAppUser = request[_USER_KEY]
+    payload = await _read_json(request)
+    if payload is None:
+        return _error(400, "bad_request", "Некорректный запрос.")
+    text, when = payload.get("text"), payload.get("when")
+    repeat = payload.get("repeat", "none")
+    if not isinstance(text, str) or not isinstance(when, str) or repeat not in REPEATS:
+        return _error(400, "bad_request", "Некорректный запрос.")
+    text = " ".join(text.split())
+    if not text:
+        return _error(400, "bad_request", "Напиши, что напомнить.")
+    if len(text) > MAX_TEXT:
+        return _error(400, "too_long", f"Слишком длинно: уложись в {MAX_TEXT} символов.")
+
+    reminders = request.app[REMINDERS]
+    tz = await reminders.tzinfo(user.id)
+    if tz is None:
+        return _error(400, "no_timezone", "Не знаю твой часовой пояс: перезапусти приложение.")
+    try:
+        local = datetime.fromisoformat(when)
+    except ValueError:
+        return _error(400, "bad_request", "Не получилось разобрать дату и время.")
+    if local.tzinfo is not None:
+        return _error(400, "bad_request", "Не получилось разобрать дату и время.")
+    due = local.replace(tzinfo=tz).astimezone(timezone.utc)
+    now = reminders.now()
+    if due <= now:
+        return _error(400, "past", "Это время уже прошло. Выбери время в будущем.")
+    if due - now > MAX_AHEAD:
+        return _error(400, "far", "Я напоминаю не дальше чем на год вперёд.")
+    try:
+        await reminders.create(user.id, text, due, repeat, tz=tz)
+    except TooManyRemindersError:
+        return _error(409, "too_many", f"Уже {MAX_PENDING} напоминаний: удали что-нибудь лишнее.")
+    return web.json_response(await _reminders_payload(reminders, user.id))
+
+
+async def post_reminder_delete(request: web.Request) -> web.Response:
+    user: WebAppUser = request[_USER_KEY]
+    payload = await _read_json(request)
+    reminder_id = payload.get("id") if payload else None
+    if not isinstance(reminder_id, int) or isinstance(reminder_id, bool):
+        return _error(400, "bad_request", "Некорректный запрос.")
+    reminders = request.app[REMINDERS]
+    await reminders.delete(user.id, reminder_id)
+    return web.json_response(await _reminders_payload(reminders, user.id))
+
+
 async def post_clear(request: web.Request) -> web.Response:
     user: WebAppUser = request[_USER_KEY]
     deleted = await request.app[MEMORY].clear_history(user.id)
@@ -345,6 +430,7 @@ def create_web_app(
     limiter: SlidingWindowLimiter,
     preferences: PreferencesStore,
     long_memory: LongTermMemory,
+    reminders: Reminders,
 ) -> web.Application:
     app = web.Application(
         middlewares=[security_headers, api_guard], client_max_size=MAX_BODY_BYTES
@@ -357,6 +443,7 @@ def create_web_app(
     app[LIMITER] = limiter
     app[PREFERENCES] = preferences
     app[LONG_MEMORY] = long_memory
+    app[REMINDERS] = reminders
 
     app.router.add_get("/", index)
     app.router.add_get("/healthz", health)
@@ -367,6 +454,9 @@ def create_web_app(
     app.router.add_post("/api/memory", post_memory)
     app.router.add_post("/api/memory/add", post_memory_add)
     app.router.add_post("/api/memory/delete", post_memory_delete)
+    app.router.add_post("/api/timezone", post_timezone)
+    app.router.add_post("/api/reminders/add", post_reminder_add)
+    app.router.add_post("/api/reminders/delete", post_reminder_delete)
     app.router.add_static("/assets/", WEBAPP_DIR / "assets")
     return app
 

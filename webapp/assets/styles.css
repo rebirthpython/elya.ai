@@ -1655,6 +1655,7 @@ body.is-thinking .glow--think {
 .sheet.is-opening .block:nth-child(6) { animation-delay: 0.38s; }
 .sheet.is-opening .block:nth-child(7) { animation-delay: 0.44s; }
 .sheet.is-opening .block:nth-child(8) { animation-delay: 0.5s; }
+.sheet.is-opening .block:nth-child(9) { animation-delay: 0.56s; }
 
 .block {
   margin-top: 16px;
@@ -2255,6 +2256,149 @@ body.is-thinking .glow--think {
 .row-btn.is-armed {
   background: var(--danger-bg);
   animation: shake 0.4s ease;
+}
+
+/* ---------- Напоминания ---------- */
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.card .memory__empty:first-child,
+.card .facts + .memory__empty {
+  border-top: 0;
+}
+
+.bell-badge {
+  position: absolute;
+  top: 2px;
+  right: 1px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--grad-ink);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--bg);
+  animation: pop-in 0.45s var(--spring) both;
+}
+
+.bell-badge.is-bump {
+  animation: badge-bump 0.6s var(--spring) both;
+}
+
+.icon-btn {
+  position: relative;
+}
+
+.icon-btn.is-ringing svg {
+  animation: ring-bell 0.9s ease both;
+  transform-origin: 50% 10%;
+}
+
+@keyframes badge-bump {
+  30% { transform: scale(1.5); }
+}
+
+@keyframes ring-bell {
+  15% { transform: rotate(18deg); }
+  30% { transform: rotate(-16deg); }
+  45% { transform: rotate(12deg); }
+  60% { transform: rotate(-8deg); }
+  75% { transform: rotate(4deg); }
+}
+
+.fact__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.fact__body .fact__text {
+  display: block;
+}
+
+.fact__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-top: 1px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.3;
+}
+
+.fact__tag {
+  padding: 0 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--rose) 14%, transparent);
+  color: var(--rose);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.reminders-soon .fact__meta b {
+  color: var(--rose);
+}
+
+.reminder-form {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px 8px 14px;
+}
+
+.reminder-form__text {
+  width: 100%;
+}
+
+.reminder-form__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.reminder-form__when,
+.reminder-form__repeat {
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  transition: border-color 0.25s, box-shadow 0.25s;
+}
+
+.reminder-form__when {
+  flex: 1.5;
+}
+
+.reminder-form__repeat {
+  flex: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  text-overflow: ellipsis;
+}
+
+.reminder-form__when:focus-visible,
+.reminder-form__repeat:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--rose) 60%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--rose) 14%, transparent);
+}
+
+.reminder-form .fact-form__btn {
+  margin-left: 2px;
 }
 
 /* ---------- Плавная смена темы ---------- */

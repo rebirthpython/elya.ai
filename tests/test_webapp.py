@@ -18,6 +18,7 @@ from memory.manager import MemoryManager
 from memory.repository import MessageRepository
 from services.chat import ChatService
 from services.longterm import MAX_FACTS, LongTermMemory
+from services.reminders import Reminders
 from services.preferences import PreferencesStore
 from services.rate_limit import SlidingWindowLimiter
 from services.usage import UsageTracker
@@ -88,6 +89,8 @@ async def env(tmp_path):
     memory = MemoryManager(MessageRepository(session_factory, store_limit=500), history_limit=30)
     preferences = PreferencesStore(session_factory)
     long_memory = LongTermMemory(session_factory)
+    now = datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc)  # пятница
+    reminders = Reminders(session_factory, clock=lambda: now)
     clients: list[TestClient] = []
 
     async def make(*, providers=None, daily_limit=100, rate_limit=10, **settings_overrides):
@@ -100,13 +103,14 @@ async def env(tmp_path):
         ai_client = AIClient(providers, max_tokens=256, temperature=0.5, usage=usage)
         app = create_web_app(
             settings,
-            ChatService(settings, ai_client, memory, preferences, long_memory),
+            ChatService(settings, ai_client, memory, preferences, long_memory, reminders),
             memory,
             usage,
             ai_client,
             SlidingWindowLimiter(rate_limit),
             preferences,
             long_memory,
+            reminders,
         )
         client = TestClient(TestServer(app))
         await client.start_server()
@@ -115,6 +119,7 @@ async def env(tmp_path):
 
     yield {
         "make": make, "memory": memory, "preferences": preferences, "long_memory": long_memory,
+        "reminders": reminders,
     }
     for client in clients:
         await client.close()
@@ -247,6 +252,7 @@ async def test_state_describes_assistant_models_and_history(env):
     assert data["memory"] == {
         "enabled": False, "facts": [], "max_facts": MAX_FACTS, "max_fact_length": 200,
     }
+    assert data["reminders"] == {"timezone": None, "items": [], "max": 50, "max_text": 300}
     assert [o["id"] for o in data["preference_options"]["style"]] == [
         "friendly", "caring", "playful", "business",
     ]
@@ -524,3 +530,90 @@ async def test_enabled_memory_reaches_the_prompt_via_the_app(env):
     await client.post("/api/memory/add", json={"text": "Любит чай без сахара"}, headers=auth())
     await client.post("/api/chat", json={"text": "привет"}, headers=auth())
     assert "Любит чай без сахара" in providers[0].calls[0][1][0].content
+
+
+# ---------- напоминания ----------
+
+
+async def test_timezone_is_saved_from_the_phone(env):
+    client, _ = await env["make"]()
+    response = await client.post("/api/timezone", json={"tz": "Europe/Moscow"}, headers=auth())
+    assert response.status == 200 and (await response.json())["timezone"] == "Europe/Moscow"
+    state = await (await client.get("/api/state", headers=auth())).json()
+    assert state["reminders"]["timezone"] == "Europe/Moscow"
+    response = await client.post("/api/timezone", json={"tz": "Mars/Base"}, headers=auth())
+    assert response.status == 400 and (await response.json())["error"]["code"] == "bad_timezone"
+    for body in ({}, {"tz": 5}, {"tz": "x" * 100}):
+        assert (await client.post("/api/timezone", json=body, headers=auth())).status == 400
+
+
+async def test_add_list_delete_reminders_in_the_users_timezone(env):
+    client, _ = await env["make"]()
+    await client.post("/api/timezone", json={"tz": "Europe/Moscow"}, headers=auth())
+
+    body = {"text": "  Позвонить   маме ", "when": "2026-11-14T09:00", "repeat": "weekly"}
+    data = await (await client.post("/api/reminders/add", json=body, headers=auth())).json()
+    [item] = data["items"]
+    assert item["text"] == "Позвонить маме" and item["repeat"] == "weekly"
+    # 09:00 по Москве = 06:00 UTC
+    assert item["due"] == int(datetime(2026, 11, 14, 6, 0, tzinfo=timezone.utc).timestamp())
+
+    await client.post("/api/reminders/add", json={"text": "Раньше", "when": "2026-11-13T20:00:30"}, headers=auth())
+    state = await (await client.get("/api/state", headers=auth())).json()
+    assert [r["text"] for r in state["reminders"]["items"]] == ["Раньше", "Позвонить маме"]
+
+    data = await (await client.post("/api/reminders/delete", json={"id": item["id"]}, headers=auth())).json()
+    assert [r["text"] for r in data["items"]] == ["Раньше"]
+
+
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [
+        ({"text": "x", "when": "2026-11-13T15:00"}, "past"),  # сейчас 15:00 по Москве
+        ({"text": "x", "when": "2026-11-12T09:00"}, "past"),
+        ({"text": "x", "when": "2028-01-01T09:00"}, "far"),
+        ({"text": "x", "when": "завтра"}, "bad_request"),
+        ({"text": "x", "when": "2026-11-14T09:00+03:00"}, "bad_request"),
+        ({"text": "  ", "when": "2026-11-14T09:00"}, "bad_request"),
+        ({"text": "я" * 301, "when": "2026-11-14T09:00"}, "too_long"),
+        ({"text": "x", "when": "2026-11-14T09:00", "repeat": "yearly"}, "bad_request"),
+        ({"text": 5, "when": "2026-11-14T09:00"}, "bad_request"),
+        ({"when": "2026-11-14T09:00"}, "bad_request"),
+    ],
+)
+async def test_add_reminder_validates(env, body, code):
+    client, _ = await env["make"]()
+    await client.post("/api/timezone", json={"tz": "Europe/Moscow"}, headers=auth())
+    response = await client.post("/api/reminders/add", json=body, headers=auth())
+    assert response.status == 400 and (await response.json())["error"]["code"] == code
+    assert await env["reminders"].list_pending(OWNER_ID) == []
+
+
+async def test_add_reminder_needs_a_timezone(env):
+    client, _ = await env["make"]()
+    response = await client.post("/api/reminders/add", json={"text": "x", "when": "2026-11-14T09:00"}, headers=auth())
+    assert response.status == 400 and (await response.json())["error"]["code"] == "no_timezone"
+
+
+async def test_reminders_are_private_and_protected(env):
+    client, _ = await env["make"](allowed_user_ids=frozenset({OWNER_ID, 222}))
+    await client.post("/api/timezone", json={"tz": "UTC+3"}, headers=auth())
+    await client.post("/api/reminders/add", json={"text": "моё", "when": "2026-11-14T09:00"}, headers=auth())
+    mine = (await env["reminders"].list_pending(OWNER_ID))[0]
+
+    other = auth(sign_init_data(222))
+    assert (await (await client.get("/api/state", headers=other)).json())["reminders"]["items"] == []
+    await client.post("/api/reminders/delete", json={"id": mine.id}, headers=other)
+    assert len(await env["reminders"].list_pending(OWNER_ID)) == 1
+
+    for path in ("/api/timezone", "/api/reminders/add", "/api/reminders/delete"):
+        assert (await client.post(path, json={}, headers={})).status == 401
+        assert (await client.post(path, json={}, headers=auth(sign_init_data(STRANGER_ID)))).status == 403
+
+
+async def test_ordinary_chat_messages_do_not_touch_reminders(env):
+    client, _ = await env["make"]()
+    await client.post("/api/timezone", json={"tz": "Europe/Moscow"}, headers=auth())
+    response = await client.post("/api/chat", json={"text": "расскажи про Рим"}, headers=auth())
+    assert (await response.json())["reply"]["provider"] == "alpha"
+    assert await env["reminders"].list_pending(OWNER_ID) == []

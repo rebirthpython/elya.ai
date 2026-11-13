@@ -16,6 +16,7 @@ from config.settings import ProviderConfig, Settings
 from database.session import create_engine, create_session_factory, init_db
 from main import create_dispatcher
 from services.longterm import LongTermMemory
+from services.reminders import Reminders
 from memory.manager import MemoryManager
 from memory.repository import MessageRepository
 from services.usage import UsageTracker
@@ -87,15 +88,19 @@ async def env(tmp_path):
     bot = Bot(token="42:TEST", session=session)
 
     long_memory = LongTermMemory(session_factory)
+    reminders = Reminders(
+        session_factory, ai_client, clock=lambda: datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc)
+    )
 
     def make(settings=None):
         return create_dispatcher(
-            settings or _settings(), ai_client, memory, usage, long_memory=long_memory
+            settings or _settings(), ai_client, memory, usage,
+            long_memory=long_memory, reminders=reminders,
         )
 
     yield {
         "bot": bot, "session": session, "provider": provider, "memory": memory,
-        "usage": usage, "make": make, "long_memory": long_memory,
+        "usage": usage, "make": make, "long_memory": long_memory, "reminders": reminders,
     }
     await engine.dispose()
 
@@ -192,7 +197,7 @@ async def test_clear_with_confirmation(env):
 
 async def test_unknown_command_and_unsupported_content(env):
     dp = env["make"]()
-    await dp.feed_update(env["bot"], _message_update("/remind"))
+    await dp.feed_update(env["bot"], _message_update("/nosuchcommand"))
     assert "не знаю" in env["session"].sent_texts()[-1]
     assert env["provider"].received == []
 
@@ -262,4 +267,110 @@ async def test_memory_command_toggle_and_forget(env):
 async def test_memory_commands_are_blocked_for_strangers(env):
     dp = env["make"]()
     await dp.feed_update(env["bot"], _message_update("/memory", user_id=STRANGER_ID))
+    assert env["session"].requests == []
+
+
+async def test_timezone_and_reminders_commands(env):
+    dp = env["make"]()
+    rem = env["reminders"]
+
+    await dp.feed_update(env["bot"], _message_update("/timezone"))
+    assert "пока не задан" in env["session"].sent_texts()[-1]
+    await dp.feed_update(env["bot"], _message_update("/timezone Mars/Base"))
+    assert "Не знаю такого" in env["session"].sent_texts()[-1]
+    await dp.feed_update(env["bot"], _message_update("/timezone utc+3"))
+    assert "UTC+03:00" in env["session"].sent_texts()[-1]
+    await dp.feed_update(env["bot"], _message_update("/timezone"))
+    assert "UTC+03:00" in env["session"].sent_texts()[-1] and "/timezone Europe/Moscow" in env["session"].sent_texts()[-1]
+
+    await dp.feed_update(env["bot"], _message_update("/reminders"))
+    assert "Напоминаний нет" in env["session"].sent_texts()[-1]
+
+    from datetime import timedelta
+
+    tz = await rem.tzinfo(OWNER_ID)
+    first = await rem.create(OWNER_ID, "Позвонить <маме>", rem.now() + timedelta(hours=3), "daily", tz=tz)
+    await rem.create(OWNER_ID, "Второе", rem.now() + timedelta(days=1), tz=tz)
+    await dp.feed_update(env["bot"], _message_update("/reminders"))
+    listing = [m for m in env["session"].requests if isinstance(m, SendMessage)][-1]
+    assert "сегодня в 18:00" in listing.text and "Позвонить &lt;маме&gt;" in listing.text
+    assert "🔁 каждый день" in listing.text and "завтра в 15:00" in listing.text
+    assert [b.text for b in listing.reply_markup.inline_keyboard[0]] == ["🗑 1", "🗑 2"]
+
+    from bot.keyboards.reminders import ReminderCallback
+
+    await dp.feed_update(env["bot"], _callback_update(ReminderCallback(action="del", id=first.id).pack()))
+    assert [r.text for r in await rem.list_pending(OWNER_ID)] == ["Второе"]
+    assert "Позвонить" not in env["session"].sent_texts()[-1]
+
+
+async def test_remind_command_without_arguments_explains(env):
+    dp = env["make"]()
+    await dp.feed_update(env["bot"], _message_update("/remind"))
+    assert "напомни завтра в 9" in env["session"].sent_texts()[-1]
+    await dp.feed_update(env["bot"], _message_update("/remind завтра в 9 позвонить"))
+    assert "часовой пояс" in env["session"].sent_texts()[-1]  # пока пояс не задан
+
+
+async def test_reminder_buttons_snooze_and_done(env):
+    from datetime import timedelta
+
+    from bot.keyboards.reminders import ReminderCallback, fired_keyboard
+
+    dp = env["make"]()
+    rem = env["reminders"]
+    item = await rem.create(OWNER_ID, "Выпить воду", rem.now() - timedelta(minutes=1))
+    assert [b.text for row in fired_keyboard(item.id).inline_keyboard for b in row] == [
+        "⏰ +10 мин", "⏰ +1 час", "✅ Готово",
+    ]
+
+    await dp.feed_update(env["bot"], _callback_update(ReminderCallback(action="snooze", id=item.id, minutes=10).pack()))
+    pending = [r for r in await rem.list_pending(OWNER_ID) if r.id != item.id]
+    assert len(pending) == 1 and pending[0].text == "Выпить воду"
+    assert pending[0].due_at == rem.now() + timedelta(minutes=10)
+    assert "через 10 минут" in env["session"].sent_texts()[-1]
+
+    await dp.feed_update(env["bot"], _callback_update(ReminderCallback(action="snooze", id=987654, minutes=10).pack()))
+    assert len(await rem.list_pending(OWNER_ID)) == 2  # несуществующее — ничего не создаёт
+    await dp.feed_update(env["bot"], _callback_update(ReminderCallback(action="done", id=item.id).pack()))
+    assert "✅ Готово" in env["session"].sent_texts()[-1]
+
+
+async def test_sender_delivers_with_buttons_and_classifies_errors(env):
+    from datetime import timedelta
+
+    from aiogram.exceptions import TelegramForbiddenError, TelegramNetworkError
+
+    from bot.handlers.reminders import make_sender
+    from services.reminders import DeliveryError, ReminderItem
+
+    rem = env["reminders"]
+    item = ReminderItem(7, OWNER_ID, "Позвонить <маме>", rem.now(), "none", 1, "pending", 0)
+    await make_sender(env["bot"])(item, "Должно было прийти вчера.")
+    sent = [m for m in env["session"].requests if isinstance(m, SendMessage)][-1]
+    assert sent.chat_id == OWNER_ID and sent.parse_mode == "HTML"
+    assert "<b>Напоминание</b>" in sent.text and "Позвонить &lt;маме&gt;" in sent.text
+    assert "Должно было прийти вчера" in sent.text
+    assert sent.reply_markup.inline_keyboard[0][0].callback_data.startswith("rem:snooze:7:10")
+
+    class Failing:
+        def __init__(self, error):
+            self.error = error
+
+        async def send_message(self, *args, **kwargs):
+            raise self.error
+
+    blocked = TelegramForbiddenError(method=None, message="Forbidden: bot was blocked by the user")
+    with pytest.raises(DeliveryError) as info:
+        await make_sender(Failing(blocked))(item, None)
+    assert info.value.permanent is True
+    with pytest.raises(DeliveryError) as info:
+        await make_sender(Failing(TelegramNetworkError(method=None, message="timeout")))(item, None)
+    assert info.value.permanent is False
+
+
+async def test_reminder_commands_are_blocked_for_strangers(env):
+    dp = env["make"]()
+    for command in ("/reminders", "/timezone UTC+3", "/remind завтра в 9 позвонить"):
+        await dp.feed_update(env["bot"], _message_update(command, user_id=STRANGER_ID))
     assert env["session"].requests == []

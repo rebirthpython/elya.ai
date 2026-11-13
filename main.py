@@ -31,7 +31,9 @@ from database.session import (
 from memory.manager import MemoryManager
 from memory.repository import MessageRepository
 from services.chat import ChatService
+from bot.handlers.reminders import make_sender
 from services.longterm import LongTermMemory
+from services.reminders import ReminderScheduler, Reminders
 from services.preferences import PreferencesStore
 from services.rate_limit import SlidingWindowLimiter
 from services.usage import UsageTracker
@@ -42,6 +44,8 @@ logger = logging.getLogger("assistant")
 BOT_COMMANDS = [
     BotCommand(command="start", description="Запуск и приветствие"),
     BotCommand(command="help", description="Что я умею"),
+    BotCommand(command="reminders", description="Мои напоминания"),
+    BotCommand(command="timezone", description="Часовой пояс для напоминаний"),
     BotCommand(command="memory", description="Что я о тебе помню"),
     BotCommand(command="forget", description="Забыть всё, что я о тебе помню"),
     BotCommand(command="clear", description="Очистить историю диалога"),
@@ -58,6 +62,7 @@ def create_dispatcher(
     chat_service: ChatService | None = None,
     limiter: SlidingWindowLimiter | None = None,
     long_memory: LongTermMemory | None = None,
+    reminders: Reminders | None = None,
 ) -> Dispatcher:
     """chat_service и limiter передаются снаружи, когда их делит с ботом Mini App."""
     dp = Dispatcher(storage=MemoryStorage())
@@ -66,6 +71,7 @@ def create_dispatcher(
     dp["memory"] = memory
     dp["usage"] = usage
     dp["long_memory"] = long_memory
+    dp["reminders"] = reminders
     dp["chat_service"] = chat_service or ChatService(settings, ai_client, memory)
 
     dp.update.outer_middleware(AccessMiddleware(settings.allowed_user_ids))
@@ -127,7 +133,8 @@ async def run(settings: Settings) -> None:
 
     preferences = PreferencesStore(session_factory)
     long_memory = LongTermMemory(session_factory, ai_client)
-    chat_service = ChatService(settings, ai_client, memory, preferences, long_memory)
+    reminders = Reminders(session_factory, ai_client)
+    chat_service = ChatService(settings, ai_client, memory, preferences, long_memory, reminders)
     limiter = SlidingWindowLimiter(settings.rate_limit_per_minute)
 
     bot = Bot(token=settings.bot_token)
@@ -139,8 +146,10 @@ async def run(settings: Settings) -> None:
         chat_service=chat_service,
         limiter=limiter,
         long_memory=long_memory,
+        reminders=reminders,
     )
     web_runner = None
+    scheduler_task = None
 
     try:
         try:
@@ -165,6 +174,7 @@ async def run(settings: Settings) -> None:
                         limiter,
                         preferences,
                         long_memory,
+                        reminders,
                     ),
                     settings.webapp_host,
                     settings.webapp_port,
@@ -183,8 +193,13 @@ async def run(settings: Settings) -> None:
             ", ".join(f"{p.name}[{','.join(p.models)}]" for p in settings.providers),
             settings.webapp_url or "off (set WEBAPP_URL to enable)",
         )
+        scheduler = ReminderScheduler(reminders, make_sender(bot))
+        scheduler_task = asyncio.create_task(scheduler.run(), name="reminders")
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        if scheduler_task is not None:
+            scheduler_task.cancel()
+            await asyncio.gather(scheduler_task, return_exceptions=True)
         if web_runner is not None:
             await web_runner.cleanup()
         await http_client.aclose()

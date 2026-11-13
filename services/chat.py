@@ -17,6 +17,7 @@ from config.settings import Settings
 from memory.manager import MemoryManager
 from services.longterm import LongTermMemory
 from services.preferences import Preferences, PreferencesStore
+from services.reminders import Reminders
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +30,14 @@ class ChatService:
         memory: MemoryManager,
         preferences: PreferencesStore | None = None,
         long_memory: LongTermMemory | None = None,
+        reminders: Reminders | None = None,
     ) -> None:
         self._settings = settings
         self._ai = ai_client
         self._memory = memory
         self._preferences = preferences
         self._long_memory = long_memory
+        self._reminders = reminders
         self._background: set[asyncio.Task] = set()
         # Сообщения одного пользователя обрабатываются строго по очереди,
         # чтобы история диалога сохранялась в правильном порядке.
@@ -52,6 +55,13 @@ class ChatService:
         история при этом не меняется."""
         settings = self._settings
         async with self._locks[user_id]:
+            if self._reminders is not None:
+                # Просьба «напомни …» обрабатывается кодом, а не моделью: так Эля не может
+                # пообещать напоминание, которого нет. Ошибки ИИ (AIError) идут как обычно.
+                handled = await self._reminders.handle_chat_request(user_id, user_text)
+                if handled is not None:
+                    await self._memory.save_exchange(user_id, user_text, handled)
+                    return CompletionResult(text=handled, provider="reminders", model="")
             history = await self._memory.get_history(user_id)
             prefs = (
                 await self._preferences.get(user_id) if self._preferences else Preferences()

@@ -58,6 +58,18 @@
     factAdd: $('fact-add'),
     factsClear: $('facts-clear'),
     factsClearLabel: $('facts-clear-label'),
+    bellBtn: $('bell-btn'),
+    bellBadge: $('bell-badge'),
+    sheetBody: $('sheet-body'),
+    remindersBlock: $('reminders-block'),
+    remindersList: $('reminders-list'),
+    remindersEmpty: $('reminders-empty'),
+    reminderForm: $('reminder-form'),
+    reminderText: $('reminder-text'),
+    reminderWhen: $('reminder-when'),
+    reminderRepeat: $('reminder-repeat'),
+    reminderAdd: $('reminder-add'),
+    tzNote: $('tz-note'),
     usageValue: $('usage-value'),
     usageLimit: $('usage-limit'),
     usageBar: $('usage-bar'),
@@ -100,6 +112,7 @@
     preferenceOptions: { style: [], verbosity: [] },
     memory: { enabled: false, facts: [], max_facts: 50, max_fact_length: 200 },
     memoryTimers: [],
+    reminders: { timezone: null, items: [], max: 50, max_text: 300 },
     clearArmed: null,
   };
 
@@ -275,6 +288,9 @@
     memoryAdd: (text) => request('api/memory/add', { text }),
     memoryDelete: (id) => request('api/memory/delete', { id }),
     memoryClear: () => request('api/memory/delete', { all: true }),
+    setTimezone: (tz) => request('api/timezone', { tz }),
+    reminderAdd: (text, when, repeat) => request('api/reminders/add', { text, when, repeat }),
+    reminderDelete: (id) => request('api/reminders/delete', { id }),
   };
 
   /* Демо-режим: тот же интерфейс, но без сервера и настоящей модели. */
@@ -299,6 +315,9 @@
     let preferences = { style: 'friendly', verbosity: 'normal' };
     let memory = { enabled: false, facts: [], max_facts: 50, max_fact_length: 200 };
     let factId = 0;
+    let reminders = { timezone: null, items: [], max: 50, max_text: 300 };
+    let reminderId = 0;
+    const remindersView = () => JSON.parse(JSON.stringify(reminders));
     const memoryView = () => JSON.parse(JSON.stringify(memory));
 
     return {
@@ -318,6 +337,7 @@
           limits: { max_text_length: 4000 },
           preferences: Object.assign({}, preferences),
           memory: memoryView(),
+          reminders: remindersView(),
           preference_options: {
             style: [
               { id: 'friendly', title: 'Дружелюбный', description: 'Тепло, с лёгким юмором' },
@@ -358,6 +378,24 @@
         memory.facts = memory.facts.filter((fact) => fact.id !== id);
         return memoryView();
       },
+      async setTimezone(tz) {
+        reminders.timezone = tz;
+        return remindersView();
+      },
+      async reminderAdd(text, when, repeat) {
+        await sleep(200);
+        const due = Math.floor(new Date(when).getTime() / 1000);
+        if (!(due > nowTs())) throw new ApiError('past', 'Это время уже прошло. Выбери время в будущем.', 400);
+        reminderId += 1;
+        reminders.items.push({ id: reminderId, text, due, repeat });
+        reminders.items.sort((a, b) => a.due - b.due);
+        return remindersView();
+      },
+      async reminderDelete(id) {
+        await sleep(150);
+        reminders.items = reminders.items.filter((item) => item.id !== id);
+        return remindersView();
+      },
       async memoryClear() {
         await sleep(150);
         memory.facts = [];
@@ -367,6 +405,13 @@
         await sleep(1100 + Math.random() * 700);
         if (/ошибк/i.test(text)) {
           throw new ApiError('ai_unavailable', 'ИИ-сервис сейчас не отвечает. Отправь сообщение ещё раз чуть позже.', 503);
+        }
+        if (/напомни/i.test(text)) {
+          reminderId += 1;
+          reminders.items.push({ id: reminderId, text: text.replace(/^.*?напомни\S*\s*/i, '') || 'Напоминание', due: nowTs() + 3600, repeat: 'none' });
+          const content = 'Хорошо, напомню через 1 ч: ' + text.replace(/^.*?напомни\S*\s*/i, '') + ' ⏰\nВсе напоминания — в /reminders или в приложении (кнопка 🔔).';
+          history.push({ role: 'user', content: text, ts: nowTs() }, { role: 'assistant', content, ts: nowTs() });
+          return { reply: { role: 'assistant', content, ts: nowTs(), provider: 'reminders', model: '', truncated: false }, usage: { used, limit: 300 } };
         }
         const content = replies[turn % replies.length];
         turn += 1;
@@ -864,6 +909,7 @@
       haptic('impact', 'soft');
       if (data.usage) state.usage = data.usage;
       watchNewMemories();
+      if (data.reply && data.reply.provider === 'reminders') refreshReminders();
       state.signature = '';
       state.syncedAt = Date.now();
       setBusy(false);
@@ -1025,6 +1071,148 @@
     const current = options.verbosity.find((option) => option.id === prefs.verbosity);
     dom.verbosityNote.textContent = current ? current.description + '.' : '';
     setSegment(dom.themeControl, state.theme);
+  }
+
+  /* ---------- Напоминания ---------- */
+
+  const REPEAT_TITLES = { daily: 'каждый день', weekdays: 'по будням', weekly: 'каждую неделю', monthly: 'каждый месяц' };
+  const dueDayFormat = new Intl.DateTimeFormat('ru-RU', { weekday: 'short', day: 'numeric', month: 'long' });
+
+  function formatDue(ts) {
+    const date = new Date(ts * 1000);
+    const clock = timeFormat.format(date);
+    const today = new Date();
+    const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+    if (dayKey(date) === dayKey(today)) return 'Сегодня, ' + clock;
+    if (dayKey(date) === dayKey(tomorrow)) return 'Завтра, ' + clock;
+    return dueDayFormat.format(date) + ', ' + clock;
+  }
+
+  function deviceTimezone() {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    } catch (error) {
+      return '';
+    }
+  }
+
+  /* Значение для <input type="datetime-local">: местное время «ГГГГ-ММ-ДДTЧЧ:ММ». */
+  function localInputValue(date) {
+    const pad = (n) => String(n).padStart(2, '0');
+    return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) +
+      'T' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+  }
+
+  function suggestedReminderTime() {
+    const date = new Date(Date.now() + 3600 * 1000);
+    date.setMinutes(Math.ceil(date.getMinutes() / 5) * 5, 0, 0);
+    return date;
+  }
+
+  function updateBell(previous) {
+    const count = state.reminders.items.length;
+    dom.bellBadge.hidden = count === 0;
+    dom.bellBadge.textContent = count > 99 ? '99+' : String(count);
+    if (typeof previous === 'number' && count > previous) {
+      dom.bellBadge.classList.remove('is-bump');
+      void dom.bellBadge.offsetWidth;
+      dom.bellBadge.classList.add('is-bump');
+      dom.bellBtn.classList.remove('is-ringing');
+      void dom.bellBtn.offsetWidth;
+      dom.bellBtn.classList.add('is-ringing');
+    }
+  }
+
+  function renderReminders(options) {
+    const opts = options || {};
+    const { items, timezone } = state.reminders;
+    const soon = Date.now() / 1000 + 3600;
+    dom.remindersList.replaceChildren(...items.map((item, index) => {
+      const fresh = opts.fresh && opts.fresh.has(item.id);
+      const li = el('li', 'fact' + (fresh ? ' fact--fresh' : opts.stagger ? ' fact--in' : ''));
+      li.style.setProperty('--i', index);
+      li.dataset.id = String(item.id);
+      const body = el('div', 'fact__body');
+      body.append(el('span', 'fact__text', item.text));
+      const meta = el('div', 'fact__meta');
+      meta.append(el('b', '', formatDue(item.due)));
+      if (REPEAT_TITLES[item.repeat]) meta.append(el('span', 'fact__tag', '🔁 ' + REPEAT_TITLES[item.repeat]));
+      body.append(meta);
+      const remove = el('button', 'fact__remove ripple');
+      remove.type = 'button';
+      remove.dataset.removeReminder = String(item.id);
+      remove.setAttribute('aria-label', 'Удалить напоминание: ' + item.text);
+      remove.append(icon('i-close'));
+      li.append(body, remove);
+      if (item.due < soon) li.classList.add('reminders-soon');
+      return li;
+    }));
+    dom.remindersEmpty.hidden = items.length > 0;
+    dom.reminderText.maxLength = state.reminders.max_text;
+    dom.reminderAdd.disabled = !dom.reminderText.value.trim() || !dom.reminderWhen.value;
+    dom.tzNote.textContent = 'Эля пришлёт напоминание сообщением в Telegram. Часовой пояс' +
+      (timezone ? ': ' + timezone + ' (определён по телефону).' : ' определяется по телефону.');
+    updateBell();
+  }
+
+  function takeReminders(data, options) {
+    const previous = state.reminders.items.length;
+    state.reminders = Object.assign({}, state.reminders, data);
+    renderReminders(options);
+    updateBell(previous);
+  }
+
+  /* Часовой пояс телефона — единственный источник истины: от него зависит время напоминаний. */
+  async function syncTimezone() {
+    const device = deviceTimezone();
+    if (!device || device === state.reminders.timezone) return;
+    try {
+      takeReminders(await backend.setTimezone(device));
+    } catch (error) { /* напоминания из чата попросят пояс сами */ }
+  }
+
+  async function addReminder() {
+    const text = dom.reminderText.value.trim();
+    const when = dom.reminderWhen.value;
+    if (!text || !when) return;
+    dom.reminderAdd.disabled = true;
+    try {
+      const before = new Set(state.reminders.items.map((item) => item.id));
+      const data = await backend.reminderAdd(text, when, dom.reminderRepeat.value);
+      const fresh = new Set(data.items.filter((item) => !before.has(item.id)).map((item) => item.id));
+      dom.reminderText.value = '';
+      dom.reminderRepeat.value = 'none';
+      dom.reminderWhen.value = localInputValue(suggestedReminderTime());
+      takeReminders(data, { fresh });
+      haptic('notify', 'success');
+      showToast('⏰ Напомню: ' + formatDue(data.items.find((item) => fresh.has(item.id)).due).toLowerCase());
+    } catch (error) {
+      renderReminders();
+      showToast(error.message);
+      haptic('notify', 'error');
+    }
+  }
+
+  async function removeReminder(id) {
+    const item = dom.remindersList.querySelector('[data-id="' + id + '"]');
+    if (item) item.classList.add('is-leaving');
+    haptic('impact', 'light');
+    try {
+      const [data] = await Promise.all([backend.reminderDelete(id), sleep(reducedMotion ? 0 : 300)]);
+      takeReminders(data);
+    } catch (error) {
+      if (item) item.classList.remove('is-leaving');
+      showToast(error.message);
+      haptic('notify', 'error');
+    }
+  }
+
+  /* Напоминание могли поставить фразой в чате — подтягиваем список с сервера. */
+  async function refreshReminders() {
+    try {
+      const data = await backend.state();
+      if (data.reminders) takeReminders(data.reminders);
+    } catch (error) { /* не критично */ }
   }
 
   /* ---------- Память ---------- */
@@ -1220,10 +1408,14 @@
     dom.clearYes.disabled = false;
   }
 
-  function openSheet() {
+  function openSheet(options) {
+    const opts = options || {};
     renderModels();
     renderPreferences();
     renderMemory({ stagger: true });
+    dom.reminderWhen.min = localInputValue(new Date());
+    if (!dom.reminderWhen.value) dom.reminderWhen.value = localInputValue(suggestedReminderTime());
+    renderReminders({ stagger: true });
     resetClearConfirm();
     if (state.sheetAnim) state.sheetAnim.cancel();
     state.sheetClosing = false;
@@ -1250,6 +1442,15 @@
     setTimeout(renderUsage, reducedMotion ? 0 : 180);
     if (supports('6.1')) tg.BackButton.show();
     haptic('impact', 'light');
+    if (opts.focus === 'reminders') {
+      // Колокольчик открывает настройки сразу на напоминаниях.
+      setTimeout(() => {
+        const offset = dom.remindersBlock.getBoundingClientRect().top - dom.sheetBody.getBoundingClientRect().top;
+        dom.sheetBody.scrollTo({ top: dom.sheetBody.scrollTop + offset - 8, behavior: reducedMotion ? 'auto' : 'smooth' });
+      }, reducedMotion ? 0 : 380);
+    } else {
+      dom.sheetBody.scrollTop = 0;
+    }
   }
 
   function closeSheet() {
@@ -1377,6 +1578,7 @@
     state.maxLength = (data.limits && data.limits.max_text_length) || 4000;
     if (data.preferences) state.preferences = data.preferences;
     if (data.memory) state.memory = Object.assign({}, state.memory, data.memory);
+    if (data.reminders) state.reminders = Object.assign({}, state.reminders, data.reminders);
     if (data.preference_options) state.preferenceOptions = data.preference_options;
     state.syncedAt = Date.now();
 
@@ -1409,6 +1611,8 @@
       return;
     }
     applyState(data);
+    updateBell();
+    syncTimezone();
     dom.app.hidden = false;
     if (!reducedMotion) {
       dom.app.classList.add('is-entering');
@@ -1434,6 +1638,10 @@
     if (state.busy || state.finishReveal) return;
     state.usage = data.usage || state.usage;
     if (data.memory && dom.sheet.hidden) state.memory = Object.assign({}, state.memory, data.memory);
+    if (data.reminders && dom.sheet.hidden) {
+      state.reminders = Object.assign({}, state.reminders, data.reminders);
+      updateBell();
+    }
     setStatus('online');
     const history = data.history || [];
     const signature = historySignature(history);
@@ -1510,7 +1718,21 @@
     bindSheetDrag();
     dom.scrollDown.addEventListener('click', () => scrollToBottom(true));
 
-    dom.menuBtn.addEventListener('click', openSheet);
+    dom.menuBtn.addEventListener('click', () => openSheet());
+    dom.bellBtn.addEventListener('click', () => openSheet({ focus: 'reminders' }));
+    dom.reminderForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      addReminder();
+    });
+    const updateReminderAdd = () => {
+      dom.reminderAdd.disabled = !dom.reminderText.value.trim() || !dom.reminderWhen.value;
+    };
+    dom.reminderText.addEventListener('input', updateReminderAdd);
+    dom.reminderWhen.addEventListener('input', updateReminderAdd);
+    dom.remindersList.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-remove-reminder]');
+      if (button) removeReminder(Number(button.dataset.removeReminder));
+    });
     dom.sheetClose.addEventListener('click', closeSheet);
     dom.backdrop.addEventListener('click', closeSheet);
     document.addEventListener('keydown', (event) => {

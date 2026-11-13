@@ -79,3 +79,29 @@ class MemorySettings(Base):
 
     user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class UserTimezone(Base):
+    """Часовой пояс пользователя (IANA-имя или смещение UTC±HH:MM) — для напоминаний."""
+
+    __tablename__ = "user_timezones"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    tz: Mapped[str] = mapped_column(String(64))
+
+
+class Reminder(Base):
+    """Напоминание. Время хранится в UTC; повторяющееся переносится после отправки."""
+
+    __tablename__ = "reminders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    text: Mapped[str] = mapped_column(String(400))
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    repeat: Mapped[str] = mapped_column(String(8), default="none")
+    anchor_day: Mapped[int] = mapped_column(Integer, default=1)  # число месяца для «каждый месяц»
+    status: Mapped[str] = mapped_column(String(8), default="pending")  # pending | sent | failed
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
