@@ -45,6 +45,9 @@ class Settings:
     webapp_host: str = "0.0.0.0"
     webapp_port: int = 8080
     webapp_auth_max_age: int = 86400
+    # Голосовые: ключ Groq (тот же, что для провайдера groq) и модель распознавания
+    speech_api_key: str = ""
+    speech_model: str = "whisper-large-v3-turbo"
 
     @property
     def webapp_enabled(self) -> bool:
@@ -230,4 +233,6 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         webapp_host=_get_str("WEBAPP_HOST", "0.0.0.0") or "0.0.0.0",
         webapp_port=_load_webapp_port(),
         webapp_auth_max_age=_get_int("WEBAPP_AUTH_MAX_AGE", 86400, minimum=60),
+        speech_api_key=_get_str("GROQ_API_KEY"),
+        speech_model=_get_str("SPEECH_MODEL", "whisper-large-v3-turbo") or "whisper-large-v3-turbo",
     )

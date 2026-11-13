@@ -33,6 +33,7 @@ from memory.repository import MessageRepository
 from services.chat import ChatService
 from bot.handlers.reminders import make_sender
 from services.longterm import LongTermMemory
+from services.speech import SpeechToText
 from services.reminders import ReminderScheduler, Reminders
 from services.preferences import PreferencesStore
 from services.rate_limit import SlidingWindowLimiter
@@ -63,6 +64,7 @@ def create_dispatcher(
     limiter: SlidingWindowLimiter | None = None,
     long_memory: LongTermMemory | None = None,
     reminders: Reminders | None = None,
+    speech: SpeechToText | None = None,
 ) -> Dispatcher:
     """chat_service и limiter передаются снаружи, когда их делит с ботом Mini App."""
     dp = Dispatcher(storage=MemoryStorage())
@@ -72,6 +74,7 @@ def create_dispatcher(
     dp["usage"] = usage
     dp["long_memory"] = long_memory
     dp["reminders"] = reminders
+    dp["speech"] = speech
     dp["chat_service"] = chat_service or ChatService(settings, ai_client, memory)
 
     dp.update.outer_middleware(AccessMiddleware(settings.allowed_user_ids))
@@ -147,6 +150,11 @@ async def run(settings: Settings) -> None:
         limiter=limiter,
         long_memory=long_memory,
         reminders=reminders,
+        speech=(
+            SpeechToText(settings.speech_api_key, http_client, model=settings.speech_model)
+            if settings.speech_api_key
+            else None
+        ),
     )
     web_runner = None
     scheduler_task = None

@@ -374,3 +374,86 @@ async def test_reminder_commands_are_blocked_for_strangers(env):
     for command in ("/reminders", "/timezone UTC+3", "/remind завтра в 9 позвонить"):
         await dp.feed_update(env["bot"], _message_update(command, user_id=STRANGER_ID))
     assert env["session"].requests == []
+
+
+def _voice_update(duration: int = 3, user_id: int = OWNER_ID) -> Update:
+    from aiogram.types import Voice
+
+    global _update_id
+    _update_id += 1
+    user = User(id=user_id, is_bot=False, first_name="Аня")
+    return Update(
+        update_id=_update_id,
+        message=Message(
+            message_id=_update_id, date=datetime.now(timezone.utc),
+            chat=Chat(id=user_id, type="private"), from_user=user,
+            voice=Voice(file_id="f", file_unique_id="u", duration=duration),
+        ),
+    )
+
+
+class FakeSpeech:
+    def __init__(self, text="", error=None):
+        self.text, self.error, self.calls = text, error, []
+
+    async def transcribe(self, audio, filename="voice.ogg"):
+        self.calls.append(audio)
+        if self.error:
+            raise self.error
+        return self.text
+
+
+def _voice_dispatcher(env, speech):
+    import io
+
+    from main import create_dispatcher as make_dp
+
+    async def download(file, *args, **kwargs):
+        return io.BytesIO(b"OGG")
+
+    env["bot"].download = download
+    return make_dp(_settings(), AIClient([env["provider"]], max_tokens=10, temperature=0.1),
+                   env["memory"], env["usage"], speech=speech)
+
+
+async def test_voice_is_transcribed_and_answered(env):
+    speech = FakeSpeech("запомни что я люблю чай")
+    dp = _voice_dispatcher(env, speech)
+    await dp.feed_update(env["bot"], _voice_update())
+    texts = env["session"].sent_texts()
+    assert speech.calls == [b"OGG"]
+    assert texts[0] == "🎤 <i>запомни что я люблю чай</i>"
+    assert texts[-1] == "<b>Ответ</b> на: запомни что я люблю чай"
+    assert [m.content for m in await env["memory"].get_history(OWNER_ID)][0] == "запомни что я люблю чай"
+
+
+async def test_voice_without_key_explains(env):
+    dp = _voice_dispatcher(env, None)
+    await dp.feed_update(env["bot"], _voice_update())
+    assert "GROQ_API_KEY" in env["session"].sent_texts()[-1]
+    assert env["provider"].received == []
+
+
+async def test_voice_errors_and_limits(env):
+    from services.speech import SpeechError
+
+    dp = _voice_dispatcher(env, FakeSpeech(error=SpeechError("down")))
+    await dp.feed_update(env["bot"], _voice_update())
+    assert "Не получилось разобрать" in env["session"].sent_texts()[-1]
+
+    dp = _voice_dispatcher(env, FakeSpeech(""))
+    await dp.feed_update(env["bot"], _voice_update())
+    assert "Не расслышала" in env["session"].sent_texts()[-1]
+
+    speech = FakeSpeech("длинное")
+    dp = _voice_dispatcher(env, speech)
+    await dp.feed_update(env["bot"], _voice_update(duration=600))
+    assert "слишком длинное" in env["session"].sent_texts()[-1] and speech.calls == []
+    assert env["provider"].received == []
+
+
+async def test_voice_from_stranger_is_ignored(env):
+    speech = FakeSpeech("привет")
+    dp = _voice_dispatcher(env, speech)
+    await dp.feed_update(env["bot"], _voice_update(user_id=STRANGER_ID))
+    assert env["session"].requests == [] and speech.calls == []
