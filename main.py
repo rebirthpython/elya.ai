@@ -26,6 +26,7 @@ from database.session import create_engine, create_session_factory, init_db
 from memory.manager import MemoryManager
 from memory.repository import MessageRepository
 from services.chat import ChatService
+from services.preferences import PreferencesStore
 from services.rate_limit import SlidingWindowLimiter
 from services.usage import UsageTracker
 from web.server import create_web_app, start_web_server
@@ -113,7 +114,8 @@ async def run(settings: Settings) -> None:
         history_limit=settings.history_max_messages,
     )
 
-    chat_service = ChatService(settings, ai_client, memory)
+    preferences = PreferencesStore(session_factory)
+    chat_service = ChatService(settings, ai_client, memory, preferences)
     limiter = SlidingWindowLimiter(settings.rate_limit_per_minute)
 
     bot = Bot(token=settings.bot_token)
@@ -136,7 +138,9 @@ async def run(settings: Settings) -> None:
         if settings.webapp_enabled:
             try:
                 web_runner = await start_web_server(
-                    create_web_app(settings, chat_service, memory, usage, ai_client, limiter),
+                    create_web_app(
+                        settings, chat_service, memory, usage, ai_client, limiter, preferences
+                    ),
                     settings.webapp_host,
                     settings.webapp_port,
                 )

@@ -55,3 +55,16 @@ async def test_usage_tracker_limit(session_factory):
 
     unlimited = UsageTracker(session_factory, daily_limit=0)
     assert await unlimited.try_consume() is True
+
+
+async def test_preferences_store_defaults_update_and_validation(session_factory):
+    from services.preferences import Preferences, PreferencesStore
+
+    store = PreferencesStore(session_factory)
+    assert await store.get(1) == Preferences("friendly", "normal")
+    assert await store.update(1, style="caring") == Preferences("caring", "normal")
+    assert await store.update(1, verbosity="detailed") == Preferences("caring", "detailed")
+    assert await store.get(1) == Preferences("caring", "detailed")
+    with pytest.raises(ValueError):
+        await store.update(1, style="rude")
+    assert await store.get(1) == Preferences("caring", "detailed")

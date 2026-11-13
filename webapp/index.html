@@ -30,6 +30,9 @@
     <symbol id="i-bulb" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 17.5h6M10 21h4M12 3a6.5 6.5 0 0 0-4 11.6c.6.5 1 1.2 1 2v.9h6v-.9c0-.8.4-1.5 1-2A6.5 6.5 0 0 0 12 3Z"/></g></symbol>
     <symbol id="i-pen" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4.2L19.3 8.9a2.4 2.4 0 0 0 0-3.4l-.8-.8a2.4 2.4 0 0 0-3.4 0L4 15.8V20Z"/><path d="m13.5 6.5 4 4"/></g></symbol>
     <symbol id="i-chat" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 11.5c0 4.1-3.8 7.5-8.5 7.5-1.1 0-2.2-.2-3.2-.5L4 20l1.3-3.6c-1.1-1.3-1.8-3-1.8-4.9C3.5 7.4 7.3 4 12 4s8.5 3.4 8.5 7.5Z"/><path d="M8.5 11.5h.01M12 11.5h.01M15.5 11.5h.01"/></g></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.8v2M12 19.2v2M2.8 12h2M19.2 12h2M5.5 5.5l1.4 1.4M17.1 17.1l1.4 1.4M5.5 18.5l1.4-1.4M17.1 6.9l1.4-1.4"/></g></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></symbol>
+    <symbol id="i-auto" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="8.5"/></g><path d="M12 3.5a8.5 8.5 0 0 1 0 17Z" fill="currentColor"/></symbol>
   </svg>
 
   <div class="backdrop-art" aria-hidden="true">
@@ -118,6 +121,30 @@
     </header>
 
     <div class="sheet__body">
+      <section class="block">
+        <h3 class="block__title">Оформление</h3>
+        <div class="segmented" id="theme-control" role="radiogroup" aria-label="Тема">
+          <span class="segmented__thumb" aria-hidden="true"></span>
+          <button class="segmented__item" type="button" role="radio" data-value="auto"><svg><use href="#i-auto"/></svg><span>Как в Telegram</span></button>
+          <button class="segmented__item" type="button" role="radio" data-value="light"><svg><use href="#i-sun"/></svg><span>Светлая</span></button>
+          <button class="segmented__item" type="button" role="radio" data-value="dark"><svg><use href="#i-moon"/></svg><span>Тёмная</span></button>
+        </div>
+      </section>
+
+      <section class="block">
+        <h3 class="block__title">Стиль общения</h3>
+        <div class="options" id="style-list" role="radiogroup" aria-label="Стиль общения"></div>
+        <p class="block__note">Эля начнёт общаться по-новому со следующего ответа — и здесь, и в чате с ботом.</p>
+      </section>
+
+      <section class="block">
+        <h3 class="block__title">Полнота ответа</h3>
+        <div class="segmented" id="verbosity-control" role="radiogroup" aria-label="Полнота ответа">
+          <span class="segmented__thumb" aria-hidden="true"></span>
+        </div>
+        <p class="block__note" id="verbosity-note"></p>
+      </section>
+
       <section class="block">
         <h3 class="block__title">Модель</h3>
         <div class="options" id="model-list" role="radiogroup" aria-label="Модель"></div>

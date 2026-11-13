@@ -45,3 +45,16 @@ class DailyUsage(Base):
 
     day: Mapped[date] = mapped_column(Date, primary_key=True)
     requests: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class UserPreferences(Base):
+    """Как Эля общается с пользователем: стиль и подробность ответов."""
+
+    __tablename__ = "user_preferences"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    style: Mapped[str] = mapped_column(String(16))
+    verbosity: Mapped[str] = mapped_column(String(16))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )

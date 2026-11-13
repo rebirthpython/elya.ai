@@ -10,6 +10,8 @@
 
   const AUTO = 'auto';
   const MODEL_KEY = 'elya.model';
+  const THEME_KEY = 'elya.theme';
+  const STYLE_EMOJI = { friendly: '😊', caring: '🤗', playful: '😜', business: '💼' };
   const SVG_NS = 'http://www.w3.org/2000/svg';
   const STICK_DISTANCE = 90;
 
@@ -41,6 +43,10 @@
     sheetGrip: $('sheet-grip'),
     sheetHead: $('sheet-head'),
     modelList: $('model-list'),
+    themeControl: $('theme-control'),
+    styleList: $('style-list'),
+    verbosityControl: $('verbosity-control'),
+    verbosityNote: $('verbosity-note'),
     usageValue: $('usage-value'),
     usageLimit: $('usage-limit'),
     usageBar: $('usage-bar'),
@@ -78,6 +84,9 @@
     wheelAt: 0,
     sheetAnim: null,
     sheetClosing: false,
+    theme: 'auto',
+    preferences: { style: 'friendly', verbosity: 'normal' },
+    preferenceOptions: { style: [], verbosity: [] },
   };
 
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -149,21 +158,57 @@
 
   /* ---------- Тема ---------- */
 
-  function applyTheme() {
+  function resolveScheme() {
     const forced = query.get('theme');
-    let scheme;
-    if (forced === 'light' || forced === 'dark') scheme = forced;
-    else if (IN_TELEGRAM) scheme = tg.colorScheme;
-    else scheme = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    if (forced === 'light' || forced === 'dark') return forced;
+    if (state.theme === 'light' || state.theme === 'dark') return state.theme;
+    if (IN_TELEGRAM) return tg.colorScheme === 'light' ? 'light' : 'dark';
+    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
 
+  function paintTheme(scheme) {
     const root = document.documentElement;
-    root.dataset.theme = scheme === 'light' ? 'light' : 'dark';
+    root.dataset.theme = scheme;
     const bg = getComputedStyle(root).getPropertyValue('--bg').trim();
     try {
       if (supports('6.9')) tg.setHeaderColor(bg);
       if (supports('6.1')) tg.setBackgroundColor(bg);
       if (supports('7.10')) tg.setBottomBarColor(bg);
     } catch (error) { /* старый клиент Telegram */ }
+  }
+
+  let themeFadeTimer = null;
+
+  /* origin — точка {x, y}, из которой расходится новая тема; без неё тема меняется сразу. */
+  function applyTheme(origin) {
+    const root = document.documentElement;
+    const scheme = resolveScheme();
+    if (root.dataset.themeReady && root.dataset.theme === scheme) return;
+    root.dataset.themeReady = '1';
+
+    if (!origin || reducedMotion) {
+      paintTheme(scheme);
+      return;
+    }
+
+    if (typeof document.startViewTransition === 'function') {
+      const { x, y } = origin;
+      const radius = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y));
+      const transition = document.startViewTransition(() => paintTheme(scheme));
+      transition.ready.then(() => {
+        root.animate(
+          { clipPath: ['circle(0px at ' + x + 'px ' + y + 'px)', 'circle(' + radius + 'px at ' + x + 'px ' + y + 'px)'] },
+          { duration: 700, easing: 'cubic-bezier(0.4, 0, 0.2, 1)', pseudoElement: '::view-transition-new(root)' }
+        );
+      }).catch(() => {});
+      return;
+    }
+
+    // Без View Transitions цвета просто плавно перетекают.
+    root.classList.add('theme-fade');
+    paintTheme(scheme);
+    clearTimeout(themeFadeTimer);
+    themeFadeTimer = setTimeout(() => root.classList.remove('theme-fade'), 700);
   }
 
   /* ---------- Сервер ---------- */
@@ -211,6 +256,7 @@
     state: () => request('api/state'),
     chat: (text, model) => request('api/chat', model === AUTO ? { text } : { text, model }),
     clear: () => request('api/clear', {}),
+    savePreferences: (patch) => request('api/preferences', patch),
   };
 
   /* Демо-режим: тот же интерфейс, но без сервера и настоящей модели. */
@@ -232,6 +278,7 @@
       : [];
     let used = 12;
     let turn = 0;
+    let preferences = { style: 'friendly', verbosity: 'normal' };
 
     return {
       async state() {
@@ -248,7 +295,26 @@
           providers: ['Google Gemini API', 'OpenRouter', 'Groq'],
           usage: { used, limit: 300 },
           limits: { max_text_length: 4000 },
+          preferences: Object.assign({}, preferences),
+          preference_options: {
+            style: [
+              { id: 'friendly', title: 'Дружелюбный', description: 'Тепло, с лёгким юмором' },
+              { id: 'caring', title: 'Заботливый', description: 'Мягко, с поддержкой и вниманием' },
+              { id: 'playful', title: 'Весёлый', description: 'Шутки, игра слов и эмодзи' },
+              { id: 'business', title: 'Деловой', description: 'Сдержанно и по существу, на «вы»' },
+            ],
+            verbosity: [
+              { id: 'short', title: 'Кратко', description: '1–3 предложения' },
+              { id: 'normal', title: 'Обычно', description: 'По ситуации' },
+              { id: 'detailed', title: 'Подробно', description: 'С объяснениями и примерами' },
+            ],
+          },
         };
+      },
+      async savePreferences(patch) {
+        await sleep(250);
+        preferences = Object.assign({}, preferences, patch);
+        return { preferences: Object.assign({}, preferences) };
       },
       async chat(text, model) {
         await sleep(1100 + Math.random() * 700);
@@ -452,7 +518,8 @@
     const fresh = Boolean(options && options.fresh);
     addDay(message.ts, fresh);
 
-    const root = el('article', 'msg msg--' + message.role + (fresh ? ' msg--new' : ''));
+    const flight = fresh && options && options.flight;
+    const root = el('article', 'msg msg--' + message.role + (flight ? ' msg--flying' : fresh ? ' msg--new' : ''));
     const bubble = el('div', 'bubble');
     const meta = el('div', 'msg__meta');
     const time = el('time', '', timeFormat.format(new Date(message.ts * 1000)));
@@ -665,7 +732,53 @@
     dom.input.style.height = Math.min(dom.input.scrollHeight, 140) + 'px';
   }
 
-  async function send(rawText, failedItem) {
+  /* Отправленный текст летит из поля ввода (или с карточки-подсказки) на своё место в ленте. */
+  function flyIn(item, origin) {
+    const bubble = item.bubble;
+    const target = bubble.getBoundingClientRect();
+    const ghost = el('div', 'flight');
+    ghost.append(el('span', 'flight__bg'), document.createTextNode(bubble.textContent));
+    ghost.style.left = target.left + 'px';
+    ghost.style.top = target.top + 'px';
+    ghost.style.width = target.width + 'px';
+    ghost.style.height = target.height + 'px';
+    document.body.append(ghost);
+
+    const land = () => {
+      ghost.remove();
+      item.root.classList.remove('msg--flying');
+      item.root.classList.add('msg--landed');
+    };
+
+    let from;
+    let fade;
+    if (origin.kind === 'input') {
+      // Текст начинается ровно там, где он был в поле ввода, и «обрастает» пузырём.
+      const dx = origin.rect.left - (target.left + 14);
+      const dy = origin.rect.top + 9 - (target.top + 10);
+      from = 'translate(' + dx + 'px, ' + dy + 'px)';
+      fade = [{ opacity: 0 }, { opacity: 1 }];
+      ghost.animate({ color: [getComputedStyle(dom.input).color, '#fff'] }, { duration: 260, easing: 'ease-out' });
+    } else {
+      // С карточки: пузырь вылетает из её центра уменьшенным.
+      const scale = 0.55;
+      const dx = origin.rect.left + origin.rect.width / 2 - (target.left + (target.width * scale) / 2);
+      const dy = origin.rect.top + origin.rect.height / 2 - (target.top + (target.height * scale) / 2);
+      from = 'translate(' + dx + 'px, ' + dy + 'px) scale(' + scale + ')';
+      fade = [{ opacity: 0.2 }, { opacity: 1 }];
+      ghost.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: 'ease-out' });
+    }
+
+    ghost.firstChild.animate(fade, { duration: 300, easing: 'ease-out', fill: 'both' });
+    const flight = ghost.animate(
+      [{ transform: from }, { transform: 'none' }],
+      { duration: 520, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' }
+    );
+    flight.onfinish = land;
+    flight.oncancel = land;
+  }
+
+  async function send(rawText, failedItem, origin) {
     const text = String(rawText).trim();
     if (!text || state.busy) return;
 
@@ -674,15 +787,22 @@
     setBusy(true);
     haptic('impact', 'light');
 
+    const fly = Boolean(origin) && !failedItem && !reducedMotion && typeof Element.prototype.animate === 'function';
     let item = failedItem;
     if (item) {
       item.root.classList.remove('msg--failed');
     } else {
-      item = addMessage({ role: 'user', content: text, ts: nowTs() }, { fresh: true });
+      item = addMessage({ role: 'user', content: text, ts: nowTs() }, { fresh: true, flight: fly });
     }
     updateWelcome();
     const typing = showTyping();
-    scrollToBottom(true);
+    if (fly) {
+      // Сначала лента встаёт на место, потом сообщение летит в уже известную точку.
+      scrollToBottom(false);
+      flyIn(item, origin);
+    } else {
+      scrollToBottom(true);
+    }
 
     try {
       const data = await backend.chat(text, state.model);
@@ -711,10 +831,13 @@
   function submit() {
     const text = dom.input.value;
     if (!text.trim() || state.busy) return;
+    const origin = { kind: 'input', rect: dom.input.getBoundingClientRect() };
     dom.input.value = '';
     autosize();
     updateComposer();
-    send(text);
+    dom.heroOrb.classList.remove('orb--listening');
+    dom.avatar.classList.remove('orb--listening');
+    send(text, null, origin);
   }
 
   /* ---------- Копирование ---------- */
@@ -805,6 +928,67 @@
     );
   }
 
+  function setSegment(control, value) {
+    const items = Array.from(control.querySelectorAll('[data-value]'));
+    const index = Math.max(0, items.findIndex((item) => item.dataset.value === value));
+    control.style.setProperty('--count', String(items.length));
+    control.style.setProperty('--index', String(index));
+    items.forEach((item, i) => item.setAttribute('aria-checked', String(i === index)));
+  }
+
+  function renderPreferences() {
+    const prefs = state.preferences;
+    const options = state.preferenceOptions;
+
+    dom.styleList.replaceChildren(...options.style.map((option) => {
+      const button = el('button', 'option');
+      button.type = 'button';
+      button.setAttribute('role', 'radio');
+      button.setAttribute('aria-checked', String(option.id === prefs.style));
+      button.dataset.style = option.id;
+      const emoji = el('span', 'option__emoji', STYLE_EMOJI[option.id] || '✨');
+      emoji.setAttribute('aria-hidden', 'true');
+      const text = el('span', 'option__text');
+      text.append(el('span', 'option__title', option.title), el('span', 'option__sub', option.description));
+      const mark = el('span', 'option__mark');
+      mark.append(icon('i-check'));
+      button.append(emoji, text, mark);
+      return button;
+    }));
+
+    // Варианты полноты ответа приходят с сервера; подложку-«таблетку» не трогаем.
+    if (!dom.verbosityControl.querySelector('[data-value]')) {
+      options.verbosity.forEach((option) => {
+        const button = el('button', 'segmented__item');
+        button.type = 'button';
+        button.setAttribute('role', 'radio');
+        button.dataset.value = option.id;
+        button.append(el('span', 'segmented__title', option.title));
+        dom.verbosityControl.append(button);
+      });
+    }
+    setSegment(dom.verbosityControl, prefs.verbosity);
+    const current = options.verbosity.find((option) => option.id === prefs.verbosity);
+    dom.verbosityNote.textContent = current ? current.description + '.' : '';
+    setSegment(dom.themeControl, state.theme);
+  }
+
+  async function savePreferences(patch) {
+    const previous = state.preferences;
+    state.preferences = Object.assign({}, previous, patch);
+    renderPreferences();
+    haptic('select');
+    try {
+      const data = await backend.savePreferences(patch);
+      if (data && data.preferences) state.preferences = data.preferences;
+    } catch (error) {
+      state.preferences = previous;
+      renderPreferences();
+      showToast(error.message);
+      haptic('notify', 'error');
+    }
+  }
+
   function renderUsage() {
     const used = state.usage.used;
     const limit = state.usage.limit;
@@ -822,6 +1006,7 @@
 
   function openSheet() {
     renderModels();
+    renderPreferences();
     resetClearConfirm();
     if (state.sheetAnim) state.sheetAnim.cancel();
     state.sheetClosing = false;
@@ -973,6 +1158,8 @@
     state.providers = data.providers || [];
     state.usage = data.usage || state.usage;
     state.maxLength = (data.limits && data.limits.max_text_length) || 4000;
+    if (data.preferences) state.preferences = data.preferences;
+    if (data.preference_options) state.preferenceOptions = data.preference_options;
     state.syncedAt = Date.now();
 
     const saved = store(MODEL_KEY);
@@ -1065,7 +1252,7 @@
 
     dom.suggestions.addEventListener('click', (event) => {
       const card = event.target.closest('.suggestion');
-      if (card) send(card.dataset.prompt);
+      if (card) send(card.dataset.prompt, null, { kind: 'card', rect: card.getBoundingClientRect() });
     });
 
     dom.messages.addEventListener('click', (event) => {
@@ -1111,6 +1298,28 @@
       if (event.key === 'Escape') closeSheet();
     });
 
+    dom.themeControl.addEventListener('click', (event) => {
+      const item = event.target.closest('[data-value]');
+      if (!item || item.dataset.value === state.theme) return;
+      state.theme = item.dataset.value;
+      store(THEME_KEY, state.theme);
+      setSegment(dom.themeControl, state.theme);
+      haptic('select');
+      const rect = item.getBoundingClientRect();
+      // Новая тема расходится кругом от нажатой кнопки.
+      setTimeout(() => applyTheme({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }), 120);
+    });
+
+    dom.verbosityControl.addEventListener('click', (event) => {
+      const item = event.target.closest('[data-value]');
+      if (item && item.dataset.value !== state.preferences.verbosity) savePreferences({ verbosity: item.dataset.value });
+    });
+
+    dom.styleList.addEventListener('click', (event) => {
+      const option = event.target.closest('.option');
+      if (option && option.dataset.style !== state.preferences.style) savePreferences({ style: option.dataset.style });
+    });
+
     dom.modelList.addEventListener('click', (event) => {
       const option = event.target.closest('.option');
       if (!option || option.dataset.model === state.model) return;
@@ -1150,8 +1359,46 @@
     }
   }
 
+  /* Каркас приложения всегда занимает ровно видимую область: при открытой клавиатуре
+     и после её закрытия поле ввода остаётся над клавиатурой, а не уезжает вниз. */
+  let viewportFrame = 0;
+
+  function syncViewport() {
+    cancelAnimationFrame(viewportFrame);
+    viewportFrame = requestAnimationFrame(() => {
+      const vv = window.visualViewport;
+      const height = vv ? vv.height : window.innerHeight;
+      const top = vv ? Math.max(0, vv.offsetTop) : 0;
+      const rootStyle = document.documentElement.style;
+      rootStyle.setProperty('--app-height', Math.round(height) + 'px');
+      rootStyle.setProperty('--app-top', Math.round(top) + 'px');
+    });
+  }
+
+  function bindViewport() {
+    syncViewport();
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', syncViewport);
+      window.visualViewport.addEventListener('scroll', syncViewport);
+    }
+    window.addEventListener('resize', syncViewport);
+    // Страница сама по себе не прокручивается: если браузер сдвинул её к полю ввода, возвращаем.
+    window.addEventListener('scroll', () => {
+      if (window.scrollY !== 0 && !(window.visualViewport && window.visualViewport.offsetTop > 0)) window.scrollTo(0, 0);
+      syncViewport();
+    }, { passive: true });
+    dom.input.addEventListener('focus', () => setTimeout(syncViewport, 350));
+    dom.input.addEventListener('blur', () => {
+      syncViewport();
+      setTimeout(syncViewport, 350);
+    });
+    if (IN_TELEGRAM) tg.onEvent('viewportChanged', syncViewport);
+  }
+
   function start() {
+    state.theme = store(THEME_KEY) || 'auto';
     applyTheme();
+    bindViewport();
     bindEvents();
 
     if (IN_TELEGRAM) {
@@ -1159,10 +1406,10 @@
       tg.expand();
       if (supports('7.7')) tg.disableVerticalSwipes(); // прокрутка ленты не должна сворачивать приложение
       if (supports('6.1')) tg.BackButton.onClick(closeSheet);
-      tg.onEvent('themeChanged', applyTheme);
+      tg.onEvent('themeChanged', () => applyTheme({ x: window.innerWidth / 2, y: 0 }));
     } else {
       const scheme = window.matchMedia('(prefers-color-scheme: light)');
-      if (scheme.addEventListener) scheme.addEventListener('change', applyTheme);
+      if (scheme.addEventListener) scheme.addEventListener('change', () => applyTheme({ x: window.innerWidth / 2, y: 0 }));
     }
 
     if (!DEMO && !IN_TELEGRAM) {

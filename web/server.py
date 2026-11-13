@@ -20,6 +20,8 @@ from config.settings import Settings
 from database.models import Message
 from memory.manager import MemoryManager
 from services.chat import ChatService
+from services.preferences import PreferencesStore
+from services.preferences import options as preference_options
 from services.rate_limit import SlidingWindowLimiter
 from services.usage import UsageTracker
 from web.auth import InitDataError, extract_init_data, verify_init_data
@@ -37,6 +39,7 @@ MEMORY = web.AppKey("memory", MemoryManager)
 USAGE = web.AppKey("usage", UsageTracker)
 AI_CLIENT = web.AppKey("ai_client", AIClient)
 LIMITER = web.AppKey("limiter", SlidingWindowLimiter)
+PREFERENCES = web.AppKey("preferences", PreferencesStore)
 
 _USER_KEY = web.RequestKey("tg_user", WebAppUser)
 
@@ -175,6 +178,8 @@ async def get_state(request: web.Request) -> web.Response:
             "providers": app[AI_CLIENT].provider_titles,
             "usage": {"used": await usage.used_today(), "limit": usage.daily_limit},
             "limits": {"max_text_length": MAX_TEXT_LENGTH},
+            "preferences": (await app[PREFERENCES].get(user.id)).as_dict(),
+            "preference_options": preference_options(),
         }
     )
 
@@ -236,6 +241,24 @@ async def post_chat(request: web.Request) -> web.Response:
     )
 
 
+async def post_preferences(request: web.Request) -> web.Response:
+    user: WebAppUser = request[_USER_KEY]
+    payload = await _read_json(request)
+    if payload is None:
+        return _error(400, "bad_request", "Некорректный запрос.")
+    style = payload.get("style")
+    verbosity = payload.get("verbosity")
+    if (style is not None and not isinstance(style, str)) or (
+        verbosity is not None and not isinstance(verbosity, str)
+    ):
+        return _error(400, "bad_request", "Некорректный запрос.")
+    try:
+        prefs = await request.app[PREFERENCES].update(user.id, style=style, verbosity=verbosity)
+    except ValueError:
+        return _error(400, "bad_request", "Такой настройки нет.")
+    return web.json_response({"preferences": prefs.as_dict()})
+
+
 async def post_clear(request: web.Request) -> web.Response:
     user: WebAppUser = request[_USER_KEY]
     deleted = await request.app[MEMORY].clear_history(user.id)
@@ -257,6 +280,7 @@ def create_web_app(
     usage: UsageTracker,
     ai_client: AIClient,
     limiter: SlidingWindowLimiter,
+    preferences: PreferencesStore,
 ) -> web.Application:
     app = web.Application(
         middlewares=[security_headers, api_guard], client_max_size=MAX_BODY_BYTES
@@ -267,12 +291,14 @@ def create_web_app(
     app[USAGE] = usage
     app[AI_CLIENT] = ai_client
     app[LIMITER] = limiter
+    app[PREFERENCES] = preferences
 
     app.router.add_get("/", index)
     app.router.add_get("/healthz", health)
     app.router.add_get("/api/state", get_state)
     app.router.add_post("/api/chat", post_chat)
     app.router.add_post("/api/clear", post_clear)
+    app.router.add_post("/api/preferences", post_preferences)
     app.router.add_static("/assets/", WEBAPP_DIR / "assets")
     return app
 

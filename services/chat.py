@@ -14,13 +14,21 @@ from ai.prompts import build_system_prompt
 from ai.providers.base import CompletionResult
 from config.settings import Settings
 from memory.manager import MemoryManager
+from services.preferences import Preferences, PreferencesStore
 
 
 class ChatService:
-    def __init__(self, settings: Settings, ai_client: AIClient, memory: MemoryManager) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        ai_client: AIClient,
+        memory: MemoryManager,
+        preferences: PreferencesStore | None = None,
+    ) -> None:
         self._settings = settings
         self._ai = ai_client
         self._memory = memory
+        self._preferences = preferences
         # Сообщения одного пользователя обрабатываются строго по очереди,
         # чтобы история диалога сохранялась в правильном порядке.
         self._locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -38,8 +46,16 @@ class ChatService:
         settings = self._settings
         async with self._locks[user_id]:
             history = await self._memory.get_history(user_id)
+            prefs = (
+                await self._preferences.get(user_id) if self._preferences else Preferences()
+            )
             context = build_context(
-                build_system_prompt(settings.assistant_name, user_name=user_name),
+                build_system_prompt(
+                    settings.assistant_name,
+                    user_name=user_name,
+                    style=prefs.style,
+                    verbosity=prefs.verbosity,
+                ),
                 history,
                 user_text,
                 max_messages=settings.history_max_messages,

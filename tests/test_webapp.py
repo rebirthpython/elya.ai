@@ -17,6 +17,7 @@ from database.session import create_engine, create_session_factory, init_db
 from memory.manager import MemoryManager
 from memory.repository import MessageRepository
 from services.chat import ChatService
+from services.preferences import PreferencesStore
 from services.rate_limit import SlidingWindowLimiter
 from services.usage import UsageTracker
 from web.auth import InitDataError, extract_init_data, verify_init_data
@@ -84,6 +85,7 @@ async def env(tmp_path):
     await init_db(engine)
     session_factory = create_session_factory(engine)
     memory = MemoryManager(MessageRepository(session_factory, store_limit=500), history_limit=30)
+    preferences = PreferencesStore(session_factory)
     clients: list[TestClient] = []
 
     async def make(*, providers=None, daily_limit=100, rate_limit=10, **settings_overrides):
@@ -96,18 +98,19 @@ async def env(tmp_path):
         ai_client = AIClient(providers, max_tokens=256, temperature=0.5, usage=usage)
         app = create_web_app(
             settings,
-            ChatService(settings, ai_client, memory),
+            ChatService(settings, ai_client, memory, preferences),
             memory,
             usage,
             ai_client,
             SlidingWindowLimiter(rate_limit),
+            preferences,
         )
         client = TestClient(TestServer(app))
         await client.start_server()
         clients.append(client)
         return client, providers
 
-    yield {"make": make, "memory": memory}
+    yield {"make": make, "memory": memory, "preferences": preferences}
     for client in clients:
         await client.close()
     await engine.dispose()
@@ -235,6 +238,13 @@ async def test_state_describes_assistant_models_and_history(env):
     assert data["providers"] == ["Alpha AI", "Beta AI"]
     assert data["usage"] == {"used": 0, "limit": 100}
     assert data["limits"] == {"max_text_length": MAX_TEXT_LENGTH}
+    assert data["preferences"] == {"style": "friendly", "verbosity": "normal"}
+    assert [o["id"] for o in data["preference_options"]["style"]] == [
+        "friendly", "caring", "playful", "business",
+    ]
+    assert [o["id"] for o in data["preference_options"]["verbosity"]] == [
+        "short", "normal", "detailed",
+    ]
 
 
 async def test_chat_replies_and_shares_memory_with_the_bot(env):
@@ -373,3 +383,41 @@ async def test_unknown_api_route_and_wrong_method_return_json(env):
     assert missing.status == 404 and "error" in await missing.json()
     wrong = await client.get("/api/chat", headers=auth())
     assert wrong.status == 405 and "error" in await wrong.json()
+
+
+async def test_preferences_are_saved_and_shape_the_prompt(env):
+    client, providers = await env["make"]()
+
+    response = await client.post("/api/preferences", json={"style": "business"}, headers=auth())
+    assert response.status == 200
+    assert await response.json() == {"preferences": {"style": "business", "verbosity": "normal"}}
+
+    response = await client.post("/api/preferences", json={"verbosity": "short"}, headers=auth())
+    assert (await response.json())["preferences"] == {"style": "business", "verbosity": "short"}
+
+    state = await (await client.get("/api/state", headers=auth())).json()
+    assert state["preferences"] == {"style": "business", "verbosity": "short"}
+
+    await client.post("/api/chat", json={"text": "привет"}, headers=auth())
+    system = providers[0].calls[0][1][0].content
+    assert "деловой" in system and "на «вы»" in system
+    assert "Отвечай коротко" in system
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"style": "rude"}, {"verbosity": "endless"}, {"style": 5}, [1], "не json"],
+)
+async def test_invalid_preferences_are_rejected(env, body):
+    client, _ = await env["make"]()
+    kwargs = {"data": body} if isinstance(body, str) else {"json": body}
+    response = await client.post("/api/preferences", headers=auth(), **kwargs)
+    assert response.status == 400
+    assert await env["preferences"].get(OWNER_ID) == await env["preferences"].get(0)
+
+
+async def test_preferences_are_per_user(env):
+    client, _ = await env["make"](allowed_user_ids=frozenset({OWNER_ID, 222}))
+    await client.post("/api/preferences", json={"style": "playful"}, headers=auth())
+    assert (await env["preferences"].get(OWNER_ID)).style == "playful"
+    assert (await env["preferences"].get(222)).style == "friendly"
