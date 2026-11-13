@@ -68,3 +68,14 @@ async def test_preferences_store_defaults_update_and_validation(session_factory)
     with pytest.raises(ValueError):
         await store.update(1, style="rude")
     assert await store.get(1) == Preferences("caring", "detailed")
+
+
+def test_describe_database_resolves_sqlite_path_and_hides_passwords(tmp_path, monkeypatch):
+    from database.session import describe_database
+
+    monkeypatch.chdir(tmp_path)
+    assert describe_database("sqlite+aiosqlite:///data/assistant.db") == (
+        f"SQLite {tmp_path / 'data' / 'assistant.db'}"
+    )
+    described = describe_database("postgresql+asyncpg://elya:secret@db:5432/elya")
+    assert "secret" not in described and "db:5432/elya" in described

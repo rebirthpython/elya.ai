@@ -33,6 +33,14 @@ def create_engine(database_url: str) -> AsyncEngine:
     return engine
 
 
+def describe_database(database_url: str) -> str:
+    """Где лежит база — для лога при запуске (без паролей из URL)."""
+    url = make_url(database_url)
+    if url.get_backend_name() == "sqlite" and url.database and url.database != ":memory:":
+        return f"SQLite {Path(url.database).resolve()}"
+    return url.render_as_string(hide_password=True)
+
+
 def create_session_factory(engine: AsyncEngine) -> async_sessionmaker:
     return async_sessionmaker(engine, expire_on_commit=False)
 

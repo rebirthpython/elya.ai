@@ -22,7 +22,12 @@ from bot.handlers import get_routers
 from bot.middlewares.access import AccessMiddleware
 from bot.middlewares.throttling import ThrottlingMiddleware
 from config.settings import ConfigError, Settings, load_settings
-from database.session import create_engine, create_session_factory, init_db
+from database.session import (
+    create_engine,
+    create_session_factory,
+    describe_database,
+    init_db,
+)
 from memory.manager import MemoryManager
 from memory.repository import MessageRepository
 from services.chat import ChatService
@@ -96,6 +101,7 @@ async def setup_menu_button(bot: Bot, settings: Settings) -> None:
 async def run(settings: Settings) -> None:
     engine = create_engine(settings.database_url)
     await init_db(engine)
+    logger.info("Database: %s", describe_database(settings.database_url))
     session_factory = create_session_factory(engine)
 
     http_client = httpx.AsyncClient(
