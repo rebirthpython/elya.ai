@@ -22,6 +22,7 @@ from memory.manager import MemoryManager
 from services.chat import ChatService
 from services.longterm import MAX_FACT_LENGTH, MAX_FACTS, LongTermMemory, MemoryFullError
 from services.preferences import PreferencesStore
+from services.speech import SpeechError, SpeechToText
 from services.reminders import (
     MAX_AHEAD,
     MAX_PENDING,
@@ -51,6 +52,19 @@ LIMITER = web.AppKey("limiter", SlidingWindowLimiter)
 PREFERENCES = web.AppKey("preferences", PreferencesStore)
 LONG_MEMORY = web.AppKey("long_memory", LongTermMemory)
 REMINDERS = web.AppKey("reminders", Reminders)
+SPEECH = web.AppKey("speech", object)
+
+MAX_VOICE_BYTES = 5 * 1024 * 1024
+# Что умеет записывать браузер телефона → расширение файла для Whisper
+AUDIO_TYPES = {
+    "audio/webm": "webm",
+    "audio/ogg": "ogg",
+    "audio/mp4": "m4a",
+    "audio/aac": "m4a",
+    "audio/mpeg": "mp3",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+}
 
 _USER_KEY = web.RequestKey("tg_user", WebAppUser)
 
@@ -210,6 +224,7 @@ async def get_state(request: web.Request) -> web.Response:
             "providers": app[AI_CLIENT].provider_titles,
             "usage": {"used": await usage.used_today(), "limit": usage.daily_limit},
             "limits": {"max_text_length": MAX_TEXT_LENGTH},
+            "voice": app[SPEECH] is not None,
             "preferences": (await app[PREFERENCES].get(user.id)).as_dict(),
             "memory": await _memory_payload(app[LONG_MEMORY], user.id),
             "reminders": await _reminders_payload(app[REMINDERS], user.id),
@@ -407,6 +422,34 @@ async def post_reminder_delete(request: web.Request) -> web.Response:
     return web.json_response(await _reminders_payload(reminders, user.id))
 
 
+async def post_voice(request: web.Request) -> web.Response:
+    """Тело запроса — запись с микрофона; ответ — распознанный текст."""
+    speech: SpeechToText | None = request.app[SPEECH]
+    if speech is None:
+        return _error(
+            503, "speech_off",
+            "Голосовые не настроены: владельцу бота нужно добавить ключ GROQ_API_KEY.",
+        )
+    content_type = request.content_type
+    extension = AUDIO_TYPES.get(content_type)
+    if extension is None:
+        return _error(415, "bad_audio", "Не получилось прочитать запись.")
+    # Тело читается вручную: общий лимит запроса (64 КБ) для аудио слишком мал.
+    data = bytearray()
+    async for chunk in request.content.iter_chunked(64 * 1024):
+        data += chunk
+        if len(data) > MAX_VOICE_BYTES:
+            return _error(413, "too_large", "Запись слишком длинная: до 5 минут.")
+    if not data:
+        return _error(400, "bad_request", "Пустая запись.")
+    try:
+        text = await speech.transcribe(bytes(data), f"voice.{extension}", content_type)
+    except SpeechError as exc:
+        logger.warning("Speech recognition failed: %s", exc)
+        return _error(502, "speech_failed", "Не получилось разобрать голосовое. Попробуй ещё раз.")
+    return web.json_response({"text": text})
+
+
 async def post_clear(request: web.Request) -> web.Response:
     user: WebAppUser = request[_USER_KEY]
     deleted = await request.app[MEMORY].clear_history(user.id)
@@ -431,6 +474,7 @@ def create_web_app(
     preferences: PreferencesStore,
     long_memory: LongTermMemory,
     reminders: Reminders,
+    speech: SpeechToText | None = None,
 ) -> web.Application:
     app = web.Application(
         middlewares=[security_headers, api_guard], client_max_size=MAX_BODY_BYTES
@@ -444,6 +488,7 @@ def create_web_app(
     app[PREFERENCES] = preferences
     app[LONG_MEMORY] = long_memory
     app[REMINDERS] = reminders
+    app[SPEECH] = speech
 
     app.router.add_get("/", index)
     app.router.add_get("/healthz", health)
@@ -457,6 +502,7 @@ def create_web_app(
     app.router.add_post("/api/timezone", post_timezone)
     app.router.add_post("/api/reminders/add", post_reminder_add)
     app.router.add_post("/api/reminders/delete", post_reminder_delete)
+    app.router.add_post("/api/voice", post_voice)
     app.router.add_static("/assets/", WEBAPP_DIR / "assets")
     return app
 

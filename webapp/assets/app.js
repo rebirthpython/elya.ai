@@ -33,6 +33,12 @@
     messages: $('messages'),
     scrollDown: $('scroll-down'),
     composer: document.querySelector('.composer'),
+    composerBox: $('composer-box'),
+    mic: $('mic'),
+    recorder: $('recorder'),
+    recCancel: $('rec-cancel'),
+    recTime: $('rec-time'),
+    recHint: $('rec-hint'),
     input: $('input'),
     counter: $('counter'),
     send: $('send'),
@@ -112,6 +118,9 @@
     preferenceOptions: { style: [], verbosity: [] },
     memory: { enabled: false, facts: [], max_facts: 50, max_fact_length: 200 },
     memoryTimers: [],
+    voice: false,
+    recording: null,
+    transcribing: false,
     reminders: { timezone: null, items: [], max: 50, max_text: 300 },
     clearArmed: null,
   };
@@ -248,16 +257,16 @@
     }
   }
 
-  async function request(path, body) {
+  async function request(path, body, rawType) {
     let response;
     try {
       response = await fetch(path, {
         method: body === undefined ? 'GET' : 'POST',
         headers: Object.assign(
           { Authorization: 'tma ' + tg.initData },
-          body === undefined ? {} : { 'Content-Type': 'application/json' }
+          body === undefined ? {} : { 'Content-Type': rawType || 'application/json' }
         ),
-        body: body === undefined ? undefined : JSON.stringify(body),
+        body: body === undefined ? undefined : rawType ? body : JSON.stringify(body),
       });
     } catch (error) {
       throw new ApiError('network', 'Нет связи с сервером. Проверь интернет и попробуй ещё раз.');
@@ -289,6 +298,7 @@
     memoryDelete: (id) => request('api/memory/delete', { id }),
     memoryClear: () => request('api/memory/delete', { all: true }),
     setTimezone: (tz) => request('api/timezone', { tz }),
+    voice: (blob, type) => request('api/voice', blob, type),
     reminderAdd: (text, when, repeat) => request('api/reminders/add', { text, when, repeat }),
     reminderDelete: (id) => request('api/reminders/delete', { id }),
   };
@@ -338,6 +348,7 @@
           preferences: Object.assign({}, preferences),
           memory: memoryView(),
           reminders: remindersView(),
+          voice: true,
           preference_options: {
             style: [
               { id: 'friendly', title: 'Дружелюбный', description: 'Тепло, с лёгким юмором' },
@@ -377,6 +388,10 @@
         await sleep(150);
         memory.facts = memory.facts.filter((fact) => fact.id !== id);
         return memoryView();
+      },
+      async voice() {
+        await sleep(700);
+        return { text: 'Привет! Это голосовое в демо-режиме' };
       },
       async setTimezone(tz) {
         reminders.timezone = tz;
@@ -814,9 +829,19 @@
     updateComposer();
   }
 
+  const CAN_RECORD = Boolean(
+    navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder
+  );
+
   function updateComposer() {
     const length = dom.input.value.length;
-    dom.send.disabled = state.busy || !dom.input.value.trim();
+    const empty = !dom.input.value.trim();
+    dom.send.disabled = state.recording ? false : state.busy || state.transcribing || empty;
+    dom.composerBox.classList.toggle(
+      'has-mic',
+      state.voice && CAN_RECORD && empty && !state.recording && !state.transcribing
+    );
+    dom.mic.disabled = state.busy;
     const showCounter = length > state.maxLength * 0.85;
     dom.counter.hidden = !showCounter;
     if (showCounter) {
@@ -928,7 +953,115 @@
     }
   }
 
+  /* ---------- Голосовой ввод ---------- */
+
+  const MAX_RECORD_SECONDS = 300;
+
+  function formatSeconds(total) {
+    const seconds = Math.floor(total);
+    return Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
+  }
+
+  async function startRecording() {
+    if (state.busy || state.recording || state.transcribing) return;
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (error) {
+      showToast('Нет доступа к микрофону. Голосовое можно отправить прямо в чат с ботом.');
+      haptic('notify', 'error');
+      return;
+    }
+    const types = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4', 'audio/webm'];
+    const mimeType = types.find((type) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type));
+    let recorder;
+    try {
+      recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    } catch (error) {
+      stream.getTracks().forEach((track) => track.stop());
+      showToast('Запись голоса не поддерживается в этой версии Telegram.');
+      return;
+    }
+    const rec = { recorder, stream, chunks: [], started: Date.now(), timer: null, cancelled: false };
+    recorder.ondataavailable = (event) => {
+      if (event.data && event.data.size) rec.chunks.push(event.data);
+    };
+    recorder.onstop = () => finishRecording(rec);
+    recorder.start(250);
+    state.recording = rec;
+    dom.recTime.textContent = '0:00';
+    dom.recHint.textContent = '➤ — отправить';
+    dom.recorder.hidden = false;
+    dom.composerBox.classList.add('is-recording');
+    rec.timer = setInterval(() => {
+      const seconds = (Date.now() - rec.started) / 1000;
+      dom.recTime.textContent = formatSeconds(seconds);
+      if (seconds >= MAX_RECORD_SECONDS) stopRecording(false);
+    }, 250);
+    haptic('impact', 'medium');
+    updateComposer();
+  }
+
+  function stopRecording(cancel) {
+    const rec = state.recording;
+    if (!rec) return;
+    rec.cancelled = Boolean(cancel);
+    clearInterval(rec.timer);
+    if (rec.recorder.state !== 'inactive') rec.recorder.stop();
+    else finishRecording(rec);
+  }
+
+  async function finishRecording(rec) {
+    if (rec.finished) return;
+    rec.finished = true;
+    rec.stream.getTracks().forEach((track) => track.stop());
+    state.recording = null;
+    dom.composerBox.classList.remove('is-recording');
+    const seconds = (Date.now() - rec.started) / 1000;
+    if (rec.cancelled || !rec.chunks.length || seconds < 0.7) {
+      dom.recorder.hidden = true;
+      if (!rec.cancelled) showToast('Слишком коротко: нажми микрофон и говори');
+      haptic('impact', 'light');
+      updateComposer();
+      return;
+    }
+
+    const type = (rec.recorder.mimeType || rec.chunks[0].type || 'audio/webm').split(';')[0];
+    const blob = new Blob(rec.chunks, { type });
+    state.transcribing = true;
+    dom.composerBox.classList.add('is-transcribing');
+    dom.send.classList.add('is-busy');
+    dom.recHint.textContent = 'Распознаю голосовое…';
+    updateComposer();
+    let text = '';
+    let failed = false;
+    try {
+      const data = await backend.voice(blob, type);
+      text = (data && data.text ? String(data.text) : '').trim();
+    } catch (error) {
+      failed = true;
+      showToast(error.message);
+      haptic('notify', 'error');
+    } finally {
+      state.transcribing = false;
+      dom.composerBox.classList.remove('is-transcribing');
+      dom.send.classList.remove('is-busy');
+      dom.recorder.hidden = true;
+      updateComposer();
+    }
+    if (!text) {
+      if (!failed) showToast('Не расслышала ни слова. Попробуй ещё раз 🙂');
+      return;
+    }
+    // Распознанный текст «вылетает» из поля ввода, как обычное сообщение.
+    send(text, null, { kind: 'input', rect: dom.input.getBoundingClientRect() });
+  }
+
   function submit() {
+    if (state.recording) {
+      stopRecording(false);
+      return;
+    }
     const text = dom.input.value;
     if (!text.trim() || state.busy) return;
     const origin = { kind: 'input', rect: dom.input.getBoundingClientRect() };
@@ -1576,6 +1709,7 @@
     state.providers = data.providers || [];
     state.usage = data.usage || state.usage;
     state.maxLength = (data.limits && data.limits.max_text_length) || 4000;
+    state.voice = Boolean(data.voice);
     if (data.preferences) state.preferences = data.preferences;
     if (data.memory) state.memory = Object.assign({}, state.memory, data.memory);
     if (data.reminders) state.reminders = Object.assign({}, state.reminders, data.reminders);
@@ -1676,6 +1810,8 @@
     // Нажатие на кнопку не должно забирать фокус и прятать клавиатуру.
     dom.send.addEventListener('mousedown', (event) => event.preventDefault());
     dom.send.addEventListener('click', submit);
+    dom.mic.addEventListener('click', startRecording);
+    dom.recCancel.addEventListener('click', () => stopRecording(true));
 
     dom.suggestions.addEventListener('click', (event) => {
       const card = event.target.closest('.suggestion');

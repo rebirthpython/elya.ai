@@ -93,7 +93,7 @@ async def env(tmp_path):
     reminders = Reminders(session_factory, clock=lambda: now)
     clients: list[TestClient] = []
 
-    async def make(*, providers=None, daily_limit=100, rate_limit=10, **settings_overrides):
+    async def make(*, providers=None, daily_limit=100, rate_limit=10, speech=None, **settings_overrides):
         providers = providers or [
             ScriptedProvider("alpha", ("a1", "a2")),
             ScriptedProvider("beta", ("b1",)),
@@ -111,6 +111,7 @@ async def env(tmp_path):
             preferences,
             long_memory,
             reminders,
+            speech,
         )
         client = TestClient(TestServer(app))
         await client.start_server()
@@ -253,6 +254,7 @@ async def test_state_describes_assistant_models_and_history(env):
         "enabled": False, "facts": [], "max_facts": MAX_FACTS, "max_fact_length": 200,
     }
     assert data["reminders"] == {"timezone": None, "items": [], "max": 50, "max_text": 300}
+    assert data["voice"] is False
     assert [o["id"] for o in data["preference_options"]["style"]] == [
         "friendly", "caring", "playful", "business",
     ]
@@ -617,3 +619,70 @@ async def test_ordinary_chat_messages_do_not_touch_reminders(env):
     response = await client.post("/api/chat", json={"text": "расскажи про Рим"}, headers=auth())
     assert (await response.json())["reply"]["provider"] == "alpha"
     assert await env["reminders"].list_pending(OWNER_ID) == []
+
+
+# ---------- голосовой ввод ----------
+
+
+class FakeSpeech:
+    def __init__(self, text="привет из голосового", error=None):
+        self.text, self.error, self.calls = text, error, []
+
+    async def transcribe(self, audio, filename="voice.ogg", content_type="audio/ogg"):
+        from services.speech import SpeechError
+
+        self.calls.append((len(audio), filename, content_type))
+        if self.error:
+            raise SpeechError(self.error)
+        return self.text
+
+
+async def test_voice_is_transcribed(env):
+    speech = FakeSpeech()
+    client, providers = await env["make"](speech=speech)
+    assert (await (await client.get("/api/state", headers=auth())).json())["voice"] is True
+
+    audio = b"\x1aE\xdf\xa3" + b"a" * 300_000  # больше общего лимита 64 КБ
+    response = await client.post(
+        "/api/voice", data=audio, headers={**auth(), "Content-Type": "audio/webm;codecs=opus"}
+    )
+    assert response.status == 200 and await response.json() == {"text": "привет из голосового"}
+    assert speech.calls == [(len(audio), "voice.webm", "audio/webm")]
+    assert providers[0].calls == []  # ответ Эли — отдельным запросом /api/chat
+    assert await env["memory"].get_history(OWNER_ID) == []
+
+
+@pytest.mark.parametrize(
+    ("content_type", "body", "status", "code"),
+    [
+        ("text/plain", b"abc", 415, "bad_audio"),
+        ("audio/webm", b"", 400, "bad_request"),
+        ("audio/webm", b"a" * (5 * 1024 * 1024 + 10), 413, "too_large"),
+    ],
+)
+async def test_voice_validates(env, content_type, body, status, code):
+    speech = FakeSpeech()
+    client, _ = await env["make"](speech=speech)
+    response = await client.post("/api/voice", data=body, headers={**auth(), "Content-Type": content_type})
+    assert response.status == status and (await response.json())["error"]["code"] == code
+    assert speech.calls == []
+
+
+async def test_voice_not_configured_and_failures(env):
+    client, _ = await env["make"]()
+    response = await client.post("/api/voice", data=b"abc", headers={**auth(), "Content-Type": "audio/ogg"})
+    assert response.status == 503 and (await response.json())["error"]["code"] == "speech_off"
+
+    client, _ = await env["make"](speech=FakeSpeech(error="down"))
+    response = await client.post("/api/voice", data=b"abc", headers={**auth(), "Content-Type": "audio/mp4"})
+    assert response.status == 502 and (await response.json())["error"]["code"] == "speech_failed"
+
+
+async def test_voice_requires_access(env):
+    speech = FakeSpeech()
+    client, _ = await env["make"](speech=speech)
+    headers = {"Content-Type": "audio/ogg"}
+    assert (await client.post("/api/voice", data=b"abc", headers=headers)).status == 401
+    stranger = {**auth(sign_init_data(STRANGER_ID)), **headers}
+    assert (await client.post("/api/voice", data=b"abc", headers=stranger)).status == 403
+    assert speech.calls == []

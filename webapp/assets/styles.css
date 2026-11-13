@@ -1564,6 +1564,131 @@ body.is-thinking .glow--think {
   text-align: center;
 }
 
+/* ---------- Голосовой ввод ---------- */
+
+/* Поле пустое и голосовые доступны — вместо «отправить» микрофон, как в Telegram */
+.mic-btn {
+  display: none;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--grad-ink);
+  color: #fff;
+  font-size: 21px;
+  box-shadow: 0 8px 20px -6px rgba(207, 52, 118, 0.8);
+  transition: transform 0.45s var(--spring);
+}
+
+.mic-btn:active {
+  transform: scale(0.86);
+}
+
+.composer__box.has-mic .mic-btn {
+  display: grid;
+  animation: pop-in 0.4s var(--spring) both;
+}
+
+.composer__box.has-mic .send-btn {
+  display: none;
+}
+
+.recorder {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 40px;
+  margin-left: -10px;
+  animation: fade-in 0.25s ease both;
+}
+
+.composer__box.is-recording .composer__input,
+.composer__box.is-transcribing .composer__input {
+  display: none;
+}
+
+.recorder__cancel {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  color: var(--text-2);
+  font-size: 17px;
+}
+
+.recorder__cancel:active {
+  background: var(--surface-2);
+}
+
+.recorder__dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ff4d6d;
+  box-shadow: 0 0 0 0 rgba(255, 77, 109, 0.6);
+  animation: rec-pulse 1.2s ease-in-out infinite;
+}
+
+.recorder__time {
+  flex: none;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.recorder__wave {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+}
+
+.recorder__wave span {
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--grad);
+  animation: wave 0.9s ease-in-out infinite;
+}
+
+.recorder__wave span:nth-child(2) { animation-delay: 0.12s; }
+.recorder__wave span:nth-child(3) { animation-delay: 0.24s; }
+.recorder__wave span:nth-child(4) { animation-delay: 0.36s; }
+.recorder__wave span:nth-child(5) { animation-delay: 0.48s; }
+
+.recorder__hint {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer__box.is-transcribing .recorder__dot,
+.composer__box.is-transcribing .recorder__wave,
+.composer__box.is-transcribing .recorder__cancel {
+  display: none;
+}
+
+.composer__box.is-recording .send-btn {
+  animation: breathe 1.4s ease-in-out infinite;
+}
+
+@keyframes rec-pulse {
+  50% { box-shadow: 0 0 0 7px rgba(255, 77, 109, 0); opacity: 0.6; }
+}
+
+@keyframes wave {
+  0%, 100% { transform: scaleY(0.3); }
+  50% { transform: scaleY(1); }
+}
+
 /* ---------- Панель настроек ---------- */
 
 .sheet-backdrop {

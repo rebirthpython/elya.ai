@@ -137,6 +137,11 @@ async def run(settings: Settings) -> None:
     preferences = PreferencesStore(session_factory)
     long_memory = LongTermMemory(session_factory, ai_client)
     reminders = Reminders(session_factory, ai_client)
+    speech = (
+        SpeechToText(settings.speech_api_key, http_client, model=settings.speech_model)
+        if settings.speech_api_key
+        else None
+    )
     chat_service = ChatService(settings, ai_client, memory, preferences, long_memory, reminders)
     limiter = SlidingWindowLimiter(settings.rate_limit_per_minute)
 
@@ -150,11 +155,7 @@ async def run(settings: Settings) -> None:
         limiter=limiter,
         long_memory=long_memory,
         reminders=reminders,
-        speech=(
-            SpeechToText(settings.speech_api_key, http_client, model=settings.speech_model)
-            if settings.speech_api_key
-            else None
-        ),
+        speech=speech,
     )
     web_runner = None
     scheduler_task = None
@@ -183,6 +184,7 @@ async def run(settings: Settings) -> None:
                         preferences,
                         long_memory,
                         reminders,
+                        speech,
                     ),
                     settings.webapp_host,
                     settings.webapp_port,

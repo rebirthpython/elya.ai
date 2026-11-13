@@ -22,12 +22,14 @@ class SpeechToText:
         self._model = model
         self._url = url
 
-    async def transcribe(self, audio: bytes, filename: str = "voice.ogg") -> str:
+    async def transcribe(
+        self, audio: bytes, filename: str = "voice.ogg", content_type: str = "audio/ogg"
+    ) -> str:
         try:
             response = await self._http.post(
                 self._url,
                 headers={"Authorization": f"Bearer {self._key}"},
-                files={"file": (filename, audio, "audio/ogg")},
+                files={"file": (filename, audio, content_type)},
                 data={"model": self._model, "response_format": "json"},
             )
         except httpx.HTTPError as exc:
