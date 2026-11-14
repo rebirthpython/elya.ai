@@ -79,3 +79,21 @@ def test_describe_database_resolves_sqlite_path_and_hides_passwords(tmp_path, mo
     )
     described = describe_database("postgresql+asyncpg://elya:secret@db:5432/elya")
     assert "secret" not in described and "db:5432/elya" in described
+
+
+async def test_new_chat_keeps_old_messages_but_hides_them_from_the_model(session_factory):
+    memory = MemoryManager(MessageRepository(session_factory), history_limit=10)
+    assert await memory.start_new_chat(1) is None  # пустая история — начинать нечего
+    await memory.save_exchange(1, "старый вопрос", "старый ответ")
+
+    assert await memory.start_new_chat(1) is not None
+    assert await memory.start_new_chat(1) is None  # два раза подряд — одна отметка
+    assert await memory.get_history(1) == []
+    await memory.save_exchange(1, "новый вопрос", "новый ответ")
+
+    assert [m.content for m in await memory.get_history(1)] == ["новый вопрос", "новый ответ"]
+    timeline = await memory.get_timeline(1, 100)
+    assert [m.role for m in timeline] == ["user", "assistant", "break", "user", "assistant"]
+    assert await memory.history_size(1) == 4  # отметка — не сообщение
+    assert await memory.clear_history(1) == 4
+    assert await memory.get_timeline(1, 100) == []

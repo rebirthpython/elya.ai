@@ -100,9 +100,6 @@
     drawerInstructionsMeta: $('drawer-instructions-meta'),
     drawerRecent: $('drawer-recent'),
     drawerEmpty: $('drawer-empty'),
-    drawerConfirm: $('drawer-confirm'),
-    drawerConfirmNo: $('drawer-confirm-no'),
-    drawerConfirmYes: $('drawer-confirm-yes'),
     drawerNew: $('drawer-new'),
     drawerMe: $('drawer-me'),
     drawerInitials: $('drawer-initials'),
@@ -402,6 +399,7 @@
       return result;
     },
     clear: () => request('api/clear', {}),
+    newChat: () => request('api/chat/new', {}),
     savePreferences: (patch) => request('api/preferences', patch),
     saveInstructions: (patch) => request('api/instructions', patch),
     memorySet: (enabled) => request('api/memory', { enabled }),
@@ -632,9 +630,16 @@
       },
       async clear() {
         await sleep(300);
-        const deleted = history.length;
+        const deleted = history.filter((m) => m.role !== 'break').length;
         history = [];
         return { deleted };
+      },
+      async newChat() {
+        await sleep(250);
+        const last = history[history.length - 1];
+        const started = Boolean(last) && last.role !== 'break';
+        if (started) history.push({ role: 'break', content: '', ts: nowTs() });
+        return { started, history: history.slice() };
       },
     };
   })();
@@ -830,6 +835,14 @@
   function addMessage(message, options) {
     const fresh = Boolean(options && options.fresh);
     addDay(message.ts, fresh);
+    if (message.role === 'break') {
+      // Разделитель «Новый чат»: выше — прошлая переписка, Эля её уже не учитывает.
+      const mark = el('div', 'chat-break' + (fresh ? ' chat-break--new' : ''));
+      mark.setAttribute('role', 'separator');
+      mark.append(el('span', '', 'Новый чат'));
+      dom.messages.append(mark);
+      return null;
+    }
 
     const flight = fresh && options && options.flight;
     const root = el('article', 'msg msg--' + message.role + (flight ? ' msg--flying' : fresh ? ' msg--new' : ''));
@@ -2319,7 +2332,6 @@
     dom.drawerInstructionsMeta.textContent = !instr || (!instr.about && !instr.style)
       ? 'не заданы'
       : instr.enabled ? 'вкл.' : 'выкл.';
-    dom.drawerConfirm.hidden = true;
     renderDrawerRecent();
   }
 
@@ -2410,19 +2422,37 @@
     });
   }
 
+  /* «Новый чат»: ничего не удаляется. Эля начинает с чистого листа, а прошлая переписка
+     остаётся в ленте над разделителем — к ней можно вернуться через «Недавнее». */
   async function startNewChat() {
-    dom.drawerConfirmYes.disabled = true;
+    if (dom.drawerNew.disabled) return;
+    if (state.busy) {
+      showToast('Дождись, пока ' + state.assistantName + ' ответит');
+      return;
+    }
+    dom.drawerNew.disabled = true;
+    let data;
     try {
-      await backend.clear();
+      data = await backend.newChat();
     } catch (error) {
       showToast(error.message);
       haptic('notify', 'error');
       return;
     } finally {
-      dom.drawerConfirmYes.disabled = false;
+      dom.drawerNew.disabled = false;
     }
-    dom.drawerConfirm.hidden = true;
-    closeDrawer(() => wipeFeed('Новый чат'));
+    closeDrawer(() => {
+      if (data.started) {
+        renderHistory(data.history || []);
+        const marks = dom.messages.querySelectorAll('.chat-break');
+        if (marks.length) marks[marks.length - 1].classList.add('chat-break--new');
+        showToast('Новый чат. Прошлая переписка осталась выше');
+      } else {
+        showToast('Это уже новый чат');
+      }
+      haptic('notify', 'success');
+      if (finePointer) dom.input.focus();
+    });
   }
 
   /* Шторку можно смахнуть влево. Вертикальная прокрутка внутри работает как обычно. */
@@ -2518,14 +2548,7 @@
       const recent = event.target.closest('[data-recent]');
       if (recent) jumpToRecent(Number(recent.dataset.recent));
     });
-    dom.drawerNew.addEventListener('click', () => {
-      dom.drawerConfirm.hidden = false;
-      haptic('impact', 'medium');
-    });
-    dom.drawerConfirmNo.addEventListener('click', () => {
-      dom.drawerConfirm.hidden = true;
-    });
-    dom.drawerConfirmYes.addEventListener('click', startNewChat);
+    dom.drawerNew.addEventListener('click', startNewChat);
     dom.drawerMe.addEventListener('click', () => closeDrawer(() => openSheet()));
   }
 
@@ -2618,7 +2641,7 @@
     const history = data.history || [];
     const signature = historySignature(history);
     if (signature !== state.signature && !state.notice) {
-      if (state.signature === '' && history.length === dom.messages.querySelectorAll('.msg').length) {
+      if (state.signature === '' && history.length === dom.messages.querySelectorAll('.msg, .chat-break').length) {
         state.signature = signature; // лента уже показывает то же самое
       } else {
         renderHistory(history);

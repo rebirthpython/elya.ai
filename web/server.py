@@ -29,6 +29,7 @@ from bot.handlers.draw import deliver_drawing
 from config.settings import Settings
 from database.models import Message
 from memory.manager import MemoryManager
+from memory.repository import CHAT_BREAK
 from services.chat import ChatService
 from services.drawing import Drawing, DrawingService, history_text
 from services.imagegen import ImageGenerationError, ImageLimitError
@@ -136,6 +137,8 @@ def _timestamp(value: datetime) -> int:
 
 
 def _serialize(message: Message) -> dict[str, Any]:
+    if message.role == CHAT_BREAK:
+        return {"role": "break", "content": "", "ts": _timestamp(message.created_at)}
     return {
         "role": "assistant" if message.role == "assistant" else "user",
         "content": message.content,
@@ -772,6 +775,15 @@ async def post_clear(request: web.Request) -> web.Response:
     return web.json_response({"deleted": deleted})
 
 
+async def post_new_chat(request: web.Request) -> web.Response:
+    """«Новый чат»: Эля начинает с чистого листа, прошлая переписка остаётся в ленте."""
+    user: WebAppUser = request[_USER_KEY]
+    memory = request.app[MEMORY]
+    started = await memory.start_new_chat(user.id) is not None
+    timeline = await memory.get_timeline(user.id, TIMELINE_LIMIT)
+    return web.json_response({"started": started, "history": [_serialize(m) for m in timeline]})
+
+
 async def index(request: web.Request) -> web.FileResponse:
     return web.FileResponse(WEBAPP_DIR / "index.html")
 
@@ -818,6 +830,7 @@ def create_web_app(
     app.router.add_post("/api/chat", post_chat)
     app.router.add_post("/api/chat/stream", post_chat_stream)
     app.router.add_post("/api/clear", post_clear)
+    app.router.add_post("/api/chat/new", post_new_chat)
     app.router.add_post("/api/preferences", post_preferences)
     app.router.add_post("/api/instructions", post_instructions)
     app.router.add_post("/api/memory", post_memory)

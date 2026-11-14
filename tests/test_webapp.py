@@ -205,7 +205,7 @@ async def test_interface_is_served_with_security_headers(env):
 # ---------- доступ ----------
 
 
-@pytest.mark.parametrize("path", ["/api/state", "/api/chat", "/api/clear", "/api/unknown"])
+@pytest.mark.parametrize("path", ["/api/state", "/api/chat", "/api/clear", "/api/chat/new", "/api/unknown"])
 async def test_api_rejects_requests_without_valid_init_data(env, path):
     client, providers = await env["make"]()
     for headers in ({}, {"Authorization": "tma hash=abc"}, auth(sign_init_data(token="1:OTHER"))):
@@ -386,6 +386,26 @@ async def test_daily_limit_is_reported(env):
     assert response.status == 429
     assert (await response.json())["error"]["code"] == "daily_limit"
     assert len(providers[0].calls) == 1
+
+
+async def test_new_chat_keeps_history_and_starts_a_fresh_context(env):
+    await env["memory"].save_exchange(OWNER_ID, "старое", "ответ")
+    client, providers = await env["make"]()
+
+    data = await (await client.post("/api/chat/new", json={}, headers=auth())).json()
+    assert data["started"] is True
+    assert [m["role"] for m in data["history"]] == ["user", "assistant", "break"]
+    again = await (await client.post("/api/chat/new", json={}, headers=auth())).json()
+    assert again["started"] is False and again["history"] == data["history"]
+
+    assert (await client.post("/api/chat", json={"text": "новое"}, headers=auth())).status == 200
+    _, messages = providers[0].calls[-1]
+    sent = " ".join(str(m.content) for m in messages if m.role != "system")
+    assert "старое" not in sent and "новое" in sent
+
+    state = await (await client.get("/api/state", headers=auth())).json()
+    assert [m["role"] for m in state["history"]] == ["user", "assistant", "break", "user", "assistant"]
+    assert state["history"][0]["content"] == "старое"
 
 
 async def test_clear_removes_only_own_history(env):
