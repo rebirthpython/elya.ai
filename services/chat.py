@@ -18,6 +18,7 @@ from memory.manager import MemoryManager
 from services.longterm import LongTermMemory
 from services.preferences import Preferences, PreferencesStore
 from services.reminders import Reminders
+from services.vision import DEFAULT_QUESTION, history_text
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +51,17 @@ class ChatService:
         *,
         user_name: str | None = None,
         prefer: tuple[str, str] | None = None,
+        images: tuple[str, ...] = (),
     ) -> CompletionResult:
         """Отвечает на сообщение и сохраняет обмен. Ошибки ИИ (AIError) пробрасываются,
         история при этом не меняется."""
         settings = self._settings
+        # С фото: модель получает подпись (или вопрос по умолчанию), а в историю
+        # попадает пометка «📷 Фото: подпись» — сама картинка не хранится.
+        question = user_text.strip() or (DEFAULT_QUESTION if images else "")
+        stored_text = history_text(user_text) if images else user_text
         async with self._locks[user_id]:
-            if self._reminders is not None:
+            if self._reminders is not None and not images:
                 # Просьба «напомни …» обрабатывается кодом, а не моделью: так Эля не может
                 # пообещать напоминание, которого нет. Ошибки ИИ (AIError) идут как обычно.
                 handled = await self._reminders.handle_chat_request(user_id, user_text)
@@ -76,14 +82,15 @@ class ChatService:
                     memory=recall.prompt_block() if recall else "",
                 ),
                 history,
-                user_text,
+                question,
                 max_messages=settings.history_max_messages,
                 max_chars=settings.history_max_chars,
+                images=images,
             )
             result = await self._ai.complete(context, prefer=prefer)
-            await self._memory.save_exchange(user_id, user_text, result.text)
+            await self._memory.save_exchange(user_id, stored_text, result.text)
 
-        if recall and recall.enabled and self._long_memory.worth_extracting(user_text):
+        if user_text and recall and recall.enabled and self._long_memory.worth_extracting(user_text):
             self._spawn(
                 self._long_memory.extract_and_store(user_id, user_text, result.text, recall.facts)
             )

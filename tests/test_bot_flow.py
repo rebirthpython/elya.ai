@@ -457,3 +457,92 @@ async def test_voice_from_stranger_is_ignored(env):
     dp = _voice_dispatcher(env, speech)
     await dp.feed_update(env["bot"], _voice_update(user_id=STRANGER_ID))
     assert env["session"].requests == [] and speech.calls == []
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+
+
+def _photo_update(caption=None, document=None, user_id: int = OWNER_ID) -> Update:
+    from aiogram.types import Document, PhotoSize
+
+    global _update_id
+    _update_id += 1
+    user = User(id=user_id, is_bot=False, first_name="Аня")
+    extra = {}
+    if document is None:
+        extra["photo"] = [
+            PhotoSize(file_id="small", file_unique_id="s", width=90, height=60),
+            PhotoSize(file_id="mid", file_unique_id="m", width=1280, height=853),
+            PhotoSize(file_id="huge", file_unique_id="h", width=2560, height=1706),
+        ]
+    else:
+        extra["document"] = Document(file_id="doc", file_unique_id="d", **document)
+    return Update(
+        update_id=_update_id,
+        message=Message(
+            message_id=_update_id, date=datetime.now(timezone.utc),
+            chat=Chat(id=user_id, type="private"), from_user=user, caption=caption, **extra,
+        ),
+    )
+
+
+def _photo_dispatcher(env, seeing=True, content=PNG):
+    import io
+
+    downloaded = []
+
+    async def download(file, *args, **kwargs):
+        downloaded.append(getattr(file, "file_id", None))
+        return io.BytesIO(content)
+
+    env["bot"].download = download
+    provider = env["provider"]
+    provider.vision_models = provider.models if seeing else ()
+    dp = create_dispatcher(_settings(), AIClient([provider], max_tokens=10, temperature=0.1), env["memory"], env["usage"])
+    return dp, downloaded
+
+
+async def test_photo_with_caption_is_answered(env):
+    dp, downloaded = _photo_dispatcher(env)
+    await dp.feed_update(env["bot"], _photo_update("Что это за цветок?"))
+    assert downloaded == ["mid"]  # крупнейший размер не больше 1600 px
+    context = env["provider"].received[-1]
+    assert context[-1].content == "Что это за цветок?" and context[-1].images[0].startswith("data:image/png")
+    assert env["session"].sent_texts()[-1] == "<b>Ответ</b> на: Что это за цветок?"
+    assert (await env["memory"].get_history(OWNER_ID))[0].content == "📷 Фото: Что это за цветок?"
+
+
+async def test_photo_without_caption_and_image_document(env):
+    dp, downloaded = _photo_dispatcher(env)
+    await dp.feed_update(env["bot"], _photo_update())
+    assert env["provider"].received[-1][-1].content == "Что на этом фото? Опиши коротко и по делу."
+    await dp.feed_update(env["bot"], _photo_update("скрин", document={"mime_type": "image/png", "file_size": 1000}))
+    assert downloaded[-1] == "doc" and env["provider"].received[-1][-1].content == "скрин"
+
+
+async def test_photo_errors(env):
+    dp, downloaded = _photo_dispatcher(env)
+    await dp.feed_update(env["bot"], _photo_update(document={"mime_type": "image/png", "file_size": 6 * 1024 * 1024}))
+    assert "слишком большая" in env["session"].sent_texts()[-1] and downloaded == []
+
+    dp, _ = _photo_dispatcher(env, content=b"not an image")
+    await dp.feed_update(env["bot"], _photo_update())
+    assert "Не получилось открыть картинку" in env["session"].sent_texts()[-1]
+
+    dp, _ = _photo_dispatcher(env, seeing=False)
+    await dp.feed_update(env["bot"], _photo_update("что это?"))
+    assert "GEMINI_API_KEY" in env["session"].sent_texts()[-1]
+    assert env["provider"].received == []
+    assert await env["memory"].get_history(OWNER_ID) == []
+
+
+async def test_other_documents_are_still_unsupported(env):
+    dp, downloaded = _photo_dispatcher(env)
+    await dp.feed_update(env["bot"], _photo_update(document={"mime_type": "application/pdf", "file_size": 1000}))
+    assert "Стикеры, видео и другие файлы" in env["session"].sent_texts()[-1] and downloaded == []
+
+
+async def test_photo_from_stranger_is_ignored(env):
+    dp, downloaded = _photo_dispatcher(env)
+    await dp.feed_update(env["bot"], _photo_update("что это?", user_id=STRANGER_ID))
+    assert env["session"].requests == [] and downloaded == []

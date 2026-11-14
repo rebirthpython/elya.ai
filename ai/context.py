@@ -12,6 +12,7 @@ def build_context(
     *,
     max_messages: int,
     max_chars: int,
+    images: tuple[str, ...] = (),
 ) -> list[ChatMessage]:
     """Возвращает [system, ...последние сообщения истории..., текущее сообщение].
 
@@ -35,5 +36,5 @@ def build_context(
     return [
         ChatMessage(role="system", content=system_prompt),
         *selected,
-        ChatMessage(role="user", content=user_text),
+        ChatMessage(role="user", content=user_text, images=images),
     ]

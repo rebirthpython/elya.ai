@@ -248,3 +248,31 @@ async def test_drain_waits_for_slow_extraction(env):
     assert await lt.list(USER) == []  # ответ уже отдан, факт ещё сохраняется
     await chat.drain()
     assert [f.text for f in await lt.list(USER)] == ["Любит чай"]
+
+
+
+async def test_photo_is_answered_and_stored_as_a_placeholder(env):
+    from ai.providers.base import BaseProvider
+
+    class Seeing(ScriptedProvider):
+        def __init__(self):
+            super().__init__('["Любит котов"]')
+            self.vision_models = ("m",)
+
+    provider, lt, chat = env(Seeing())
+    await lt.set_enabled(USER, True)
+
+    await chat.ask(USER, "", images=("data:image/png;base64,AAA",))
+    await chat.drain()
+    current = provider.chat_contexts[-1][-1]
+    assert current.content == "Что на этом фото? Опиши коротко и по делу."
+    assert current.images == ("data:image/png;base64,AAA",)
+    assert provider.extraction_calls == []  # без подписи нечего запоминать
+
+    await chat.ask(USER, "Я обожаю таких котов, какая это порода?", images=("data:image/png;base64,BBB",))
+    await chat.drain()
+    assert provider.chat_contexts[-1][-1].content == "Я обожаю таких котов, какая это порода?"
+    history = await chat._memory.get_history(USER)
+    assert [m.content for m in history][::2] == ["📷 Фото", "📷 Фото: Я обожаю таких котов, какая это порода?"]
+    assert all(not m.images for m in history)  # картинки в истории не хранятся
+    assert len(provider.extraction_calls) == 1  # из подписи факты выделяются как обычно

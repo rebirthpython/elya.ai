@@ -13,6 +13,8 @@ Role = Literal["system", "user", "assistant"]
 class ChatMessage:
     role: Role
     content: str
+    # Картинки (data:-URL), приложенные к сообщению; в истории диалога не хранятся.
+    images: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,10 +102,18 @@ class BadResponseError(ProviderError):
 class BaseProvider(ABC):
     """Интерфейс AI-провайдера. Новые провайдеры реализуют complete()."""
 
-    def __init__(self, name: str, title: str, models: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        name: str,
+        title: str,
+        models: tuple[str, ...],
+        vision_models: tuple[str, ...] = (),
+    ) -> None:
         self.name = name
         self.title = title
         self.models = models
+        # Модели, которые понимают картинки (по ним идут запросы с фото).
+        self.vision_models = vision_models
 
     @abstractmethod
     async def complete(

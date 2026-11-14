@@ -22,6 +22,7 @@ class ProviderConfig:
     base_url: str
     api_key: str
     models: tuple[str, ...]
+    vision_models: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +62,7 @@ KNOWN_PROVIDERS: dict[str, dict[str, str]] = {
         "title": "Google Gemini API",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "models": "gemini-flash-latest,gemini-flash-lite-latest",
+        "vision": "*",  # все модели Gemini понимают картинки
     },
     "openrouter": {
         "title": "OpenRouter",
@@ -71,6 +73,7 @@ KNOWN_PROVIDERS: dict[str, dict[str, str]] = {
         "title": "Groq",
         "base_url": "https://api.groq.com/openai/v1",
         "models": "",
+        "vision": "meta-llama/llama-4-scout-17b-16e-instruct",
     },
     "mistral": {
         "title": "Mistral AI",
@@ -177,12 +180,22 @@ def _load_provider(name: str) -> ProviderConfig | None:
             f"Для провайдера {name!r} не указаны модели: задайте {prefix}_MODELS "
             "(через запятую, в порядке приоритета)."
         )
+    # <NAME>_VISION_MODELS: модели для запросов с фото; «*» — те же, что в <NAME>_MODELS,
+    # «-» — провайдер фото не получает.
+    vision_raw = _get_str(f"{prefix}_VISION_MODELS", known.get("vision", "")) or ""
+    if vision_raw == "*":
+        vision_models = models
+    elif vision_raw == "-":
+        vision_models = ()
+    else:
+        vision_models = tuple(_split_csv(vision_raw))
     return ProviderConfig(
         name=name,
         title=known["title"],
         base_url=base_url,
         api_key=api_key,
         models=models,
+        vision_models=vision_models,
     )
 
 

@@ -255,6 +255,7 @@ async def test_state_describes_assistant_models_and_history(env):
     }
     assert data["reminders"] == {"timezone": None, "items": [], "max": 50, "max_text": 300}
     assert data["voice"] is False
+    assert data["vision"] is False
     assert [o["id"] for o in data["preference_options"]["style"]] == [
         "friendly", "caring", "playful", "business",
     ]
@@ -686,3 +687,86 @@ async def test_voice_requires_access(env):
     stranger = {**auth(sign_init_data(STRANGER_ID)), **headers}
     assert (await client.post("/api/voice", data=b"abc", headers=stranger)).status == 403
     assert speech.calls == []
+
+
+# ---------- фото ----------
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+
+
+class SeeingProvider(ScriptedProvider):
+    def __init__(self, name, models):
+        super().__init__(name, models)
+        self.vision_models = models
+
+
+def _photo_form(image=PNG, text=None, model=None, filename="photo.jpg"):
+    from aiohttp import FormData
+
+    form = FormData()
+    if text is not None:
+        form.add_field("text", text)
+    if model is not None:
+        form.add_field("model", model)
+    if image is not None:
+        form.add_field("image", image, filename=filename, content_type="image/jpeg")
+    return form
+
+
+async def test_photo_is_answered_by_a_vision_model(env):
+    text_only = ScriptedProvider("alpha", ("a1",))
+    seeing = SeeingProvider("beta", ("b1",))
+    client, _ = await env["make"](providers=[text_only, seeing])
+    assert (await (await client.get("/api/state", headers=auth())).json())["vision"] is True
+
+    big = PNG + b"\x00" * 200_000  # больше общего лимита 64 КБ
+    response = await client.post("/api/photo", data=_photo_form(big, "Что это за цветок?", "alpha:a1"), headers=auth())
+    data = await response.json()
+    assert response.status == 200 and data["reply"]["model"] == "b1"
+    assert text_only.calls == []
+    model, context = seeing.calls[0]
+    assert context[-1].content == "Что это за цветок?" and context[-1].images[0].startswith("data:image/png;base64,")
+    history = await env["memory"].get_history(OWNER_ID)
+    assert history[0].content == "📷 Фото: Что это за цветок?"
+
+    response = await client.post("/api/photo", data=_photo_form(text=None), headers=auth())
+    assert response.status == 200
+    assert seeing.calls[-1][1][-1].content == "Что на этом фото? Опиши коротко и по делу."
+
+
+@pytest.mark.parametrize(
+    ("form_kwargs", "status", "code"),
+    [
+        ({"image": b"not an image"}, 415, "bad_image"),
+        ({"image": PNG + b"\x00" * (5 * 1024 * 1024)}, 413, "too_large"),
+        ({"image": None, "text": "без картинки"}, 400, "bad_request"),
+        ({"text": "я" * 4001}, 400, "too_long"),
+    ],
+)
+async def test_photo_validates(env, form_kwargs, status, code):
+    seeing = SeeingProvider("beta", ("b1",))
+    client, _ = await env["make"](providers=[seeing])
+    response = await client.post("/api/photo", data=_photo_form(**form_kwargs), headers=auth())
+    assert response.status == status and (await response.json())["error"]["code"] == code
+    assert seeing.calls == []
+
+
+async def test_photo_rejects_json_and_needs_a_vision_model(env):
+    client, providers = await env["make"]()
+    response = await client.post("/api/photo", json={"text": "x"}, headers=auth())
+    assert response.status == 400
+    response = await client.post("/api/photo", data=_photo_form(), headers=auth())
+    assert response.status == 503 and (await response.json())["error"]["code"] == "no_vision"
+    assert providers[0].calls == []
+    assert await env["memory"].get_history(OWNER_ID) == []
+
+
+async def test_photo_requires_access_and_respects_rate_limit(env):
+    seeing = SeeingProvider("beta", ("b1",))
+    client, _ = await env["make"](providers=[seeing], rate_limit=1)
+    assert (await client.post("/api/photo", data=_photo_form())).status == 401
+    assert (await client.post("/api/photo", data=_photo_form(), headers=auth(sign_init_data(STRANGER_ID)))).status == 403
+    assert (await client.post("/api/photo", data=_photo_form(), headers=auth())).status == 200
+    response = await client.post("/api/photo", data=_photo_form(), headers=auth())
+    assert response.status == 429 and (await response.json())["error"]["code"] == "rate_limited"
+    assert len(seeing.calls) == 1

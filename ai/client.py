@@ -29,6 +29,13 @@ class DailyLimitExceededError(AIError):
         self.limit = limit
 
 
+class NoVisionModelError(AIError):
+    """Ни одна подключённая модель не умеет работать с картинками."""
+
+    def __init__(self) -> None:
+        super().__init__("no vision-capable models configured")
+
+
 class AllProvidersFailedError(AIError):
     def __init__(self, errors: list[ProviderError]) -> None:
         super().__init__("; ".join(str(e) for e in errors) or "all models are cooling down")
@@ -90,8 +97,19 @@ class AIClient:
         """Все пары (провайдер, модель) в порядке приоритета."""
         return [(provider, model) for provider in self._providers for model in provider.models]
 
-    def _candidates(self, prefer: tuple[str, str] | None) -> list[tuple[BaseProvider, str]]:
-        candidates = self.available_models
+    @property
+    def vision_models(self) -> list[tuple[BaseProvider, str]]:
+        """Пары (провайдер, модель), которые понимают картинки."""
+        return [(p, model) for p in self._providers for model in p.vision_models]
+
+    @property
+    def has_vision(self) -> bool:
+        return bool(self.vision_models)
+
+    def _candidates(
+        self, prefer: tuple[str, str] | None, vision: bool = False
+    ) -> list[tuple[BaseProvider, str]]:
+        candidates = self.vision_models if vision else self.available_models
         if prefer is not None:
             # Стабильная сортировка: выбранная модель первой, остальные — в прежнем порядке.
             candidates.sort(key=lambda pair: (pair[0].name, pair[1]) != prefer)
@@ -105,6 +123,9 @@ class AIClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> CompletionResult:
+        vision = any(m.images for m in messages)
+        if vision and not self.has_vision:
+            raise NoVisionModelError
         """Возвращает ответ первой сработавшей модели.
 
         prefer=(провайдер, модель) — с какой модели начать; при её отказе
@@ -113,7 +134,7 @@ class AIClient:
         """
         errors: list[ProviderError] = []
 
-        for provider, model in self._candidates(prefer):
+        for provider, model in self._candidates(prefer, vision):
             key = (provider.name, model)
             paused = self._cooling_error((provider.name, None)) or self._cooling_error(key)
             if paused is not None:

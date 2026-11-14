@@ -70,6 +70,15 @@ def _extract_text(content: Any) -> str:
     return ""
 
 
+def _wire_message(message: ChatMessage) -> dict[str, Any]:
+    """Сообщение в формате OpenAI; с картинками — массив частей (текст + image_url)."""
+    if not message.images:
+        return {"role": message.role, "content": message.content}
+    parts: list[dict[str, Any]] = [{"type": "text", "text": message.content}]
+    parts.extend({"type": "image_url", "image_url": {"url": url}} for url in message.images)
+    return {"role": message.role, "content": parts}
+
+
 class OpenAICompatibleProvider(BaseProvider):
     def __init__(
         self,
@@ -80,8 +89,9 @@ class OpenAICompatibleProvider(BaseProvider):
         api_key: str,
         models: tuple[str, ...],
         http_client: httpx.AsyncClient,
+        vision_models: tuple[str, ...] = (),
     ) -> None:
-        super().__init__(name, title, models)
+        super().__init__(name, title, models, vision_models)
         self._url = f"{base_url.rstrip('/')}/chat/completions"
         self._api_key = api_key
         self._http = http_client
@@ -96,7 +106,7 @@ class OpenAICompatibleProvider(BaseProvider):
     ) -> CompletionResult:
         payload = {
             "model": model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [_wire_message(m) for m in messages],
             "max_tokens": max_tokens,
             "temperature": temperature,
         }

@@ -34,6 +34,11 @@
     scrollDown: $('scroll-down'),
     composer: document.querySelector('.composer'),
     composerBox: $('composer-box'),
+    attach: $('attach'),
+    fileInput: $('file-input'),
+    attachment: $('attachment'),
+    attachmentImg: $('attachment-img'),
+    attachmentRemove: $('attachment-remove'),
     mic: $('mic'),
     recorder: $('recorder'),
     recCancel: $('rec-cancel'),
@@ -119,6 +124,8 @@
     memory: { enabled: false, facts: [], max_facts: 50, max_fact_length: 200 },
     memoryTimers: [],
     voice: false,
+    vision: false,
+    attachment: null,
     recording: null,
     transcribing: false,
     reminders: { timezone: null, items: [], max: 50, max_text: 300 },
@@ -264,9 +271,10 @@
         method: body === undefined ? 'GET' : 'POST',
         headers: Object.assign(
           { Authorization: 'tma ' + tg.initData },
-          body === undefined ? {} : { 'Content-Type': rawType || 'application/json' }
+          // FormData сама выставляет multipart-заголовок с границей
+          body === undefined || body instanceof FormData ? {} : { 'Content-Type': rawType || 'application/json' }
         ),
-        body: body === undefined ? undefined : rawType ? body : JSON.stringify(body),
+        body: body === undefined ? undefined : rawType || body instanceof FormData ? body : JSON.stringify(body),
       });
     } catch (error) {
       throw new ApiError('network', 'Нет связи с сервером. Проверь интернет и попробуй ещё раз.');
@@ -299,6 +307,13 @@
     memoryClear: () => request('api/memory/delete', { all: true }),
     setTimezone: (tz) => request('api/timezone', { tz }),
     voice: (blob, type) => request('api/voice', blob, type),
+    photo: (text, blob, model) => {
+      const form = new FormData();
+      if (text) form.append('text', text);
+      if (model && model !== AUTO) form.append('model', model);
+      form.append('image', blob, 'photo.jpg');
+      return request('api/photo', form);
+    },
     reminderAdd: (text, when, repeat) => request('api/reminders/add', { text, when, repeat }),
     reminderDelete: (id) => request('api/reminders/delete', { id }),
   };
@@ -349,6 +364,7 @@
           memory: memoryView(),
           reminders: remindersView(),
           voice: true,
+          vision: true,
           preference_options: {
             style: [
               { id: 'friendly', title: 'Дружелюбный', description: 'Тепло, с лёгким юмором' },
@@ -388,6 +404,14 @@
         await sleep(150);
         memory.facts = memory.facts.filter((fact) => fact.id !== id);
         return memoryView();
+      },
+      async photo(text) {
+        await sleep(1200);
+        used += 1;
+        const content = 'Вижу фото! 📷 В демо-режиме я не смотрю картинки по-настоящему, а в Telegram модель опишет, что на нём' +
+          (text ? ', и ответит на вопрос: «' + text + '»' : '') + '.';
+        history.push({ role: 'user', content: text ? '📷 Фото: ' + text : '📷 Фото', ts: nowTs() }, { role: 'assistant', content, ts: nowTs() });
+        return { reply: { role: 'assistant', content, ts: nowTs(), provider: 'demo', model: 'gemini-flash-latest', truncated: false }, usage: { used, limit: 300 } };
       },
       async voice() {
         await sleep(700);
@@ -647,6 +671,13 @@
       }
       meta.append(copyChip(message.content, 'Копировать'));
       if (!(options && options.reveal)) bubble.append(window.ElyaMarkdown.render(message.content));
+    } else if (options && options.image) {
+      const photo = el('img', 'bubble__photo');
+      photo.src = options.image;
+      photo.alt = 'Фото';
+      bubble.append(photo);
+      if (message.content) bubble.append(document.createTextNode(message.content));
+      else bubble.classList.add('bubble--photo-only');
     } else {
       bubble.textContent = message.content;
     }
@@ -835,8 +866,10 @@
 
   function updateComposer() {
     const length = dom.input.value.length;
-    const empty = !dom.input.value.trim();
+    const empty = !dom.input.value.trim() && !state.attachment;
     dom.send.disabled = state.recording ? false : state.busy || state.transcribing || empty;
+    dom.composerBox.classList.toggle('can-attach', state.vision);
+    dom.attach.disabled = state.busy;
     dom.composerBox.classList.toggle(
       'has-mic',
       state.voice && CAN_RECORD && empty && !state.recording && !state.transcribing
@@ -901,21 +934,24 @@
     flight.oncancel = land;
   }
 
-  async function send(rawText, failedItem, origin) {
+  async function send(rawText, failedItem, origin, attachment) {
     const text = String(rawText).trim();
-    if (!text || state.busy) return;
+    if ((!text && !attachment) || state.busy) return;
 
     if (state.finishReveal) state.finishReveal();
     clearNotice();
     setBusy(true);
     haptic('impact', 'light');
 
-    const fly = Boolean(origin) && !failedItem && !reducedMotion && typeof Element.prototype.animate === 'function';
+    const fly = Boolean(origin) && !attachment && !failedItem && !reducedMotion && typeof Element.prototype.animate === 'function';
     let item = failedItem;
     if (item) {
       item.root.classList.remove('msg--failed');
     } else {
-      item = addMessage({ role: 'user', content: text, ts: nowTs() }, { fresh: true, flight: fly });
+      item = addMessage(
+        { role: 'user', content: text, ts: nowTs() },
+        { fresh: true, flight: fly, image: attachment ? attachment.url : null }
+      );
     }
     updateWelcome();
     const typing = showTyping();
@@ -928,7 +964,9 @@
     }
 
     try {
-      const data = await backend.chat(text, state.model);
+      const data = attachment
+        ? await backend.photo(text, attachment.blob, state.model)
+        : await backend.chat(text, state.model);
       typing.dismiss();
       addAssistantReply(data.reply);
       haptic('impact', 'soft');
@@ -948,9 +986,80 @@
       }
       if (error.code === 'network') setStatus('offline');
       item.root.classList.add('msg--failed');
-      showNotice(error.message, () => send(text, item));
+      showNotice(error.message, () => send(text, item, null, attachment));
       scrollToBottom(true);
     }
+  }
+
+  /* ---------- Фото ---------- */
+
+  const MAX_PHOTO_SIDE = 1600;
+
+  /* Уменьшает фото на телефоне (до 1600 px, JPEG): быстрее отправка, и стираются
+     служебные данные снимка вроде геолокации. */
+  async function preparePhoto(file) {
+    const source = URL.createObjectURL(file);
+    try {
+      const image = new Image();
+      image.src = source;
+      await image.decode();
+      const scale = Math.min(1, MAX_PHOTO_SIDE / Math.max(image.naturalWidth, image.naturalHeight));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      const context = canvas.getContext('2d');
+      context.fillStyle = '#fff'; // у PNG с прозрачностью фон станет белым, а не чёрным
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.86));
+      if (!blob) throw new Error('encode');
+      return blob;
+    } finally {
+      URL.revokeObjectURL(source);
+    }
+  }
+
+  async function pickPhoto(file) {
+    if (!file) return;
+    if (!/^image\//.test(file.type)) {
+      showToast('Это не картинка: выбери фото или скриншот.');
+      return;
+    }
+    let blob;
+    try {
+      blob = await preparePhoto(file);
+    } catch (error) {
+      showToast('Не получилось открыть картинку. Попробуй другое фото.');
+      return;
+    }
+    clearAttachment(true);
+    state.attachment = { blob, url: URL.createObjectURL(blob) };
+    dom.attachmentImg.src = state.attachment.url;
+    dom.attachment.classList.remove('is-leaving');
+    dom.attachment.hidden = false;
+    dom.input.placeholder = 'Подпись или вопрос к фото…';
+    haptic('impact', 'light');
+    updateComposer();
+    if (finePointer) dom.input.focus();
+  }
+
+  /* keepUrl — ссылка ещё нужна пузырю сообщения, в котором показано фото. */
+  function clearAttachment(instant, keepUrl) {
+    const current = state.attachment;
+    state.attachment = null;
+    dom.input.placeholder = 'Напиши сообщение…';
+    if (current && !keepUrl) URL.revokeObjectURL(current.url);
+    if (dom.attachment.hidden) return updateComposer();
+    if (instant || reducedMotion) {
+      dom.attachment.hidden = true;
+    } else {
+      dom.attachment.classList.add('is-leaving');
+      setTimeout(() => {
+        if (!state.attachment) dom.attachment.hidden = true;
+        dom.attachment.classList.remove('is-leaving');
+      }, 220);
+    }
+    updateComposer();
   }
 
   /* ---------- Голосовой ввод ---------- */
@@ -1063,6 +1172,14 @@
       return;
     }
     const text = dom.input.value;
+    if (state.attachment && !state.busy) {
+      const attachment = state.attachment;
+      dom.input.value = '';
+      autosize();
+      clearAttachment(false, true);
+      send(text, null, null, attachment);
+      return;
+    }
     if (!text.trim() || state.busy) return;
     const origin = { kind: 'input', rect: dom.input.getBoundingClientRect() };
     dom.input.value = '';
@@ -1710,6 +1827,7 @@
     state.usage = data.usage || state.usage;
     state.maxLength = (data.limits && data.limits.max_text_length) || 4000;
     state.voice = Boolean(data.voice);
+    state.vision = Boolean(data.vision);
     if (data.preferences) state.preferences = data.preferences;
     if (data.memory) state.memory = Object.assign({}, state.memory, data.memory);
     if (data.reminders) state.reminders = Object.assign({}, state.reminders, data.reminders);
@@ -1811,6 +1929,13 @@
     dom.send.addEventListener('mousedown', (event) => event.preventDefault());
     dom.send.addEventListener('click', submit);
     dom.mic.addEventListener('click', startRecording);
+    dom.attach.addEventListener('click', () => dom.fileInput.click());
+    dom.fileInput.addEventListener('change', () => {
+      const file = dom.fileInput.files && dom.fileInput.files[0];
+      dom.fileInput.value = ''; // чтобы то же фото можно было выбрать ещё раз
+      pickPhoto(file);
+    });
+    dom.attachmentRemove.addEventListener('click', () => clearAttachment(false));
     dom.recCancel.addEventListener('click', () => stopRecording(true));
 
     dom.suggestions.addEventListener('click', (event) => {

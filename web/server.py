@@ -15,7 +15,7 @@ from typing import Any
 from aiogram.utils.web_app import WebAppUser
 from aiohttp import web
 
-from ai.client import AIClient, AllProvidersFailedError, DailyLimitExceededError
+from ai.client import AIClient, AllProvidersFailedError, DailyLimitExceededError, NoVisionModelError
 from config.settings import Settings
 from database.models import Message
 from memory.manager import MemoryManager
@@ -23,6 +23,7 @@ from services.chat import ChatService
 from services.longterm import MAX_FACT_LENGTH, MAX_FACTS, LongTermMemory, MemoryFullError
 from services.preferences import PreferencesStore
 from services.speech import SpeechError, SpeechToText
+from services.vision import MAX_IMAGE_BYTES, NO_VISION_TEXT, ImageError, to_data_url
 from services.reminders import (
     MAX_AHEAD,
     MAX_PENDING,
@@ -74,7 +75,7 @@ _CSP = (
     "default-src 'none'; "
     "script-src 'self' https://telegram.org; "
     "style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data:; "
+    "img-src 'self' data: blob:; "
     "connect-src 'self'; "
     "base-uri 'none'; "
     "form-action 'none'"
@@ -225,6 +226,7 @@ async def get_state(request: web.Request) -> web.Response:
             "usage": {"used": await usage.used_today(), "limit": usage.daily_limit},
             "limits": {"max_text_length": MAX_TEXT_LENGTH},
             "voice": app[SPEECH] is not None,
+            "vision": app[AI_CLIENT].has_vision,
             "preferences": (await app[PREFERENCES].get(user.id)).as_dict(),
             "memory": await _memory_payload(app[LONG_MEMORY], user.id),
             "reminders": await _reminders_payload(app[REMINDERS], user.id),
@@ -234,9 +236,7 @@ async def get_state(request: web.Request) -> web.Response:
 
 
 async def post_chat(request: web.Request) -> web.Response:
-    app = request.app
     user: WebAppUser = request[_USER_KEY]
-
     payload = await _read_json(request)
     text = payload.get("text") if payload else None
     if not isinstance(text, str) or not text.strip():
@@ -246,7 +246,61 @@ async def post_chat(request: web.Request) -> web.Response:
         return _error(
             400, "too_long", f"Сообщение длиннее {MAX_TEXT_LENGTH} символов — сократи его."
         )
+    return await _answer(request, user, text, payload.get("model"))
 
+
+async def _read_part(part, limit: int) -> bytes | None:
+    """Читает часть multipart-запроса; None — превышен лимит."""
+    data = bytearray()
+    while chunk := await part.read_chunk(64 * 1024):
+        data += chunk
+        if len(data) > limit:
+            return None
+    return bytes(data)
+
+
+async def post_photo(request: web.Request) -> web.Response:
+    """multipart: image (файл), text (подпись, необязательно), model (необязательно)."""
+    user: WebAppUser = request[_USER_KEY]
+    if not request.content_type.startswith("multipart/"):
+        return _error(400, "bad_request", "Некорректный запрос.")
+    image: bytes | None = None
+    fields: dict[str, str] = {}
+    try:
+        reader = await request.multipart()
+        async for part in reader:
+            if part.name == "image":
+                image = await _read_part(part, MAX_IMAGE_BYTES)
+                if image is None:
+                    return _error(413, "too_large", "Картинка слишком большая: до 5 МБ.")
+            elif part.name in ("text", "model"):
+                raw = await _read_part(part, MAX_TEXT_LENGTH * 4)
+                if raw is None:
+                    return _error(400, "too_long", f"Подпись длиннее {MAX_TEXT_LENGTH} символов.")
+                fields[part.name] = raw.decode("utf-8", errors="replace")
+    except (ValueError, AssertionError):  # битый multipart
+        return _error(400, "bad_request", "Некорректный запрос.")
+    if image is None:
+        return _error(400, "bad_request", "Нет картинки.")
+    text = fields.get("text", "").strip()
+    if len(text) > MAX_TEXT_LENGTH:
+        return _error(400, "too_long", f"Подпись длиннее {MAX_TEXT_LENGTH} символов.")
+    try:
+        data_url = to_data_url(image)
+    except ImageError:
+        return _error(415, "bad_image", "Не получилось открыть картинку: нужен JPEG, PNG или WebP.")
+    return await _answer(request, user, text, fields.get("model"), images=(data_url,))
+
+
+async def _answer(
+    request: web.Request,
+    user: WebAppUser,
+    text: str,
+    model: Any,
+    images: tuple[str, ...] = (),
+) -> web.Response:
+    """Общая часть /api/chat и /api/photo: лимит частоты, ответ модели, ошибки ИИ."""
+    app = request.app
     retry_after = app[LIMITER].hit(user.id)
     if retry_after is not None:
         seconds = max(1, int(retry_after))
@@ -262,8 +316,11 @@ async def post_chat(request: web.Request) -> web.Response:
             user.id,
             text,
             user_name=user.first_name,
-            prefer=_resolve_model(app[AI_CLIENT], payload.get("model")),
+            prefer=_resolve_model(app[AI_CLIENT], model),
+            images=images,
         )
+    except NoVisionModelError:
+        return _error(503, "no_vision", NO_VISION_TEXT)
     except DailyLimitExceededError as exc:
         return _error(
             429,
@@ -503,6 +560,7 @@ def create_web_app(
     app.router.add_post("/api/reminders/add", post_reminder_add)
     app.router.add_post("/api/reminders/delete", post_reminder_delete)
     app.router.add_post("/api/voice", post_voice)
+    app.router.add_post("/api/photo", post_photo)
     app.router.add_static("/assets/", WEBAPP_DIR / "assets")
     return app
 

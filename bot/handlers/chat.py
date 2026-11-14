@@ -10,10 +10,11 @@ from aiogram.enums import ParseMode
 from aiogram.types import Message
 from aiogram.utils.chat_action import ChatActionSender
 
-from ai.client import AllProvidersFailedError, DailyLimitExceededError
+from ai.client import AllProvidersFailedError, DailyLimitExceededError, NoVisionModelError
 from bot.utils.sender import send_long_text
 from services.chat import ChatService
 from services.speech import SpeechError, SpeechToText
+from services.vision import MAX_IMAGE_BYTES, NO_VISION_TEXT, ImageError, to_data_url
 
 MAX_VOICE_SECONDS = 300
 
@@ -71,14 +72,44 @@ async def handle_voice(
     await _reply(message, bot, chat_service, text)
 
 
-async def _reply(message: Message, bot: Bot, chat_service: ChatService, text: str) -> None:
+async def handle_photo(message: Message, bot: Bot, chat_service: ChatService) -> None:
+    """Фото (или картинка, отправленная файлом) + подпись → ответ Эли."""
+    if message.from_user is None:
+        return
+    if message.photo:
+        # Самый крупный размер не больше ~1600 px: модели этого хватает, а запрос легче.
+        sizes = sorted(message.photo, key=lambda s: s.width * s.height)
+        fitting = [s for s in sizes if max(s.width, s.height) <= 1600]
+        source = fitting[-1] if fitting else sizes[0]
+    else:
+        source = message.document
+        if (source.file_size or 0) > MAX_IMAGE_BYTES:
+            await message.answer("Картинка слишком большая: я принимаю до 5 МБ.")
+            return
+    try:
+        async with ChatActionSender.upload_photo(bot=bot, chat_id=message.chat.id):
+            file = await bot.download(source)
+        image = to_data_url(file.getvalue() if file else b"")
+    except ImageError:
+        await message.answer("Не получилось открыть картинку. Пришли её как фото (JPEG, PNG или WebP).")
+        return
+    await _reply(message, bot, chat_service, (message.caption or "").strip(), images=(image,))
+
+
+async def _reply(
+    message: Message, bot: Bot, chat_service: ChatService, text: str, images: tuple[str, ...] = ()
+) -> None:
     try:
         async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
             result = await chat_service.ask(
                 message.from_user.id,
                 text,
                 user_name=message.from_user.first_name,
+                images=images,
             )
+    except NoVisionModelError:
+        await message.answer(NO_VISION_TEXT)
+        return
     except DailyLimitExceededError as exc:
         await message.answer(
             f"📵 Достигнут дневной лимит запросов к ИИ ({exc.limit}). "
@@ -98,7 +129,7 @@ async def _reply(message: Message, bot: Bot, chat_service: ChatService, text: st
 
 async def handle_unsupported(message: Message) -> None:
     await message.answer(
-        "Я понимаю текст и голосовые сообщения. Фото научусь разбирать позже 🙂"
+        "Я понимаю текст, голосовые и фото. Стикеры, видео и другие файлы пока не умею разбирать 🙂"
     )
 
 
@@ -106,5 +137,7 @@ def create_router() -> Router:
     router = Router(name="chat")
     router.message.register(handle_text, F.text)
     router.message.register(handle_voice, F.voice)
+    router.message.register(handle_photo, F.photo)
+    router.message.register(handle_photo, F.document.mime_type.startswith("image/"))
     router.message.register(handle_unsupported)
     return router
