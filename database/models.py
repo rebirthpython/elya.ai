@@ -56,6 +56,15 @@ class DailyImageUsage(Base):
     requests: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class DailySearchUsage(Base):
+    """Счётчик поисков в интернете за сутки (UTC) — защита квоты поискового API."""
+
+    __tablename__ = "daily_search_usage"
+
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    requests: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class UserPreferences(Base):
     """Как Эля общается с пользователем: стиль и подробность ответов."""
 

@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from database.models import DailyImageUsage, DailyUsage
+from database.models import DailyImageUsage, DailySearchUsage, DailyUsage
 
 
 def _today() -> date:
@@ -16,7 +16,8 @@ def _today() -> date:
 class UsageTracker:
     """Считает каждую HTTP-попытку к провайдеру. daily_limit=0 — без ограничения.
 
-    table — таблица счётчика: DailyUsage для текстовых запросов, DailyImageUsage для картинок.
+    table — таблица счётчика: DailyUsage для текстовых запросов, DailyImageUsage
+    для картинок, DailySearchUsage для поиска в интернете.
     """
 
     def __init__(
@@ -24,7 +25,7 @@ class UsageTracker:
         session_factory: async_sessionmaker,
         daily_limit: int,
         *,
-        table: type[DailyUsage] | type[DailyImageUsage] = DailyUsage,
+        table: type[DailyUsage] | type[DailyImageUsage] | type[DailySearchUsage] = DailyUsage,
     ) -> None:
         self._session_factory = session_factory
         self.daily_limit = daily_limit

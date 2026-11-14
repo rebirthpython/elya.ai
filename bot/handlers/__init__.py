@@ -11,6 +11,7 @@ def get_routers() -> list[Router]:
         study.create_router(),
         reminders.create_router(),
         draw.create_router(),
+        chat.create_search_router(),
         commands.create_router(),
         chat.create_router(),
     ]

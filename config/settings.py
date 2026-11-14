@@ -42,6 +42,25 @@ class ImageProviderConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class SearchConfig:
+    """Поиск в интернете (выдача Google через Serper.dev или SerpApi)."""
+
+    # Пары (провайдер, API-ключ) в порядке приоритета; пусто — поиск выключен.
+    providers: tuple[tuple[str, str], ...] = ()
+    # True — Эля сама решает, когда искать; False — только по явной просьбе.
+    auto: bool = True
+    language: str = "ru"
+    region: str = ""
+    max_results: int = 6
+    # Поисков в сутки (UTC), 0 — без ограничения.
+    daily_limit: int = 100
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.providers)
+
+
+@dataclass(frozen=True, slots=True)
 class Settings:
     bot_token: str
     allowed_user_ids: frozenset[int]
@@ -70,6 +89,7 @@ class Settings:
     # Картинки: сервисы в порядке приоритета (пусто — рисование выключено) и дневной лимит.
     image_providers: tuple[ImageProviderConfig, ...] = ()
     image_daily_limit: int = 50
+    search: SearchConfig = SearchConfig()
 
     @property
     def webapp_enabled(self) -> bool:
@@ -165,6 +185,17 @@ def _get_float(name: str, default: float, *, minimum: float, maximum: float) -> 
     if not minimum <= value <= maximum:
         raise ConfigError(f"{name} должно быть в диапазоне [{minimum}, {maximum}], получено: {value}")
     return value
+
+
+def _get_bool(name: str, default: bool) -> bool:
+    raw = _get_str(name).lower()
+    if not raw:
+        return default
+    if raw in ("1", "true", "yes", "on", "да"):
+        return True
+    if raw in ("0", "false", "no", "off", "нет"):
+        return False
+    raise ConfigError(f"{name} должно быть true или false, получено: {raw!r}")
 
 
 def _split_csv(raw: str) -> list[str]:
@@ -303,6 +334,38 @@ def _load_image_providers() -> tuple[ImageProviderConfig, ...]:
     )
 
 
+# Провайдеры поиска: имя → переменная с ключом.
+SEARCH_PROVIDERS: dict[str, str] = {
+    "serper": "SERPER_API_KEY",
+    "serpapi": "SERPAPI_API_KEY",
+}
+
+
+def _load_search() -> SearchConfig:
+    """Поиск включается, когда задан ключ хотя бы одного провайдера из SEARCH_PROVIDERS."""
+    names = _split_csv(_get_str("SEARCH_PROVIDERS", ",".join(SEARCH_PROVIDERS)).lower())
+    providers: list[tuple[str, str]] = []
+    for name in dict.fromkeys(names):
+        if name not in SEARCH_PROVIDERS:
+            raise ConfigError(
+                f"SEARCH_PROVIDERS: неизвестный провайдер поиска {name!r}. "
+                f"Доступны: {', '.join(SEARCH_PROVIDERS)}"
+            )
+        if key := _get_str(SEARCH_PROVIDERS[name]):
+            providers.append((name, key))
+    max_results = _get_int("SEARCH_MAX_RESULTS", 6, minimum=1)
+    if max_results > 10:
+        raise ConfigError(f"SEARCH_MAX_RESULTS должно быть от 1 до 10, получено: {max_results}")
+    return SearchConfig(
+        providers=tuple(providers),
+        auto=_get_bool("SEARCH_AUTO", True),
+        language=_get_str("SEARCH_LANGUAGE", "ru").lower(),
+        region=_get_str("SEARCH_REGION").lower(),
+        max_results=max_results,
+        daily_limit=_get_int("SEARCH_DAILY_LIMIT", 100, minimum=0),
+    )
+
+
 def load_settings(env_file: str | None = ".env") -> Settings:
     """Читает .env (если есть) и переменные окружения, валидирует их."""
     if env_file:
@@ -355,4 +418,5 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         speech_model=_get_str("SPEECH_MODEL", "whisper-large-v3-turbo") or "whisper-large-v3-turbo",
         image_providers=_load_image_providers(),
         image_daily_limit=_get_int("IMAGE_DAILY_LIMIT", 50, minimum=0),
+        search=_load_search(),
     )

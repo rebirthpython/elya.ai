@@ -48,6 +48,7 @@ from services.reminders import (
 )
 from services.preferences import options as preference_options
 from services.rate_limit import SlidingWindowLimiter
+from services.search import SearchStarted, WebSearch
 from services.usage import UsageTracker
 from web.auth import InitDataError, extract_init_data, verify_init_data
 
@@ -71,6 +72,7 @@ INSTRUCTIONS = web.AppKey("instructions", object)
 SPEECH = web.AppKey("speech", object)
 DRAWING = web.AppKey("drawing", object)
 BOT = web.AppKey("bot", object)
+SEARCH = web.AppKey("search", object)
 
 MAX_VOICE_BYTES = 5 * 1024 * 1024
 # Что умеет записывать браузер телефона → расширение файла для Whisper
@@ -293,6 +295,7 @@ async def get_state(request: web.Request) -> web.Response:
             "voice": app[SPEECH] is not None,
             "vision": app[AI_CLIENT].has_vision,
             "images": await _images_payload(app[DRAWING]),
+            "search": app[SEARCH] is not None,
             "preferences": (await app[PREFERENCES].get(user.id)).as_dict(),
             "instructions": await _instructions_payload(app[INSTRUCTIONS], user.id),
             "memory": await _memory_payload(app[LONG_MEMORY], user.id),
@@ -418,7 +421,12 @@ async def post_chat(request: web.Request) -> web.Response:
         return _error(
             400, "too_long", f"Сообщение длиннее {MAX_TEXT_LENGTH} символов — сократи его."
         )
-    return await _answer(request, user, text, payload.get("model"))
+    return await _answer(request, user, text, payload.get("model"), search=_search_flag(payload))
+
+
+def _search_flag(payload: dict[str, Any]) -> bool | None:
+    """Поле "search": true — пользователь включил поиск для этого сообщения (кнопка 🌐)."""
+    return True if payload.get("search") is True else None
 
 
 async def _read_part(part, limit: int) -> bytes | None:
@@ -515,6 +523,8 @@ async def _answer(
     text: str,
     model: Any,
     images: tuple[str, ...] = (),
+    *,
+    search: bool | None = None,
 ) -> web.Response:
     """Общая часть /api/chat и /api/photo: лимит частоты, ответ модели, ошибки ИИ."""
     app = request.app
@@ -533,6 +543,7 @@ async def _answer(
             user_name=user.first_name,
             prefer=_resolve_model(app[AI_CLIENT], model),
             images=images,
+            search=search,
         )
     except AIError as exc:
         return _error(*_ai_error(exc))
@@ -541,6 +552,7 @@ async def _answer(
 
 async def post_chat_stream(request: web.Request) -> web.StreamResponse:
     """Как /api/chat, но ответ приходит по мере генерации — построчно (NDJSON):
+    {"type": "search", "query": "..."} — Эля ищет в интернете (если понадобилось),
     {"type": "delta", "text": "..."} … и в конце {"type": "done", "reply": …, "usage": …}
     или {"type": "error", "error": {...}}. Ошибки до начала ответа — обычный JSON со статусом."""
     app = request.app
@@ -572,6 +584,7 @@ async def post_chat_stream(request: web.Request) -> web.StreamResponse:
         text,
         user_name=user.first_name,
         prefer=_resolve_model(app[AI_CLIENT], payload.get("model")),
+        search=_search_flag(payload),
     )
     try:
         # Ждём начала ответа: если модель недоступна, честнее вернуть обычную ошибку.
@@ -597,7 +610,10 @@ async def post_chat_stream(request: web.Request) -> web.StreamResponse:
                 if isinstance(event, CompletionResult):
                     await emit({"type": "done", **await _reply_payload(app, event)})
                     break
-                await emit({"type": "delta", "text": event})
+                if isinstance(event, SearchStarted):
+                    await emit({"type": "search", "query": event.query})
+                else:
+                    await emit({"type": "delta", "text": event})
                 event = await anext(events)
         except AIError as exc:
             status, code, message = _ai_error(exc)
@@ -806,6 +822,7 @@ def create_web_app(
     instructions: InstructionsStore | None = None,
     drawing: DrawingService | None = None,
     bot: Bot | None = None,
+    search: WebSearch | None = None,
 ) -> web.Application:
     app = web.Application(
         middlewares=[security_headers, api_guard], client_max_size=MAX_BODY_BYTES
@@ -823,6 +840,7 @@ def create_web_app(
     app[INSTRUCTIONS] = instructions
     app[DRAWING] = drawing
     app[BOT] = bot
+    app[SEARCH] = search
 
     app.router.add_get("/", index)
     app.router.add_get("/healthz", health)

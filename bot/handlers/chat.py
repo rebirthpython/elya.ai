@@ -1,4 +1,4 @@
-"""Диалог с ИИ: обычные текстовые сообщения."""
+"""Диалог с ИИ: текст, голосовые, фото и поиск в интернете (/search)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from html import escape
 
 from aiogram import Bot, F, Router
 from aiogram.enums import ParseMode
+from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from aiogram.utils.chat_action import ChatActionSender
@@ -17,6 +18,7 @@ from bot.handlers.draw import DrawStates, draw_and_send, maybe_draw
 from bot.utils.live import LiveMessage
 from services.chat import ChatService
 from services.drawing import DrawingService
+from services.search import SearchStarted
 from services.speech import SpeechError, SpeechToText
 from services.vision import MAX_IMAGE_BYTES, NO_VISION_TEXT, ImageError, to_data_url
 
@@ -118,8 +120,38 @@ async def handle_photo(message: Message, bot: Bot, chat_service: ChatService) ->
     await _reply(message, bot, chat_service, (message.caption or "").strip(), images=(image,))
 
 
+async def cmd_search(
+    message: Message, command: CommandObject, bot: Bot, chat_service: ChatService
+) -> None:
+    """/search запрос — ответ по свежим результатам Google со ссылками на источники."""
+    if message.from_user is None:
+        return
+    if not chat_service.search_enabled:
+        await message.answer(
+            "🔎 Поиск в интернете пока не настроен: владельцу бота нужно добавить ключ "
+            "SERPER_API_KEY или SERPAPI_API_KEY (бесплатно, подробности — в README)."
+        )
+        return
+    query = (command.args or "").strip()
+    if not query:
+        await message.answer(
+            "Напиши, что найти, например: <code>/search курс евро сегодня</code>\n\n"
+            "Можно и без команды: «погугли, когда выходит …» или «найди в интернете …»."
+            + (" А если для ответа нужны свежие сведения, я поищу сама." if chat_service.search_auto else ""),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    await _reply(message, bot, chat_service, query, search=True)
+
+
 async def _reply(
-    message: Message, bot: Bot, chat_service: ChatService, text: str, images: tuple[str, ...] = ()
+    message: Message,
+    bot: Bot,
+    chat_service: ChatService,
+    text: str,
+    images: tuple[str, ...] = (),
+    *,
+    search: bool | None = None,
 ) -> None:
     """Ответ Эли, который появляется в чате по мере генерации."""
     live = LiveMessage(bot, message)
@@ -132,9 +164,12 @@ async def _reply(
                 text,
                 user_name=message.from_user.first_name,
                 images=images,
+                search=search,
             ):
                 if isinstance(event, CompletionResult):
                     result = event
+                elif isinstance(event, SearchStarted):
+                    await live.status(f"🔎 Ищу в интернете: «{event.query}»…")
                 else:
                     answer += event
                     await live.update(answer)
@@ -167,6 +202,13 @@ async def handle_unsupported(message: Message) -> None:
         "Я понимаю текст, голосовые и фото. Стикеры, видео и другие файлы пока не умею разбирать 🙂\n"
         "Файл с лекцией (.txt, .docx, .pdf) можно прислать после команды /notes или /slides."
     )
+
+
+def create_search_router() -> Router:
+    """Отдельно от общего чата: команда должна сработать раньше «неизвестной команды»."""
+    router = Router(name="search")
+    router.message.register(cmd_search, Command("search", "google"))
+    return router
 
 
 def create_router() -> Router:

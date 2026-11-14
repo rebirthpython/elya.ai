@@ -35,6 +35,7 @@
     composer: document.querySelector('.composer'),
     composerBox: $('composer-box'),
     attach: $('attach'),
+    searchToggle: $('search-toggle'),
     fileInput: $('file-input'),
     attachment: $('attachment'),
     attachmentImg: $('attachment-img'),
@@ -155,6 +156,8 @@
     memoryTimers: [],
     voice: false,
     vision: false,
+    search: false, // на сервере подключён поиск в интернете
+    searchNext: false, // кнопка 🌐: следующее сообщение — с поиском
     attachment: null,
     recording: null,
     transcribing: false,
@@ -334,19 +337,28 @@
     return data;
   }
 
+  function chatBody(text, model, search) {
+    const body = { text };
+    if (model !== AUTO) body.model = model;
+    if (search) body.search = true;
+    return body;
+  }
+
   const server = {
     state: () => request('api/state'),
-    chat: (text, model) => request('api/chat', model === AUTO ? { text } : { text, model }),
+    chat: (text, model, search) => request('api/chat', chatBody(text, model, search)),
     /* Ответ по мере генерации (NDJSON). onDelta получает новые куски текста;
-       возвращает то же, что chat(). Без поддержки потоков — обычный chat(). */
-    async chatStream(text, model, onDelta) {
-      if (!window.ReadableStream || !window.TextDecoder) return server.chat(text, model);
+       extra.search — искать в интернете, extra.onSearch(query) — Эля начала искать.
+       Возвращает то же, что chat(). Без поддержки потоков — обычный chat(). */
+    async chatStream(text, model, onDelta, extra) {
+      const search = Boolean(extra && extra.search);
+      if (!window.ReadableStream || !window.TextDecoder) return server.chat(text, model, search);
       let response;
       try {
         response = await fetch('api/chat/stream', {
           method: 'POST',
           headers: { Authorization: 'tma ' + tg.initData, 'Content-Type': 'application/json' },
-          body: JSON.stringify(model === AUTO ? { text } : { text, model }),
+          body: JSON.stringify(chatBody(text, model, search)),
         });
       } catch (error) {
         throw new ApiError('network', 'Нет связи с сервером. Проверь интернет и попробуй ещё раз.');
@@ -373,7 +385,9 @@
           return;
         }
         if (event.type === 'delta' && event.text) onDelta(event.text);
-        else if (event.type === 'done') result = event;
+        else if (event.type === 'search') {
+          if (extra && extra.onSearch) extra.onSearch(String(event.query || ''));
+        } else if (event.type === 'done') result = event;
         else if (event.type === 'error') {
           const info = event.error || {};
           throw new ApiError(info.code || 'ai_unavailable', info.message || 'Ответ оборвался. Попробуй ещё раз.', 503);
@@ -496,6 +510,7 @@
           voice: true,
           vision: true,
           images: { enabled: true, used: 0, limit: 50 },
+          search: true,
           preference_options: {
             style: [
               { id: 'friendly', title: 'Дружелюбный', description: 'Тепло, с лёгким юмором' },
@@ -580,8 +595,14 @@
         await sleep(1500);
         return demoDrawing('🔄 Ещё вариант', id);
       },
-      async chatStream(text, model, onDelta) {
-        const data = await this.chat(text, model);
+      async chatStream(text, model, onDelta, extra) {
+        const searching = Boolean(extra && extra.search) || /гугл|в интернете|источник/i.test(text);
+        if (searching && extra && extra.onSearch) {
+          await sleep(600);
+          extra.onSearch(text.replace(/^(?:по|за)гугли[,:]?\s*|^найди в интернете[,:]?\s*/i, '').slice(0, 80));
+          await sleep(1400);
+        }
+        const data = await this.chat(text, model, searching);
         if (data.reply.provider === 'reminders' || data.reply.image) return data;
         const words = data.reply.content.split(/(\s+)/);
         for (let i = 0; i < words.length; i += 4) {
@@ -590,7 +611,7 @@
         }
         return data;
       },
-      async chat(text, model) {
+      async chat(text, model, searching) {
         await sleep(1100 + Math.random() * 700);
         if (/ошибк/i.test(text)) {
           throw new ApiError('ai_unavailable', 'ИИ-сервис сейчас не отвечает. Отправь сообщение ещё раз чуть позже.', 503);
@@ -606,8 +627,12 @@
           history.push({ role: 'user', content: text, ts: nowTs() }, { role: 'assistant', content, ts: nowTs() });
           return { reply: { role: 'assistant', content, ts: nowTs(), provider: 'reminders', model: '', truncated: false }, usage: { used, limit: 300 } };
         }
-        const content = replies[turn % replies.length];
-        turn += 1;
+        const content = searching
+          ? 'Вот что пишут в интернете [1]. В демо-режиме я не ищу по-настоящему, поэтому ответ и ссылки — заготовка [2].\n\n' +
+            '**Источники:**\n1. [Пример результата поиска](https://example.com/) — example.com\n' +
+            '2. [Ещё один источник](https://example.org/) — example.org'
+          : replies[turn % replies.length];
+        if (!searching) turn += 1;
         used += 1;
         if (memory.enabled && /(^|\s)(я|мне|люблю|живу)(\s|$)/i.test(text)) {
           setTimeout(() => {
@@ -1048,8 +1073,7 @@
     root.append(bubble);
     dom.messages.append(root);
 
-    // Если модель долго думает, рядом с точками появляется пояснение.
-    const timers = TYPING_HINTS.map(([delay, text]) => setTimeout(() => {
+    const setHint = (text) => {
       const from = bubble.offsetWidth;
       let hint = bubble.querySelector('.typing__hint');
       if (!hint) {
@@ -1059,7 +1083,16 @@
       hint.textContent = text;
       motion(hint, [{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: 350, easing: 'ease-out' });
       motion(bubble, [{ width: from + 'px' }, { width: bubble.offsetWidth + 'px' }], { duration: 450, easing: SPRING });
-    }, delay));
+    };
+    // Если модель долго думает, рядом с точками появляется пояснение.
+    let timers = TYPING_HINTS.map(([delay, text]) => setTimeout(() => setHint(text), delay));
+    /* Эля ищет в интернете: показываем запрос, дальше — обычные подсказки заново. */
+    root.searching = (query) => {
+      timers.forEach(clearTimeout);
+      root.classList.add('typing--search');
+      setHint(query ? 'ищу в интернете: «' + query + '»…' : 'ищу в интернете…');
+      timers = TYPING_HINTS.slice(1).map(([delay, text]) => setTimeout(() => setHint(text), delay + 4000));
+    };
     root.dismiss = () => {
       timers.forEach(clearTimeout);
       root.remove();
@@ -1130,6 +1163,8 @@
     dom.send.disabled = state.recording ? false : state.busy || state.transcribing || empty;
     dom.composerBox.classList.toggle('can-attach', state.vision);
     dom.attach.disabled = state.busy;
+    dom.composerBox.classList.toggle('can-search', state.search && !state.attachment);
+    dom.searchToggle.disabled = state.busy;
     dom.composerBox.classList.toggle(
       'has-mic',
       state.voice && CAN_RECORD && empty && !state.recording && !state.transcribing
@@ -1194,9 +1229,25 @@
     flight.oncancel = land;
   }
 
-  async function send(rawText, failedItem, origin, attachment) {
+  /* Кнопка 🌐: следующее сообщение Эля обязательно проверит в интернете. */
+  function setSearchNext(on) {
+    const value = Boolean(on) && state.search;
+    state.searchNext = value;
+    dom.searchToggle.classList.toggle('is-on', value);
+    dom.searchToggle.setAttribute('aria-pressed', String(value));
+    if (!state.attachment) dom.input.placeholder = basePlaceholder();
+  }
+
+  function basePlaceholder() {
+    return state.searchNext ? 'Что найти в интернете?' : 'Напиши сообщение…';
+  }
+
+  async function send(rawText, failedItem, origin, attachment, search) {
     const text = String(rawText).trim();
     if ((!text && !attachment) || state.busy) return;
+    // Повтор после ошибки ищет так же, как исходное сообщение.
+    const searchOn = search !== undefined ? search : state.searchNext && !attachment;
+    if (search === undefined && state.searchNext) setSearchNext(false);
 
     if (state.finishReveal) state.finishReveal();
     clearNotice();
@@ -1237,6 +1288,11 @@
           }
           live.text += piece;
           live.view.push(live.text);
+        }, {
+          search: searchOn,
+          onSearch: (query) => {
+            if (!live) typing.searching(query);
+          },
         });
       }
       typing.dismiss();
@@ -1264,7 +1320,7 @@
       }
       if (error.code === 'network') setStatus('offline');
       item.root.classList.add('msg--failed');
-      showNotice(error.message, () => send(text, item, null, attachment));
+      showNotice(error.message, () => send(text, item, null, attachment, searchOn));
       scrollToBottom(true);
     }
   }
@@ -1352,6 +1408,7 @@
     dom.attachmentImg.src = state.attachment.url;
     dom.attachment.classList.remove('is-leaving');
     dom.attachment.hidden = false;
+    if (state.searchNext) setSearchNext(false);
     dom.input.placeholder = 'Подпись или вопрос к фото…';
     haptic('impact', 'light');
     updateComposer();
@@ -1362,7 +1419,7 @@
   function clearAttachment(instant, keepUrl) {
     const current = state.attachment;
     state.attachment = null;
-    dom.input.placeholder = 'Напиши сообщение…';
+    dom.input.placeholder = basePlaceholder();
     if (current && !keepUrl) URL.revokeObjectURL(current.url);
     if (dom.attachment.hidden) return updateComposer();
     if (instant || reducedMotion) {
@@ -2564,6 +2621,8 @@
     state.voice = Boolean(data.voice);
     state.vision = Boolean(data.vision);
     state.images = data.images || { enabled: false };
+    state.search = Boolean(data.search);
+    if (!state.search && state.searchNext) setSearchNext(false);
     if (data.preferences) state.preferences = data.preferences;
     if (data.memory) state.memory = Object.assign({}, state.memory, data.memory);
     if (data.reminders) state.reminders = Object.assign({}, state.reminders, data.reminders);
@@ -2673,6 +2732,12 @@
     dom.send.addEventListener('click', submit);
     dom.mic.addEventListener('click', startRecording);
     dom.attach.addEventListener('click', () => dom.fileInput.click());
+    dom.searchToggle.addEventListener('mousedown', (event) => event.preventDefault());
+    dom.searchToggle.addEventListener('click', () => {
+      setSearchNext(!state.searchNext);
+      haptic('selection');
+      if (state.searchNext) showToast('🌐 Поищу ответ в интернете и приложу ссылки на источники');
+    });
     dom.fileInput.addEventListener('change', () => {
       const file = dom.fileInput.files && dom.fileInput.files[0];
       dom.fileInput.value = ''; // чтобы то же фото можно было выбрать ещё раз
