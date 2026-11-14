@@ -33,6 +33,8 @@
     <symbol id="i-bell" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16.5V11a6 6 0 1 1 12 0v5.5l1.5 2h-15L6 16.5Z"/><path d="M10 21a2.2 2.2 0 0 0 4 0"/></g></symbol>
     <symbol id="i-mic" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11.5" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></g></symbol>
     <symbol id="i-clip" viewBox="0 0 24 24"><path d="m20 11.5-7.8 7.8a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
     <symbol id="i-sun" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.8v2M12 19.2v2M2.8 12h2M19.2 12h2M5.5 5.5l1.4 1.4M17.1 17.1l1.4 1.4M5.5 18.5l1.4-1.4M17.1 6.9l1.4-1.4"/></g></symbol>
     <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></symbol>
@@ -136,6 +138,7 @@
   <section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden>
     <div class="sheet__grip" id="sheet-grip" aria-hidden="true"></div>
     <header class="sheet__head" id="sheet-head">
+      <button class="icon-btn icon-btn--soft ripple sheet__back" id="sheet-back" type="button" aria-label="Назад к настройкам" hidden><svg><use href="#i-back"/></svg></button>
       <h2 class="sheet__title" id="sheet-title">Настройки</h2>
       <button class="icon-btn icon-btn--soft ripple" id="sheet-close" type="button" aria-label="Закрыть">
         <svg><use href="#i-close"/></svg>
@@ -151,6 +154,19 @@
           <button class="segmented__item" type="button" role="radio" data-value="light"><svg><use href="#i-sun"/></svg><span>Светлая</span></button>
           <button class="segmented__item" type="button" role="radio" data-value="dark"><svg><use href="#i-moon"/></svg><span>Тёмная</span></button>
         </div>
+      </section>
+
+      <section class="block" id="instructions-block">
+        <h3 class="block__title">Инструкции</h3>
+        <button class="nav-row ripple" id="open-instructions" type="button">
+          <span class="nav-row__icon" aria-hidden="true">✍️</span>
+          <span class="nav-row__text">
+            <span class="nav-row__title">Инструкции для Эли</span>
+            <span class="nav-row__sub" id="instructions-summary">Не заданы</span>
+          </span>
+          <svg class="nav-row__chevron" aria-hidden="true"><use href="#i-chevron"/></svg>
+        </button>
+        <p class="block__note">Один раз напиши, что Эле знать о тебе и как отвечать, — и не повторяй это в каждом разговоре.</p>
       </section>
 
       <section class="block">
@@ -257,6 +273,43 @@
         <h3 class="block__title">О приватности</h3>
         <p class="block__note" id="privacy-text"></p>
       </section>
+    </div>
+      <div class="sheet__body sheet__page" id="instructions-page" hidden>
+      <div class="memory instr-switch">
+        <button class="switch-row ripple" id="instructions-toggle" type="button" role="switch" aria-checked="true">
+          <span class="switch-row__text">
+            <span class="switch-row__title">Использовать инструкции</span>
+            <span class="switch-row__sub" id="instructions-status">В новых ответах — здесь и в чате с ботом</span>
+          </span>
+          <span class="switch" aria-hidden="true"><span class="switch__knob"></span></span>
+        </button>
+      </div>
+
+      <section class="block">
+        <label class="block__title" for="instr-about">Что Эле знать о тебе?</label>
+        <div class="field">
+          <textarea class="field__input" id="instr-about" rows="5" maxlength="1500"
+                    placeholder="Например: меня зовут Аня, я учусь на втором курсе медицинского, живу в Казани. Готовлюсь к сессии и много работаю с конспектами."></textarea>
+          <span class="field__count" id="instr-about-count">0 / 1500</span>
+        </div>
+        <div class="chips" data-target="instr-about"><button class="chip ripple" type="button" data-insert="Меня зовут … Мне … лет.">👤 Кто я</button><button class="chip ripple" type="button" data-insert="Я учусь / работаю: …">🎓 Учёба / работа</button><button class="chip ripple" type="button" data-insert="Сейчас моя главная цель — …">🎯 Мои цели</button><button class="chip ripple" type="button" data-insert="Я увлекаюсь …">❤️ Увлечения</button></div>
+      </section>
+
+      <section class="block">
+        <label class="block__title" for="instr-style">Как Эле отвечать?</label>
+        <div class="field">
+          <textarea class="field__input" id="instr-style" rows="5" maxlength="1500"
+                    placeholder="Например: отвечай коротко и по делу, объясняй на примерах из медицины, а в конце предлагай, что сделать дальше."></textarea>
+          <span class="field__count" id="instr-style-count">0 / 1500</span>
+        </div>
+        <div class="chips" data-target="instr-style"><button class="chip ripple" type="button" data-insert="Отвечай коротко и по делу, без вступлений.">✂️ Без воды</button><button class="chip ripple" type="button" data-insert="Объясняй на простых примерах.">🧩 С примерами</button><button class="chip ripple" type="button" data-insert="Объясняй так, будто я новичок в теме.">🐣 Как новичку</button><button class="chip ripple" type="button" data-insert="Где можно — оформляй ответ списком.">📋 Списками</button><button class="chip ripple" type="button" data-insert="В конце предлагай, что сделать дальше.">➡️ Следующий шаг</button></div>
+      </section>
+
+      <p class="block__note">Инструкции добавляются к каждому разговору, но правила безопасности Эли важнее них. Не пиши сюда пароли и номера карт.</p>
+
+      <div class="instr-actions">
+        <button class="btn btn--primary ripple instr-save" id="instr-save" type="button" disabled>Сохранить</button>
+      </div>
     </div>
   </section>
 

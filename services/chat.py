@@ -16,6 +16,7 @@ from ai.prompts import build_system_prompt
 from ai.providers.base import CompletionResult
 from config.settings import Settings
 from memory.manager import MemoryManager
+from services.instructions import InstructionsStore
 from services.longterm import LongTermMemory
 from services.preferences import Preferences, PreferencesStore
 from services.reminders import Reminders
@@ -33,6 +34,8 @@ class ChatService:
         preferences: PreferencesStore | None = None,
         long_memory: LongTermMemory | None = None,
         reminders: Reminders | None = None,
+        *,
+        instructions: InstructionsStore | None = None,
     ) -> None:
         self._settings = settings
         self._ai = ai_client
@@ -40,6 +43,7 @@ class ChatService:
         self._preferences = preferences
         self._long_memory = long_memory
         self._reminders = reminders
+        self._instructions = instructions
         self._background: set[asyncio.Task] = set()
         # Сообщения одного пользователя обрабатываются строго по очереди,
         # чтобы история диалога сохранялась в правильном порядке.
@@ -96,6 +100,7 @@ class ChatService:
                 await self._preferences.get(user_id) if self._preferences else Preferences()
             )
             recall = await self._long_memory.recall(user_id) if self._long_memory else None
+            custom = await self._instructions.get(user_id) if self._instructions else None
             context = build_context(
                 build_system_prompt(
                     settings.assistant_name,
@@ -103,6 +108,7 @@ class ChatService:
                     style=prefs.style,
                     verbosity=prefs.verbosity,
                     memory=recall.prompt_block() if recall else "",
+                    instructions=custom.prompt_block() if custom else "",
                 ),
                 history,
                 question,

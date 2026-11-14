@@ -27,6 +27,7 @@ from config.settings import Settings
 from database.models import Message
 from memory.manager import MemoryManager
 from services.chat import ChatService
+from services.instructions import MAX_INSTRUCTION_LENGTH, InstructionsStore
 from services.longterm import MAX_FACT_LENGTH, MAX_FACTS, LongTermMemory, MemoryFullError
 from services.preferences import PreferencesStore
 from services.speech import SpeechError, SpeechToText
@@ -60,6 +61,7 @@ LIMITER = web.AppKey("limiter", SlidingWindowLimiter)
 PREFERENCES = web.AppKey("preferences", PreferencesStore)
 LONG_MEMORY = web.AppKey("long_memory", LongTermMemory)
 REMINDERS = web.AppKey("reminders", Reminders)
+INSTRUCTIONS = web.AppKey("instructions", object)
 SPEECH = web.AppKey("speech", object)
 
 MAX_VOICE_BYTES = 5 * 1024 * 1024
@@ -214,6 +216,38 @@ async def _reminders_payload(reminders: Reminders, user_id: int) -> dict[str, An
     }
 
 
+async def _instructions_payload(store: InstructionsStore | None, user_id: int) -> dict[str, Any] | None:
+    if store is None:
+        return None
+    return {**(await store.get(user_id)).as_dict(), "max_length": MAX_INSTRUCTION_LENGTH}
+
+
+async def post_instructions(request: web.Request) -> web.Response:
+    """{"about": "...", "style": "...", "enabled": true} — любые поля по отдельности."""
+    user: WebAppUser = request[_USER_KEY]
+    store: InstructionsStore | None = request.app[INSTRUCTIONS]
+    if store is None:
+        return _error(503, "unavailable", "Инструкции сейчас недоступны.")
+    payload = await _read_json(request)
+    if payload is None:
+        return _error(400, "bad_request", "Некорректный запрос.")
+    about, style, enabled = payload.get("about"), payload.get("style"), payload.get("enabled")
+    if (
+        (about is not None and not isinstance(about, str))
+        or (style is not None and not isinstance(style, str))
+        or (enabled is not None and not isinstance(enabled, bool))
+        or (about is None and style is None and enabled is None)
+    ):
+        return _error(400, "bad_request", "Некорректный запрос.")
+    try:
+        await store.update(user.id, about=about, style=style, enabled=enabled)
+    except ValueError:
+        return _error(
+            400, "too_long", f"Слишком длинно: в каждом поле до {MAX_INSTRUCTION_LENGTH} символов."
+        )
+    return web.json_response(await _instructions_payload(store, user.id))
+
+
 async def get_state(request: web.Request) -> web.Response:
     """Всё, что нужно интерфейсу при открытии: имя, история, модели, счётчики."""
     app = request.app
@@ -235,6 +269,7 @@ async def get_state(request: web.Request) -> web.Response:
             "voice": app[SPEECH] is not None,
             "vision": app[AI_CLIENT].has_vision,
             "preferences": (await app[PREFERENCES].get(user.id)).as_dict(),
+            "instructions": await _instructions_payload(app[INSTRUCTIONS], user.id),
             "memory": await _memory_payload(app[LONG_MEMORY], user.id),
             "reminders": await _reminders_payload(app[REMINDERS], user.id),
             "preference_options": preference_options(),
@@ -613,6 +648,7 @@ def create_web_app(
     long_memory: LongTermMemory,
     reminders: Reminders,
     speech: SpeechToText | None = None,
+    instructions: InstructionsStore | None = None,
 ) -> web.Application:
     app = web.Application(
         middlewares=[security_headers, api_guard], client_max_size=MAX_BODY_BYTES
@@ -627,6 +663,7 @@ def create_web_app(
     app[LONG_MEMORY] = long_memory
     app[REMINDERS] = reminders
     app[SPEECH] = speech
+    app[INSTRUCTIONS] = instructions
 
     app.router.add_get("/", index)
     app.router.add_get("/healthz", health)
@@ -635,6 +672,7 @@ def create_web_app(
     app.router.add_post("/api/chat/stream", post_chat_stream)
     app.router.add_post("/api/clear", post_clear)
     app.router.add_post("/api/preferences", post_preferences)
+    app.router.add_post("/api/instructions", post_instructions)
     app.router.add_post("/api/memory", post_memory)
     app.router.add_post("/api/memory/add", post_memory_add)
     app.router.add_post("/api/memory/delete", post_memory_delete)

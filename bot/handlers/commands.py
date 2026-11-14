@@ -13,6 +13,8 @@ from aiogram.types import CallbackQuery, Message
 from ai.client import AIClient
 from bot.keyboards.common import (
     ClearHistoryCallback,
+    InstructionsCallback,
+    instructions_keyboard,
     MemoryCallback,
     clear_confirm_keyboard,
     forget_confirm_keyboard,
@@ -21,6 +23,7 @@ from bot.keyboards.common import (
 )
 from config.settings import Settings
 from memory.manager import MemoryManager
+from services.instructions import Instructions, InstructionsStore
 from services.longterm import LongTermMemory
 from services.usage import UsageTracker
 
@@ -80,6 +83,7 @@ async def cmd_help(
         "/help — эта справка\n"
         "/reminders — мои напоминания (ставятся фразой «напомни завтра в 9 …»)\n"
         "/timezone — часовой пояс для напоминаний\n"
+        "/instructions — твои инструкции для меня (как в ChatGPT)\n"
         "/memory — что я о тебе помню (и включить или выключить память)\n"
         "/forget — забыть всё, что я о тебе помню\n"
         "/clear — очистить историю диалога\n"
@@ -165,6 +169,61 @@ async def on_memory_action(
     await callback.answer()
 
 
+def _instructions_text(instructions: Instructions, has_app: bool) -> str:
+    if instructions.is_empty:
+        where = (
+            "Открой приложение → ⋯ → «Инструкции»"
+            if has_app
+            else "Их можно задать в приложении (⋯ → «Инструкции»)"
+        )
+        return (
+            "✍️ <b>Инструкции не заданы.</b>\n\n"
+            "Здесь можно один раз написать, что мне знать о тебе и как отвечать, — и я буду "
+            "учитывать это в каждом разговоре, чтобы не повторять одно и то же. " + where + "."
+        )
+    status = "включены" if instructions.enabled else "выключены — я их сейчас не учитываю"
+    parts = [f"✍️ <b>Инструкции {status}.</b>"]
+    if instructions.about:
+        parts.append(f"<b>Что знать о тебе:</b>\n{escape(instructions.about)}")
+    if instructions.style:
+        parts.append(f"<b>Как отвечать:</b>\n{escape(instructions.style)}")
+    return "\n\n".join(parts)
+
+
+async def cmd_instructions(
+    message: Message, settings: Settings, instructions: InstructionsStore | None = None
+) -> None:
+    if instructions is None or message.from_user is None:
+        await message.answer("Инструкции сейчас недоступны.")
+        return
+    current = await instructions.get(message.from_user.id)
+    await message.answer(
+        _instructions_text(current, settings.webapp_enabled),
+        parse_mode=ParseMode.HTML,
+        reply_markup=instructions_keyboard(current.enabled, not current.is_empty, settings.webapp_url),
+    )
+
+
+async def on_instructions_action(
+    callback: CallbackQuery,
+    callback_data: InstructionsCallback,
+    settings: Settings,
+    instructions: InstructionsStore | None = None,
+) -> None:
+    if instructions is None or not isinstance(callback.message, Message):
+        await callback.answer()
+        return
+    current = await instructions.get(callback.from_user.id)
+    if callback_data.action == "toggle":
+        current = await instructions.update(callback.from_user.id, enabled=not current.enabled)
+    await callback.message.edit_text(
+        _instructions_text(current, settings.webapp_enabled),
+        parse_mode=ParseMode.HTML,
+        reply_markup=instructions_keyboard(current.enabled, not current.is_empty, settings.webapp_url),
+    )
+    await callback.answer("Включены" if current.enabled else "Выключены")
+
+
 async def cmd_clear(message: Message) -> None:
     await message.answer(
         "Удалить всю историю нашего диалога? Это действие нельзя отменить.",
@@ -201,11 +260,13 @@ def create_router() -> Router:
     router = Router(name="commands")
     router.message.register(cmd_start, CommandStart())
     router.message.register(cmd_help, Command("help"))
+    router.message.register(cmd_instructions, Command("instructions"))
     router.message.register(cmd_memory, Command("memory"))
     router.message.register(cmd_forget, Command("forget"))
     router.message.register(cmd_clear, Command("clear"))
     router.message.register(cmd_cancel, Command("cancel"))
     router.callback_query.register(on_clear_confirm, ClearHistoryCallback.filter())
     router.callback_query.register(on_memory_action, MemoryCallback.filter())
+    router.callback_query.register(on_instructions_action, InstructionsCallback.filter())
     router.message.register(cmd_unknown, F.text.startswith("/"))
     return router

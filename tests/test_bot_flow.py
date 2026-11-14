@@ -573,3 +573,41 @@ async def test_slow_answer_appears_early_and_is_edited_into_the_final_reply(env)
     assert len(sent) == 1 and sent[0].text.endswith(" ▍") and sent[0].parse_mode is None  # показан заранее
     assert edits[-1].text == "<b>Привет</b>, Аня! Как дела?" and edits[-1].parse_mode == "HTML"
     assert [m.content for m in await env["memory"].get_history(OWNER_ID)][-1] == "**Привет**, Аня! Как дела?"
+
+
+async def test_instructions_command_and_toggle(tmp_path, env):
+    from bot.keyboards.common import InstructionsCallback
+    from services.instructions import InstructionsStore
+
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'instr.db'}")
+    await init_db(engine)
+    store = InstructionsStore(create_session_factory(engine))
+    dp = create_dispatcher(
+        _settings(webapp_url="https://elya.example/"),
+        AIClient([env["provider"]], max_tokens=10, temperature=0.1),
+        env["memory"], env["usage"], instructions=store,
+    )
+
+    await dp.feed_update(env["bot"], _message_update("/instructions"))
+    empty = [m for m in env["session"].requests if isinstance(m, SendMessage)][-1]
+    assert "не заданы" in empty.text
+    assert empty.reply_markup.inline_keyboard[0][0].web_app.url == "https://elya.example/?open=instructions"
+    assert len(empty.reply_markup.inline_keyboard) == 1  # выключать нечего
+
+    await store.update(OWNER_ID, about="Я <Аня>", style="Кратко")
+    await dp.feed_update(env["bot"], _message_update("/instructions"))
+    shown = [m for m in env["session"].requests if isinstance(m, SendMessage)][-1]
+    assert "включены" in shown.text and "Я &lt;Аня&gt;" in shown.text and "Кратко" in shown.text
+
+    await dp.feed_update(env["bot"], _callback_update(InstructionsCallback(action="toggle").pack()))
+    assert (await store.get(OWNER_ID)).enabled is False
+    assert "выключены" in env["session"].sent_texts()[-1]
+
+    # инструкции попадают в промпт обычного ответа, только когда включены
+    await store.update(OWNER_ID, enabled=True)
+    await dp.feed_update(env["bot"], _message_update("как дела?"))
+    assert "Я <Аня>" in env["provider"].received[-1][0].content
+    await store.update(OWNER_ID, enabled=False)
+    await dp.feed_update(env["bot"], _message_update("а теперь?"))
+    assert "Я <Аня>" not in env["provider"].received[-1][0].content
+    await engine.dispose()

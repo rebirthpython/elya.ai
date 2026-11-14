@@ -43,6 +43,24 @@ def forget_confirm_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+class InstructionsCallback(CallbackData, prefix="instr"):
+    action: str  # toggle
+
+
+def instructions_keyboard(enabled: bool, has_text: bool, webapp_url: str) -> InlineKeyboardMarkup | None:
+    rows = []
+    if webapp_url:
+        rows.append([InlineKeyboardButton(
+            text="✍️ Изменить в приложении", web_app=WebAppInfo(url=webapp_url + "?open=instructions")
+        )])
+    if has_text:
+        rows.append([InlineKeyboardButton(
+            text="⏸ Выключить" if enabled else "▶️ Включить",
+            callback_data=InstructionsCallback(action="toggle").pack(),
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
 def open_app_keyboard(webapp_url: str, assistant_name: str) -> InlineKeyboardMarkup:
     """Кнопка, открывающая Mini App (работает только в личном чате с ботом)."""
     button = InlineKeyboardButton(

@@ -72,6 +72,19 @@
     bellBtn: $('bell-btn'),
     bellBadge: $('bell-badge'),
     sheetBody: $('sheet-body'),
+    sheetBack: $('sheet-back'),
+    sheetTitle: $('sheet-title'),
+    instructionsBlock: $('instructions-block'),
+    openInstructions: $('open-instructions'),
+    instructionsSummary: $('instructions-summary'),
+    instructionsPage: $('instructions-page'),
+    instructionsToggle: $('instructions-toggle'),
+    instructionsStatus: $('instructions-status'),
+    instrAbout: $('instr-about'),
+    instrStyle: $('instr-style'),
+    instrAboutCount: $('instr-about-count'),
+    instrStyleCount: $('instr-style-count'),
+    instrSave: $('instr-save'),
     remindersBlock: $('reminders-block'),
     remindersList: $('reminders-list'),
     remindersEmpty: $('reminders-empty'),
@@ -129,6 +142,9 @@
     recording: null,
     transcribing: false,
     reminders: { timezone: null, items: [], max: 50, max_text: 300 },
+    instructions: null,
+    instructionsEdited: false, // пользователь правил поля и ещё не сохранил
+    sheetPage: 'main',
     clearArmed: null,
   };
 
@@ -362,6 +378,7 @@
     },
     clear: () => request('api/clear', {}),
     savePreferences: (patch) => request('api/preferences', patch),
+    saveInstructions: (patch) => request('api/instructions', patch),
     memorySet: (enabled) => request('api/memory', { enabled }),
     memoryAdd: (text) => request('api/memory/add', { text }),
     memoryDelete: (id) => request('api/memory/delete', { id }),
@@ -399,6 +416,7 @@
     let used = 12;
     let turn = 0;
     let preferences = { style: 'friendly', verbosity: 'normal' };
+    let instructions = { about: '', style: '', enabled: true, max_length: 1500 };
     let memory = { enabled: false, facts: [], max_facts: 50, max_fact_length: 200 };
     let factId = 0;
     let reminders = { timezone: null, items: [], max: 50, max_text: 300 };
@@ -422,6 +440,7 @@
           usage: { used, limit: 300 },
           limits: { max_text_length: 4000 },
           preferences: Object.assign({}, preferences),
+          instructions: Object.assign({}, instructions),
           memory: memoryView(),
           reminders: remindersView(),
           voice: true,
@@ -440,6 +459,11 @@
             ],
           },
         };
+      },
+      async saveInstructions(patch) {
+        await sleep(250);
+        instructions = Object.assign({}, instructions, patch);
+        return Object.assign({}, instructions);
       },
       async savePreferences(patch) {
         await sleep(250);
@@ -1470,6 +1494,142 @@
     setSegment(dom.themeControl, state.theme);
   }
 
+  /* ---------- Инструкции ---------- */
+
+  function renderInstructionsSummary() {
+    const data = state.instructions;
+    dom.instructionsBlock.hidden = !data;
+    if (!data) return;
+    const parts = [];
+    if (data.about) parts.push('о тебе');
+    if (data.style) parts.push('как отвечать');
+    const filled = parts.length > 0;
+    dom.instructionsSummary.textContent = !filled
+      ? 'Не заданы'
+      : (data.enabled ? 'Включены' : 'Выключены') + ' · ' + parts.join(', ');
+    dom.instructionsSummary.classList.toggle('is-on', filled && data.enabled);
+  }
+
+  function instructionsDirty() {
+    const data = state.instructions;
+    return Boolean(data) && state.instructionsEdited &&
+      (dom.instrAbout.value.trim() !== data.about || dom.instrStyle.value.trim() !== data.style);
+  }
+
+  function updateInstructionsForm() {
+    const max = (state.instructions && state.instructions.max_length) || 1500;
+    [[dom.instrAbout, dom.instrAboutCount], [dom.instrStyle, dom.instrStyleCount]].forEach(([field, count]) => {
+      field.maxLength = max;
+      count.textContent = field.value.length + ' / ' + max;
+      count.classList.toggle('is-near', field.value.length > max * 0.9);
+    });
+    dom.instrSave.disabled = !instructionsDirty();
+    const enabled = Boolean(state.instructions && state.instructions.enabled);
+    dom.instructionsToggle.setAttribute('aria-checked', String(enabled));
+    dom.instructionsStatus.textContent = enabled
+      ? 'В новых ответах — здесь и в чате с ботом'
+      : 'Выключены: Эля их сейчас не учитывает';
+  }
+
+  /* Переход между страницами панели: основная ↔ инструкции. */
+  function switchSheetPage(page) {
+    if (state.sheetPage === page) return;
+    const forward = page === 'instructions';
+    const from = forward ? dom.sheetBody : dom.instructionsPage;
+    const to = forward ? dom.instructionsPage : dom.sheetBody;
+    state.sheetPage = page;
+    dom.sheet.classList.toggle('is-deep', forward);
+    dom.sheetBack.hidden = !forward;
+    dom.sheetTitle.textContent = forward ? 'Инструкции' : 'Настройки';
+    motion(dom.sheetTitle, [{ opacity: 0, transform: 'translateX(' + (forward ? 12 : -12) + 'px)' }, { opacity: 1, transform: 'none' }],
+      { duration: 280, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' });
+    from.hidden = true;
+    to.hidden = false;
+    to.scrollTop = 0;
+    motion(to, [
+      { opacity: 0, transform: 'translateX(' + (forward ? 36 : -36) + 'px)' },
+      { opacity: 1, transform: 'none' },
+    ], { duration: 360, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' });
+  }
+
+  function openInstructionsPage() {
+    if (!state.instructions) return;
+    if (!instructionsDirty()) {
+      // Несохранённых правок нет — показываем то, что сохранено на сервере.
+      state.instructionsEdited = false;
+      dom.instrAbout.value = state.instructions.about;
+      dom.instrStyle.value = state.instructions.style;
+    }
+    updateInstructionsForm();
+    switchSheetPage('instructions');
+    haptic('impact', 'light');
+  }
+
+  async function saveInstructions(quiet) {
+    if (!instructionsDirty()) return true;
+    dom.instrSave.disabled = true;
+    try {
+      state.instructions = await backend.saveInstructions({
+        about: dom.instrAbout.value,
+        style: dom.instrStyle.value,
+      });
+      // Сервер чистит пробелы — показываем ровно то, что сохранено.
+      dom.instrAbout.value = state.instructions.about;
+      dom.instrStyle.value = state.instructions.style;
+      state.instructionsEdited = false;
+      renderInstructionsSummary();
+      updateInstructionsForm();
+      showToast(quiet ? 'Инструкции сохранены' : '✍️ Сохранено — Эля учтёт это в новых ответах');
+      haptic('notify', 'success');
+      return true;
+    } catch (error) {
+      updateInstructionsForm();
+      showToast(error.message);
+      haptic('notify', 'error');
+      return false;
+    }
+  }
+
+  async function toggleInstructions() {
+    const data = state.instructions;
+    if (!data) return;
+    const next = !data.enabled;
+    data.enabled = next;
+    updateInstructionsForm();
+    renderInstructionsSummary();
+    haptic('select');
+    try {
+      const saved = await backend.saveInstructions({ enabled: next });
+      data.enabled = saved.enabled;
+    } catch (error) {
+      data.enabled = !next;
+      showToast(error.message);
+    }
+    updateInstructionsForm();
+    renderInstructionsSummary();
+  }
+
+  /* «Назад» из инструкций сохраняет изменения сам — как в настройках телефона. */
+  async function leaveInstructionsPage() {
+    if (state.sheetPage !== 'instructions') return;
+    if (instructionsDirty() && !(await saveInstructions(true))) return;
+    switchSheetPage('main');
+  }
+
+  function insertChip(chip) {
+    const field = $(chip.parentElement.dataset.target);
+    const text = chip.dataset.insert;
+    field.value = field.value.trim() ? field.value.replace(/\s+$/, '') + '\n' + text : text;
+    field.focus();
+    state.instructionsEdited = true;
+    // Курсор — на место многоточия, если оно есть, иначе в конец.
+    const gap = field.value.lastIndexOf('…');
+    const position = gap > field.value.length - text.length - 1 ? gap : field.value.length;
+    field.setSelectionRange(position, gap === position ? position + 1 : position);
+    updateInstructionsForm();
+    haptic('select');
+  }
+
   /* ---------- Напоминания ---------- */
 
   const REPEAT_TITLES = { daily: 'каждый день', weekdays: 'по будням', weekly: 'каждую неделю', monthly: 'каждый месяц' };
@@ -1825,6 +1985,7 @@
     dom.sheet.classList.remove('is-opening');
     void dom.sheet.offsetWidth;
     dom.sheet.classList.add('is-opening');
+    renderInstructionsSummary();
     dom.input.blur();
 
     state.sheetAnim = motion(dom.sheet, isWide()
@@ -1842,8 +2003,8 @@
     if (opts.focus === 'reminders') {
       // Колокольчик открывает настройки сразу на напоминаниях.
       setTimeout(() => {
-        const offset = dom.remindersBlock.getBoundingClientRect().top - dom.sheetBody.getBoundingClientRect().top;
-        dom.sheetBody.scrollTo({ top: dom.sheetBody.scrollTop + offset - 8, behavior: reducedMotion ? 'auto' : 'smooth' });
+        // offsetTop не зависит от анимации появления блоков (transform), в отличие от getBoundingClientRect.
+        dom.sheetBody.scrollTo({ top: dom.remindersBlock.offsetTop - 8, behavior: reducedMotion ? 'auto' : 'smooth' });
       }, reducedMotion ? 0 : 380);
     } else {
       dom.sheetBody.scrollTop = 0;
@@ -1852,6 +2013,7 @@
 
   function closeSheet() {
     if (dom.sheet.hidden || state.sheetClosing) return;
+    if (state.sheetPage === 'instructions' && instructionsDirty()) saveInstructions(true);
     state.sheetClosing = true;
     if (supports('6.1')) tg.BackButton.hide();
 
@@ -1872,7 +2034,13 @@
       if (backdropOut) backdropOut.cancel();
       dom.sheet.style.transform = '';
       dom.backdrop.style.opacity = '';
-      dom.sheet.classList.remove('is-opening', 'is-dragging');
+      dom.sheet.classList.remove('is-opening', 'is-dragging', 'is-deep');
+      // В следующий раз панель открывается с основной страницы.
+      state.sheetPage = 'main';
+      dom.instructionsPage.hidden = true;
+      dom.sheetBody.hidden = false;
+      dom.sheetBack.hidden = true;
+      dom.sheetTitle.textContent = 'Настройки';
       state.sheetClosing = false;
     };
     if (sheetOut) sheetOut.onfinish = done;
@@ -1978,6 +2146,8 @@
     if (data.preferences) state.preferences = data.preferences;
     if (data.memory) state.memory = Object.assign({}, state.memory, data.memory);
     if (data.reminders) state.reminders = Object.assign({}, state.reminders, data.reminders);
+    state.instructions = data.instructions || null;
+    renderInstructionsSummary();
     if (data.preference_options) state.preferenceOptions = data.preference_options;
     state.syncedAt = Date.now();
 
@@ -2021,7 +2191,12 @@
     renderHistory(data.history || []);
     updateComposer();
     hideGate();
-    if (finePointer) dom.input.focus();
+    if (query.get('open') === 'instructions' && state.instructions) {
+      setTimeout(() => {
+        openSheet();
+        setTimeout(openInstructionsPage, reducedMotion ? 0 : 320);
+      }, reducedMotion ? 0 : 500);
+    } else if (finePointer) dom.input.focus();
   }
 
   /* Сообщения, отправленные тем временем в чате с ботом, подтягиваются при возврате. */
@@ -2142,9 +2317,24 @@
       if (button) removeReminder(Number(button.dataset.removeReminder));
     });
     dom.sheetClose.addEventListener('click', closeSheet);
+    dom.sheetBack.addEventListener('click', leaveInstructionsPage);
+    dom.openInstructions.addEventListener('click', openInstructionsPage);
+    dom.instructionsToggle.addEventListener('click', toggleInstructions);
+    dom.instrSave.addEventListener('click', () => saveInstructions(false));
+    [dom.instrAbout, dom.instrStyle].forEach((field) => field.addEventListener('input', () => {
+      state.instructionsEdited = true;
+      updateInstructionsForm();
+    }));
+    dom.instructionsPage.addEventListener('click', (event) => {
+      const chip = event.target.closest('.chip[data-insert]');
+      if (chip) insertChip(chip);
+    });
     dom.backdrop.addEventListener('click', closeSheet);
     document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') closeSheet();
+      if (event.key === 'Escape') {
+        if (state.sheetPage === 'instructions') leaveInstructionsPage();
+        else closeSheet();
+      }
     });
 
     dom.memoryToggle.addEventListener('click', toggleMemory);
@@ -2268,7 +2458,8 @@
       tg.ready();
       tg.expand();
       if (supports('7.7')) tg.disableVerticalSwipes(); // прокрутка ленты не должна сворачивать приложение
-      if (supports('6.1')) tg.BackButton.onClick(closeSheet);
+      // Кнопка «Назад» Telegram: из инструкций — к настройкам, из настроек — закрыть.
+      if (supports('6.1')) tg.BackButton.onClick(() => (state.sheetPage === 'instructions' ? leaveInstructionsPage() : closeSheet()));
       tg.onEvent('themeChanged', () => applyTheme({ x: window.innerWidth / 2, y: 0 }));
     } else {
       const scheme = window.matchMedia('(prefers-color-scheme: light)');

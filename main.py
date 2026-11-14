@@ -32,6 +32,7 @@ from memory.manager import MemoryManager
 from memory.repository import MessageRepository
 from services.chat import ChatService
 from bot.handlers.reminders import make_sender
+from services.instructions import InstructionsStore
 from services.longterm import LongTermMemory
 from services.speech import SpeechToText
 from services.reminders import ReminderScheduler, Reminders
@@ -47,6 +48,7 @@ BOT_COMMANDS = [
     BotCommand(command="help", description="Что я умею"),
     BotCommand(command="reminders", description="Мои напоминания"),
     BotCommand(command="timezone", description="Часовой пояс для напоминаний"),
+    BotCommand(command="instructions", description="Мои инструкции для Эли"),
     BotCommand(command="memory", description="Что я о тебе помню"),
     BotCommand(command="forget", description="Забыть всё, что я о тебе помню"),
     BotCommand(command="clear", description="Очистить историю диалога"),
@@ -65,6 +67,7 @@ def create_dispatcher(
     long_memory: LongTermMemory | None = None,
     reminders: Reminders | None = None,
     speech: SpeechToText | None = None,
+    instructions: InstructionsStore | None = None,
 ) -> Dispatcher:
     """chat_service и limiter передаются снаружи, когда их делит с ботом Mini App."""
     dp = Dispatcher(storage=MemoryStorage())
@@ -74,8 +77,11 @@ def create_dispatcher(
     dp["usage"] = usage
     dp["long_memory"] = long_memory
     dp["reminders"] = reminders
+    dp["instructions"] = instructions
     dp["speech"] = speech
-    dp["chat_service"] = chat_service or ChatService(settings, ai_client, memory)
+    dp["chat_service"] = chat_service or ChatService(
+        settings, ai_client, memory, instructions=instructions
+    )
 
     dp.update.outer_middleware(AccessMiddleware(settings.allowed_user_ids))
     dp.message.middleware(
@@ -142,7 +148,10 @@ async def run(settings: Settings) -> None:
         if settings.speech_api_key
         else None
     )
-    chat_service = ChatService(settings, ai_client, memory, preferences, long_memory, reminders)
+    instructions = InstructionsStore(session_factory)
+    chat_service = ChatService(
+        settings, ai_client, memory, preferences, long_memory, reminders, instructions=instructions
+    )
     limiter = SlidingWindowLimiter(settings.rate_limit_per_minute)
 
     bot = Bot(token=settings.bot_token)
@@ -156,6 +165,7 @@ async def run(settings: Settings) -> None:
         long_memory=long_memory,
         reminders=reminders,
         speech=speech,
+        instructions=instructions,
     )
     web_runner = None
     scheduler_task = None
@@ -185,6 +195,7 @@ async def run(settings: Settings) -> None:
                         long_memory,
                         reminders,
                         speech,
+                        instructions,
                     ),
                     settings.webapp_host,
                     settings.webapp_port,

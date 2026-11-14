@@ -17,6 +17,7 @@ from database.session import create_engine, create_session_factory, init_db
 from memory.manager import MemoryManager
 from memory.repository import MessageRepository
 from services.chat import ChatService
+from services.instructions import InstructionsStore
 from services.longterm import MAX_FACTS, LongTermMemory
 from services.reminders import Reminders
 from services.preferences import PreferencesStore
@@ -89,6 +90,7 @@ async def env(tmp_path):
     memory = MemoryManager(MessageRepository(session_factory, store_limit=500), history_limit=30)
     preferences = PreferencesStore(session_factory)
     long_memory = LongTermMemory(session_factory)
+    instructions = InstructionsStore(session_factory)
     now = datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc)  # пятница
     reminders = Reminders(session_factory, clock=lambda: now)
     clients: list[TestClient] = []
@@ -103,7 +105,10 @@ async def env(tmp_path):
         ai_client = AIClient(providers, max_tokens=256, temperature=0.5, usage=usage)
         app = create_web_app(
             settings,
-            ChatService(settings, ai_client, memory, preferences, long_memory, reminders),
+            ChatService(
+                settings, ai_client, memory, preferences, long_memory, reminders,
+                instructions=instructions,
+            ),
             memory,
             usage,
             ai_client,
@@ -112,6 +117,7 @@ async def env(tmp_path):
             long_memory,
             reminders,
             speech,
+            instructions,
         )
         client = TestClient(TestServer(app))
         await client.start_server()
@@ -121,6 +127,7 @@ async def env(tmp_path):
     yield {
         "make": make, "memory": memory, "preferences": preferences, "long_memory": long_memory,
         "reminders": reminders,
+        "instructions": instructions,
     }
     for client in clients:
         await client.close()
@@ -255,6 +262,7 @@ async def test_state_describes_assistant_models_and_history(env):
     }
     assert data["reminders"] == {"timezone": None, "items": [], "max": 50, "max_text": 300}
     assert data["voice"] is False
+    assert data["instructions"] == {"about": "", "style": "", "enabled": True, "max_length": 1500}
     assert data["vision"] is False
     assert [o["id"] for o in data["preference_options"]["style"]] == [
         "friendly", "caring", "playful", "business",
@@ -838,3 +846,53 @@ async def test_stream_endpoint_respects_rate_limit(env):
     assert (await client.post("/api/chat/stream", json={"text": "a"}, headers=auth())).status == 200
     response = await client.post("/api/chat/stream", json={"text": "b"}, headers=auth())
     assert response.status == 429 and (await response.json())["error"]["code"] == "rate_limited"
+
+
+# ---------- инструкции ----------
+
+
+async def test_instructions_are_saved_and_reach_the_prompt(env):
+    client, providers = await env["make"]()
+    response = await client.post(
+        "/api/instructions",
+        json={"about": "Я студентка-медик\nиз Казани", "style": "Отвечай без воды"},
+        headers=auth(),
+    )
+    assert response.status == 200
+    assert await response.json() == {
+        "about": "Я студентка-медик\nиз Казани", "style": "Отвечай без воды",
+        "enabled": True, "max_length": 1500,
+    }
+    await client.post("/api/chat", json={"text": "привет"}, headers=auth())
+    system = providers[0].calls[-1][1][0].content
+    assert "Я студентка-медик\nиз Казани" in system and "Отвечай без воды" in system
+
+    await client.post("/api/instructions", json={"enabled": False}, headers=auth())
+    await client.post("/api/chat", json={"text": "ещё"}, headers=auth())
+    assert "студентка-медик" not in providers[0].calls[-1][1][0].content
+    state = await (await client.get("/api/state", headers=auth())).json()
+    assert state["instructions"]["enabled"] is False and state["instructions"]["about"].startswith("Я студентка")
+
+
+@pytest.mark.parametrize(
+    ("body", "status", "code"),
+    [
+        ({}, 400, "bad_request"),
+        ({"about": 5}, 400, "bad_request"),
+        ({"enabled": "yes"}, 400, "bad_request"),
+        ({"style": "я" * 1501}, 400, "too_long"),
+    ],
+)
+async def test_instructions_validation(env, body, status, code):
+    client, _ = await env["make"]()
+    response = await client.post("/api/instructions", json=body, headers=auth())
+    assert response.status == status and (await response.json())["error"]["code"] == code
+
+
+async def test_instructions_are_private(env):
+    client, _ = await env["make"](allowed_user_ids=frozenset({OWNER_ID, 222}))
+    await client.post("/api/instructions", json={"about": "секрет"}, headers=auth())
+    other = await (await client.get("/api/state", headers=auth(sign_init_data(222)))).json()
+    assert other["instructions"]["about"] == ""
+    assert (await client.post("/api/instructions", json={"about": "x"})).status == 401
+    assert (await client.post("/api/instructions", json={"about": "x"}, headers=auth(sign_init_data(STRANGER_ID)))).status == 403
