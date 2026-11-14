@@ -114,7 +114,7 @@ async def db(tmp_path):
     session_factory = create_session_factory(engine)
     yield {
         "session_factory": session_factory,
-        "memory": MemoryManager(MessageRepository(session_factory, store_limit=500), history_limit=30),
+        "memory": MemoryManager(MessageRepository(session_factory), history_limit=30),
     }
     await engine.dispose()
 
