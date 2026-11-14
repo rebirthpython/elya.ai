@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError
 from aiogram.utils.web_app import WebAppUser
 from aiohttp import web
 
@@ -23,10 +25,13 @@ from ai.client import (
     NoVisionModelError,
 )
 from ai.providers.base import CompletionResult
+from bot.handlers.draw import deliver_drawing
 from config.settings import Settings
 from database.models import Message
 from memory.manager import MemoryManager
 from services.chat import ChatService
+from services.drawing import Drawing, DrawingService, history_text
+from services.imagegen import ImageGenerationError, ImageLimitError
 from services.instructions import MAX_INSTRUCTION_LENGTH, InstructionsStore
 from services.longterm import MAX_FACT_LENGTH, MAX_FACTS, LongTermMemory, MemoryFullError
 from services.preferences import PreferencesStore
@@ -63,6 +68,8 @@ LONG_MEMORY = web.AppKey("long_memory", LongTermMemory)
 REMINDERS = web.AppKey("reminders", Reminders)
 INSTRUCTIONS = web.AppKey("instructions", object)
 SPEECH = web.AppKey("speech", object)
+DRAWING = web.AppKey("drawing", object)
+BOT = web.AppKey("bot", object)
 
 MAX_VOICE_BYTES = 5 * 1024 * 1024
 # Что умеет записывать браузер телефона → расширение файла для Whisper
@@ -88,6 +95,20 @@ _CSP = (
     "connect-src 'self'; "
     "base-uri 'none'; "
     "form-action 'none'"
+)
+
+_IMAGE_FAILURE_TEXTS = {
+    "rejected": "Сервис картинок отказался это рисовать — возможно, сработал его фильтр. Попробуй описать по-другому.",
+    "rate_limit": "Сервис картинок упёрся в лимит бесплатного тарифа. Попробуй чуть позже.",
+    "config": (
+        "Не получается подключиться к сервису картинок: похоже, проблема с ключом или аккаунтом. "
+        "Подробности — в логах бота."
+    ),
+    "unavailable": "Сервис картинок сейчас не отвечает. Попробуй ещё раз чуть позже.",
+}
+IMAGES_OFF_TEXT = (
+    "Рисовать я пока не умею: владельцу бота нужно подключить сервис картинок "
+    "(Cloudflare Workers AI или Pollinations — см. README)."
 )
 
 _AI_FAILURE_TEXTS = {
@@ -268,12 +289,118 @@ async def get_state(request: web.Request) -> web.Response:
             "limits": {"max_text_length": MAX_TEXT_LENGTH},
             "voice": app[SPEECH] is not None,
             "vision": app[AI_CLIENT].has_vision,
+            "images": await _images_payload(app[DRAWING]),
             "preferences": (await app[PREFERENCES].get(user.id)).as_dict(),
             "instructions": await _instructions_payload(app[INSTRUCTIONS], user.id),
             "memory": await _memory_payload(app[LONG_MEMORY], user.id),
             "reminders": await _reminders_payload(app[REMINDERS], user.id),
             "preference_options": preference_options(),
         }
+    )
+
+
+async def _images_payload(drawing: DrawingService | None) -> dict[str, Any]:
+    if drawing is None or not drawing.enabled:
+        return {"enabled": False}
+    usage = drawing.generator.usage
+    return {
+        "enabled": True,
+        "used": await usage.used_today() if usage else 0,
+        "limit": usage.daily_limit if usage else 0,
+    }
+
+
+def _image_error(exc: ImageGenerationError | ImageLimitError) -> tuple[int, str, str]:
+    if isinstance(exc, ImageLimitError):
+        return (
+            429,
+            "image_limit",
+            f"На сегодня лимит картинок исчерпан ({exc.limit}). Он обновится в 00:00 по UTC.",
+        )
+    logger.error("Image generation failed (%s): %s", exc.kind, exc)
+    status = 422 if exc.kind == "rejected" else 503
+    return status, f"image_{exc.kind}", _IMAGE_FAILURE_TEXTS[exc.kind]
+
+
+async def _deliver_to_chat(app: web.Application, user_id: int, result: Drawing) -> bool:
+    """Копия картинки — в чат с ботом: приложение хранит только текст истории, а из чата
+    картинку можно сохранить и переслать."""
+    bot: Bot | None = app[BOT]
+    if bot is None:
+        return False
+    try:
+        await deliver_drawing(bot, user_id, result, caption=f"{result.caption} (из приложения)")
+    except TelegramAPIError as exc:
+        logger.warning("Could not send the picture to the chat: %s", exc)
+        return False
+    return True
+
+
+async def _drawing_payload(app: web.Application, result: Drawing, *, text: str, user_id: int) -> dict[str, Any]:
+    usage = app[USAGE]
+    sent = await _deliver_to_chat(app, user_id, result)
+    return {
+        "reply": {
+            "role": "assistant",
+            "content": text,
+            "ts": int(datetime.now(timezone.utc).timestamp()),
+            "provider": "images",
+            "model": result.image.model,
+            "truncated": False,
+            "image": result.image.data_url(),
+            "drawing_id": result.id,
+            "sent_to_chat": sent,
+        },
+        "usage": {"used": await usage.used_today(), "limit": usage.daily_limit},
+        "images": await _images_payload(app[DRAWING]),
+    }
+
+
+async def _try_draw(request: web.Request, user: WebAppUser, text: str) -> dict[str, Any] | web.Response | None:
+    """Если сообщение — просьба нарисовать (или /draw …), рисует: возвращает ответ для
+    клиента или ошибку. None — это обычное сообщение для диалога."""
+    drawing: DrawingService | None = request.app[DRAWING]
+    command, _, rest = text.partition(" ")
+    explicit = command.lower().partition("@")[0] == "/draw"
+    if explicit:
+        text = rest.strip()
+        if drawing is None or not drawing.enabled:
+            return _error(503, "images_off", IMAGES_OFF_TEXT)
+        if not text:
+            return _error(400, "bad_request", "Напиши после /draw, что нарисовать.")
+    elif drawing is None or not drawing.enabled or not drawing.looks_like_request(text):
+        return None
+    plan = await drawing.plan(user.id, text, explicit=explicit)
+    if plan is None:
+        return None
+    try:
+        result = await drawing.draw(user.id, plan)
+    except (ImageGenerationError, ImageLimitError) as exc:
+        return _error(*_image_error(exc))
+    return await _drawing_payload(request.app, result, text=history_text(plan), user_id=user.id)
+
+
+async def post_draw_again(request: web.Request) -> web.Response:
+    """{"id": N} — ещё один вариант картинки; в истории — «🔄 Ещё вариант» и подпись."""
+    app = request.app
+    user: WebAppUser = request[_USER_KEY]
+    drawing: DrawingService | None = app[DRAWING]
+    if drawing is None or not drawing.enabled:
+        return _error(503, "images_off", IMAGES_OFF_TEXT)
+    payload = await _read_json(request)
+    drawing_id = payload.get("id") if payload else None
+    if not isinstance(drawing_id, int) or isinstance(drawing_id, bool):
+        return _error(400, "bad_request", "Некорректный запрос.")
+    if (limited := _rate_limited(app, user)) is not None:
+        return limited
+    try:
+        result = await drawing.again(user.id, drawing_id)
+    except (ImageGenerationError, ImageLimitError) as exc:
+        return _error(*_image_error(exc))
+    if result is None:
+        return _error(410, "forgotten", "Эту картинку я уже не помню. Напиши просьбу ещё раз — нарисую заново.")
+    return web.json_response(
+        await _drawing_payload(app, result, text=history_text(result.plan), user_id=user.id)
     )
 
 
@@ -390,6 +517,12 @@ async def _answer(
     app = request.app
     if (limited := _rate_limited(app, user)) is not None:
         return limited
+    if not images:
+        drawn = await _try_draw(request, user, text)
+        if isinstance(drawn, web.Response):
+            return drawn
+        if drawn is not None:
+            return web.json_response(drawn)
     try:
         result = await app[CHAT].ask(
             user.id,
@@ -420,6 +553,16 @@ async def post_chat_stream(request: web.Request) -> web.StreamResponse:
         )
     if (limited := _rate_limited(app, user)) is not None:
         return limited
+    drawn = await _try_draw(request, user, text)
+    if isinstance(drawn, web.Response):
+        return drawn
+    if drawn is not None:
+        # Картинка приходит целиком — одним событием того же потока.
+        return web.Response(
+            text=json.dumps({"type": "done", **drawn}, ensure_ascii=False) + "\n",
+            content_type="application/x-ndjson",
+            charset="utf-8",
+        )
 
     events = app[CHAT].ask_stream(
         user.id,
@@ -649,6 +792,8 @@ def create_web_app(
     reminders: Reminders,
     speech: SpeechToText | None = None,
     instructions: InstructionsStore | None = None,
+    drawing: DrawingService | None = None,
+    bot: Bot | None = None,
 ) -> web.Application:
     app = web.Application(
         middlewares=[security_headers, api_guard], client_max_size=MAX_BODY_BYTES
@@ -664,6 +809,8 @@ def create_web_app(
     app[REMINDERS] = reminders
     app[SPEECH] = speech
     app[INSTRUCTIONS] = instructions
+    app[DRAWING] = drawing
+    app[BOT] = bot
 
     app.router.add_get("/", index)
     app.router.add_get("/healthz", health)
@@ -681,6 +828,7 @@ def create_web_app(
     app.router.add_post("/api/reminders/delete", post_reminder_delete)
     app.router.add_post("/api/voice", post_voice)
     app.router.add_post("/api/photo", post_photo)
+    app.router.add_post("/api/draw/again", post_draw_again)
     app.router.add_static("/assets/", WEBAPP_DIR / "assets")
     return app
 

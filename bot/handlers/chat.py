@@ -7,13 +7,16 @@ from html import escape
 
 from aiogram import Bot, F, Router
 from aiogram.enums import ParseMode
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from aiogram.utils.chat_action import ChatActionSender
 
 from ai.client import AllProvidersFailedError, DailyLimitExceededError, NoVisionModelError
 from ai.providers.base import CompletionResult
+from bot.handlers.draw import DrawStates, draw_and_send, maybe_draw
 from bot.utils.live import LiveMessage
 from services.chat import ChatService
+from services.drawing import DrawingService
 from services.speech import SpeechError, SpeechToText
 from services.vision import MAX_IMAGE_BYTES, NO_VISION_TEXT, ImageError, to_data_url
 
@@ -37,16 +40,26 @@ _FAILURE_TEXTS = {
 }
 
 
-async def handle_text(message: Message, bot: Bot, chat_service: ChatService) -> None:
+async def handle_text(
+    message: Message, bot: Bot, chat_service: ChatService, drawing: DrawingService | None = None
+) -> None:
     if message.from_user is None or not message.text or not message.text.strip():
         return
-    await _reply(message, bot, chat_service, message.text.strip())
+    text = message.text.strip()
+    if await maybe_draw(message, bot, drawing, text):
+        return
+    await _reply(message, bot, chat_service, text)
 
 
 async def handle_voice(
-    message: Message, bot: Bot, chat_service: ChatService, speech: SpeechToText | None = None
+    message: Message,
+    bot: Bot,
+    chat_service: ChatService,
+    speech: SpeechToText | None = None,
+    drawing: DrawingService | None = None,
+    state: FSMContext | None = None,
 ) -> None:
-    """Голосовое → текст (Groq Whisper) → обычный ответ Эли."""
+    """Голосовое → текст (Groq Whisper) → обычный ответ Эли (или картинка, если просят нарисовать)."""
     if message.from_user is None or message.voice is None:
         return
     if speech is None:
@@ -70,6 +83,14 @@ async def handle_voice(
         await message.answer("Не расслышала ни слова. Попробуй записать ещё раз 🙂")
         return
     await message.answer(f"🎤 <i>{escape(text)}</i>", parse_mode=ParseMode.HTML)
+    if drawing is not None and drawing.enabled and state is not None \
+            and await state.get_state() == DrawStates.waiting.state:
+        # После /draw описание картинки можно надиктовать.
+        await state.clear()
+        await draw_and_send(message, bot, drawing, text, explicit=True)
+        return
+    if await maybe_draw(message, bot, drawing, text):
+        return
     await _reply(message, bot, chat_service, text)
 
 

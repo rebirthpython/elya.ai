@@ -26,6 +26,22 @@ class ProviderConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ImageProviderConfig:
+    """Сервис, который рисует картинки по текстовому описанию.
+
+    kind: "cloudflare" — Workers AI (POST {base_url}/{model});
+          "openai" — OpenAI-совместимый POST {base_url}/images/generations.
+    """
+
+    name: str
+    title: str
+    kind: str
+    base_url: str
+    api_key: str
+    model: str
+
+
+@dataclass(frozen=True, slots=True)
 class Settings:
     bot_token: str
     allowed_user_ids: frozenset[int]
@@ -49,10 +65,17 @@ class Settings:
     # Голосовые: ключ Groq (тот же, что для провайдера groq) и модель распознавания
     speech_api_key: str = ""
     speech_model: str = "whisper-large-v3-turbo"
+    # Картинки: сервисы в порядке приоритета (пусто — рисование выключено) и дневной лимит.
+    image_providers: tuple[ImageProviderConfig, ...] = ()
+    image_daily_limit: int = 50
 
     @property
     def webapp_enabled(self) -> bool:
         return bool(self.webapp_url)
+
+    @property
+    def images_enabled(self) -> bool:
+        return bool(self.image_providers)
 
 
 # Известные провайдеры с OpenAI-совместимым API (POST {base_url}/chat/completions).
@@ -86,6 +109,30 @@ KNOWN_PROVIDERS: dict[str, dict[str, str]] = {
         "models": "",
     },
 }
+
+
+# Сервисы картинок. Ключ — <NAME>_..., модель — <NAME>_IMAGE_MODEL (или IMAGE_CUSTOM_MODEL).
+KNOWN_IMAGE_PROVIDERS: dict[str, dict[str, str]] = {
+    "cloudflare": {
+        "title": "Cloudflare Workers AI",
+        "kind": "cloudflare",
+        # FLUX.1 [schnell]: бесплатно в пределах 10 000 «нейронов» в сутки (~170 картинок).
+        "model": "@cf/black-forest-labs/flux-1-schnell",
+    },
+    "pollinations": {
+        "title": "Pollinations",
+        "kind": "openai",
+        "base_url": "https://gen.pollinations.ai/v1",
+        "model": "black-forest-labs/flux.1-schnell",
+    },
+    "custom": {
+        "title": "Custom OpenAI-compatible Images API",
+        "kind": "openai",
+        "base_url": "",
+        "model": "",
+    },
+}
+CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4/accounts"
 
 
 def _get_str(name: str, default: str = "") -> str:
@@ -199,6 +246,61 @@ def _load_provider(name: str) -> ProviderConfig | None:
     )
 
 
+def _load_image_provider(name: str) -> ImageProviderConfig | None:
+    """Конфиг сервиса картинок или None, если для него не заданы ключи."""
+    known = KNOWN_IMAGE_PROVIDERS.get(name)
+    if known is None:
+        raise ConfigError(
+            f"IMAGE_PROVIDERS: неизвестный сервис {name!r}. "
+            f"Доступны: {', '.join(KNOWN_IMAGE_PROVIDERS)}"
+        )
+    if name == "cloudflare":
+        account_id = _get_str("CLOUDFLARE_ACCOUNT_ID")
+        api_key = _get_str("CLOUDFLARE_API_TOKEN")
+        if not account_id or not api_key:
+            return None
+        if not account_id.isalnum():
+            raise ConfigError(
+                "CLOUDFLARE_ACCOUNT_ID — это идентификатор аккаунта из панели Cloudflare "
+                f"(32 символа, буквы и цифры), получено: {account_id!r}"
+            )
+        base_url = f"{CLOUDFLARE_API_BASE}/{account_id}/ai/run"
+        model = _get_str("CLOUDFLARE_IMAGE_MODEL", known["model"]) or known["model"]
+    elif name == "custom":
+        base_url = _get_str("IMAGE_CUSTOM_BASE_URL").rstrip("/")
+        api_key = _get_str("IMAGE_CUSTOM_API_KEY")
+        model = _get_str("IMAGE_CUSTOM_MODEL")
+        if not base_url:
+            return None
+        if not model:
+            raise ConfigError(
+                "Для IMAGE_CUSTOM_BASE_URL нужна модель: задайте IMAGE_CUSTOM_MODEL "
+                "(например, gpt-image-1 или black-forest-labs/flux.1-schnell)."
+            )
+    else:
+        prefix = name.upper()
+        api_key = _get_str(f"{prefix}_API_KEY")
+        if not api_key:
+            return None
+        base_url = known["base_url"]
+        model = _get_str(f"{prefix}_IMAGE_MODEL", known["model"]) or known["model"]
+    return ImageProviderConfig(
+        name=name,
+        title=known["title"],
+        kind=known["kind"],
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+    )
+
+
+def _load_image_providers() -> tuple[ImageProviderConfig, ...]:
+    names = _split_csv(_get_str("IMAGE_PROVIDERS", "cloudflare,pollinations").lower())
+    return tuple(
+        cfg for cfg in (_load_image_provider(name) for name in dict.fromkeys(names)) if cfg
+    )
+
+
 def load_settings(env_file: str | None = ".env") -> Settings:
     """Читает .env (если есть) и переменные окружения, валидирует их."""
     if env_file:
@@ -248,4 +350,6 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         webapp_auth_max_age=_get_int("WEBAPP_AUTH_MAX_AGE", 86400, minimum=60),
         speech_api_key=_get_str("GROQ_API_KEY"),
         speech_model=_get_str("SPEECH_MODEL", "whisper-large-v3-turbo") or "whisper-large-v3-turbo",
+        image_providers=_load_image_providers(),
+        image_daily_limit=_get_int("IMAGE_DAILY_LIMIT", 50, minimum=0),
     )

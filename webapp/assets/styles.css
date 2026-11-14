@@ -1668,6 +1668,33 @@ body.is-thinking .glow--think {
   border-radius: 18px 18px 6px 18px;
 }
 
+/* Нарисованная картинка в ответе: во всю ширину пузыря, под ней подпись и промпт */
+.msg--assistant .bubble--art {
+  width: min(86vw, 440px);
+}
+
+.bubble__art {
+  display: block;
+  width: calc(100% + 28px);
+  height: auto;
+  min-height: 120px;
+  margin: -10px -14px 10px;
+  border-radius: var(--radius-bubble) var(--radius-bubble) 6px 6px;
+  background: var(--surface-2);
+  animation: fade-in 0.4s ease both;
+}
+
+.bubble--art em {
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.bubble__note {
+  margin: 8px 0 0;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
 /* ---------- Голосовой ввод ---------- */
 
 /* Поле пустое и голосовые доступны — вместо «отправить» микрофон, как в Telegram */

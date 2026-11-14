@@ -109,6 +109,7 @@ class ChatService:
                     verbosity=prefs.verbosity,
                     memory=recall.prompt_block() if recall else "",
                     instructions=custom.prompt_block() if custom else "",
+                    can_draw=settings.images_enabled,
                 ),
                 history,
                 question,
