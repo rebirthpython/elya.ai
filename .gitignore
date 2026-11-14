@@ -10,6 +10,9 @@ data/
 *.db-wal
 *.db-shm
 
+# Служебные файлы автообновления (deploy/update.sh)
+.deploy/
+
 # Python
 __pycache__/
 *.py[cod]
