@@ -770,3 +770,71 @@ async def test_photo_requires_access_and_respects_rate_limit(env):
     response = await client.post("/api/photo", data=_photo_form(), headers=auth())
     assert response.status == 429 and (await response.json())["error"]["code"] == "rate_limited"
     assert len(seeing.calls) == 1
+
+
+# ---------- потоковый ответ ----------
+
+
+class StreamingProvider(BaseProvider):
+    def __init__(self, name, pieces, fail_after=None, fail_first=False):
+        super().__init__(name, f"{name.title()} AI", (f"{name}1",))
+        self.pieces, self.fail_after, self.fail_first, self.calls = pieces, fail_after, fail_first, 0
+
+    async def complete(self, messages, *, model, max_tokens, temperature):
+        raise AssertionError("stream expected")
+
+    async def stream(self, messages, *, model, max_tokens, temperature):
+        self.calls += 1
+        if self.fail_first:
+            raise ProviderUnavailableError("down", provider=self.name, model=model)
+        for index, piece in enumerate(self.pieces):
+            if index == self.fail_after:
+                raise ProviderUnavailableError("down", provider=self.name, model=model)
+            yield piece
+        yield CompletionResult("".join(self.pieces), self.name, model)
+
+
+async def _ndjson(response):
+    import json as _json
+
+    return [_json.loads(line) for line in (await response.text()).splitlines() if line.strip()]
+
+
+async def test_stream_endpoint_sends_pieces_then_done(env):
+    client, _ = await env["make"](providers=[StreamingProvider("alpha", ["При", "вет, ", "Аня!"])])
+    response = await client.post("/api/chat/stream", json={"text": "привет"}, headers=auth())
+    assert response.status == 200
+    assert response.headers["Content-Type"].startswith("application/x-ndjson")
+    assert response.headers["Cache-Control"] == "no-store"
+    events = await _ndjson(response)
+    assert [e["text"] for e in events[:-1]] == ["При", "вет, ", "Аня!"]
+    done = events[-1]
+    assert done["type"] == "done" and done["reply"]["content"] == "Привет, Аня!"
+    assert done["reply"]["model"] == "alpha1" and done["usage"]["used"] == 1
+    assert [m.content for m in await env["memory"].get_history(OWNER_ID)] == ["привет", "Привет, Аня!"]
+
+
+async def test_stream_endpoint_errors_before_the_answer_are_plain_json(env):
+    client, _ = await env["make"](providers=[StreamingProvider("alpha", ["x"], fail_first=True)])
+    response = await client.post("/api/chat/stream", json={"text": "привет"}, headers=auth())
+    assert response.status == 503 and (await response.json())["error"]["code"] == "ai_unavailable"
+    for body, code in (({"text": " "}, "bad_request"), ({"text": "я" * 4001}, "too_long")):
+        response = await client.post("/api/chat/stream", json=body, headers=auth())
+        assert response.status == 400 and (await response.json())["error"]["code"] == code
+    assert (await client.post("/api/chat/stream", json={"text": "x"})).status == 401
+
+
+async def test_stream_endpoint_reports_a_broken_answer_and_keeps_history_clean(env):
+    client, _ = await env["make"](providers=[StreamingProvider("alpha", ["Нач", "ало"], fail_after=1)])
+    response = await client.post("/api/chat/stream", json={"text": "привет"}, headers=auth())
+    events = await _ndjson(response)
+    assert events[0] == {"type": "delta", "text": "Нач"}
+    assert events[-1]["type"] == "error" and events[-1]["error"]["code"] == "ai_unavailable"
+    assert await env["memory"].get_history(OWNER_ID) == []
+
+
+async def test_stream_endpoint_respects_rate_limit(env):
+    client, _ = await env["make"](providers=[StreamingProvider("alpha", ["ok"])], rate_limit=1)
+    assert (await client.post("/api/chat/stream", json={"text": "a"}, headers=auth())).status == 200
+    response = await client.post("/api/chat/stream", json={"text": "b"}, headers=auth())
+    assert response.status == 429 and (await response.json())["error"]["code"] == "rate_limited"

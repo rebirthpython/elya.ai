@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
+from collections.abc import AsyncIterator
 
 from ai.client import AIClient
 from ai.context import build_context
@@ -55,6 +56,27 @@ class ChatService:
     ) -> CompletionResult:
         """Отвечает на сообщение и сохраняет обмен. Ошибки ИИ (AIError) пробрасываются,
         история при этом не меняется."""
+        result: CompletionResult | None = None
+        async for event in self.ask_stream(
+            user_id, user_text, user_name=user_name, prefer=prefer, images=images
+        ):
+            if isinstance(event, CompletionResult):
+                result = event
+        assert result is not None
+        return result
+
+    async def ask_stream(
+        self,
+        user_id: int,
+        user_text: str,
+        *,
+        user_name: str | None = None,
+        prefer: tuple[str, str] | None = None,
+        images: tuple[str, ...] = (),
+    ) -> AsyncIterator[str | CompletionResult]:
+        """Как ask(), но по частям: строки — новый текст ответа по мере генерации,
+        последним — CompletionResult. Обмен сохраняется в историю, только когда ответ
+        пришёл целиком; если поток прервали, история не меняется."""
         settings = self._settings
         # С фото: модель получает подпись (или вопрос по умолчанию), а в историю
         # попадает пометка «📷 Фото: подпись» — сама картинка не хранится.
@@ -67,7 +89,8 @@ class ChatService:
                 handled = await self._reminders.handle_chat_request(user_id, user_text)
                 if handled is not None:
                     await self._memory.save_exchange(user_id, user_text, handled)
-                    return CompletionResult(text=handled, provider="reminders", model="")
+                    yield CompletionResult(text=handled, provider="reminders", model="")
+                    return
             history = await self._memory.get_history(user_id)
             prefs = (
                 await self._preferences.get(user_id) if self._preferences else Preferences()
@@ -87,14 +110,20 @@ class ChatService:
                 max_chars=settings.history_max_chars,
                 images=images,
             )
-            result = await self._ai.complete(context, prefer=prefer)
+            result: CompletionResult | None = None
+            async for event in self._ai.stream(context, prefer=prefer):
+                if isinstance(event, CompletionResult):
+                    result = event
+                else:
+                    yield event
+            assert result is not None
             await self._memory.save_exchange(user_id, stored_text, result.text)
 
         if user_text and recall and recall.enabled and self._long_memory.worth_extracting(user_text):
             self._spawn(
                 self._long_memory.extract_and_store(user_id, user_text, result.text, recall.facts)
             )
-        return result
+        yield result
 
     def _spawn(self, coroutine) -> None:
         """Запускает выделение фактов в фоне: ответ пользователю от него не зависит."""

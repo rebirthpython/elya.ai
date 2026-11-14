@@ -299,6 +299,67 @@
   const server = {
     state: () => request('api/state'),
     chat: (text, model) => request('api/chat', model === AUTO ? { text } : { text, model }),
+    /* Ответ по мере генерации (NDJSON). onDelta получает новые куски текста;
+       возвращает то же, что chat(). Без поддержки потоков — обычный chat(). */
+    async chatStream(text, model, onDelta) {
+      if (!window.ReadableStream || !window.TextDecoder) return server.chat(text, model);
+      let response;
+      try {
+        response = await fetch('api/chat/stream', {
+          method: 'POST',
+          headers: { Authorization: 'tma ' + tg.initData, 'Content-Type': 'application/json' },
+          body: JSON.stringify(model === AUTO ? { text } : { text, model }),
+        });
+      } catch (error) {
+        throw new ApiError('network', 'Нет связи с сервером. Проверь интернет и попробуй ещё раз.');
+      }
+      if (!response.ok || !response.body) {
+        let data = null;
+        try {
+          data = await response.json();
+        } catch (error) { /* не JSON */ }
+        const info = (data && data.error) || {};
+        throw new ApiError(info.code || 'http_' + response.status,
+          info.message || 'Сервер ответил ошибкой. Попробуй ещё раз чуть позже.', response.status);
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let result = null;
+      const handle = (line) => {
+        if (!line.trim()) return;
+        let event;
+        try {
+          event = JSON.parse(line);
+        } catch (error) {
+          return;
+        }
+        if (event.type === 'delta' && event.text) onDelta(event.text);
+        else if (event.type === 'done') result = event;
+        else if (event.type === 'error') {
+          const info = event.error || {};
+          throw new ApiError(info.code || 'ai_unavailable', info.message || 'Ответ оборвался. Попробуй ещё раз.', 503);
+        }
+      };
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let newline;
+          while ((newline = buffer.indexOf('\n')) !== -1) {
+            handle(buffer.slice(0, newline));
+            buffer = buffer.slice(newline + 1);
+          }
+        }
+        handle(buffer + decoder.decode());
+      } catch (error) {
+        if (error instanceof ApiError) throw error;
+        throw new ApiError('network', 'Связь прервалась посреди ответа. Попробуй ещё раз.');
+      }
+      if (!result) throw new ApiError('network', 'Связь прервалась посреди ответа. Попробуй ещё раз.');
+      return result;
+    },
     clear: () => request('api/clear', {}),
     savePreferences: (patch) => request('api/preferences', patch),
     memorySet: (enabled) => request('api/memory', { enabled }),
@@ -439,6 +500,16 @@
         await sleep(150);
         memory.facts = [];
         return memoryView();
+      },
+      async chatStream(text, model, onDelta) {
+        const data = await this.chat(text, model);
+        if (data.reply.provider === 'reminders') return data;
+        const words = data.reply.content.split(/(\s+)/);
+        for (let i = 0; i < words.length; i += 4) {
+          onDelta(words.slice(i, i + 4).join(''));
+          await sleep(60);
+        }
+        return data;
       },
       async chat(text, model) {
         await sleep(1100 + Math.random() * 700);
@@ -687,17 +758,13 @@
     return { root, bubble };
   }
 
-  /* Ответ появляется постепенно, как будто Эля печатает: пузырь плавно растёт,
-     в конце текста мерцает курсор, лента сама следует за ответом. */
-  function reveal(root, bubble, text, onDone) {
-    const full = () => window.ElyaMarkdown.render(text);
-    if (reducedMotion || text.length < 30) {
-      bubble.replaceChildren(full());
-      onDone();
-      return null;
-    }
-
-    const step = Math.max(3, Math.ceil(text.length / 90));
+  /* Плавное «допечатывание» ответа: пузырь растёт, в конце мерцает курсор, лента
+     следует за ответом. push(text) — текст, полученный к этому моменту (при потоке он
+     растёт), end(text) — ответ целиком. Показ догоняет поток, не обгоняя его. */
+  function createReveal(root, bubble, onDone) {
+    let target = '';
+    let ended = false;
+    let streamed = false;
     let shown = 0;
     let timer = null;
     let frame = 0;
@@ -720,12 +787,13 @@
       if (!finished) frame = requestAnimationFrame(pin);
     }
 
-    function finish() {
+    function complete() {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
+      timer = null;
       cancelAnimationFrame(frame);
-      render(text);
+      render(target);
       const settle = () => {
         root.classList.remove('is-streaming');
         if (state.stick && !userIsScrolling()) scrollToBottom(false);
@@ -736,20 +804,55 @@
     }
 
     function tick() {
-      shown = Math.min(text.length, shown + step);
-      // Не обрываем слово посередине.
-      for (let extra = 0; extra < 24 && shown < text.length && !/\s/.test(text[shown]); extra += 1) shown += 1;
-      if (shown >= text.length) {
-        finish();
+      timer = null;
+      if (finished) return;
+      if (shown >= target.length) {
+        if (ended) complete();
+        return; // ждём следующий кусок потока
+      }
+      const remaining = target.length - shown;
+      // Готовый текст — ровно, за ~2,5 с; поток — догоняем полученное, не обгоняя его.
+      const step = streamed ? Math.max(2, Math.ceil(remaining / 8)) : Math.max(3, Math.ceil(target.length / 90));
+      shown = Math.min(target.length, shown + step);
+      // Не обрываем слово посередине (если оно уже пришло целиком).
+      for (let extra = 0; extra < 24 && shown < target.length && !/\s/.test(target[shown]); extra += 1) shown += 1;
+      if (ended && shown >= target.length) {
+        complete();
         return;
       }
-      render(text.slice(0, shown));
+      render(target.slice(0, shown));
       timer = setTimeout(tick, 28);
     }
 
-    tick();
     frame = requestAnimationFrame(pin);
-    return finish;
+    return {
+      push(text) {
+        streamed = true;
+        target = text;
+        if (!timer && !finished) tick();
+      },
+      end(text) {
+        if (typeof text === 'string') target = text;
+        ended = true;
+        if (reducedMotion) complete();
+        else if (!timer && !finished) tick();
+      },
+      flush() {
+        ended = true;
+        complete();
+      },
+    };
+  }
+
+  function reveal(root, bubble, text, onDone) {
+    if (reducedMotion || text.length < 30) {
+      bubble.replaceChildren(window.ElyaMarkdown.render(text));
+      onDone();
+      return null;
+    }
+    const view = createReveal(root, bubble, onDone);
+    view.end(text);
+    return view.flush;
   }
 
   function addAssistantReply(reply) {
@@ -758,6 +861,32 @@
       state.finishReveal = null;
       if (reply.truncated) addContinueButton();
     });
+  }
+
+  /* Пузырь ответа, который заполняется по мере прихода потока. */
+  function startStreamingReply() {
+    const item = addMessage({ role: 'assistant', content: '', ts: nowTs() }, { fresh: true, reveal: true });
+    const live = { item, text: '', reply: null };
+    live.view = createReveal(item.root, item.bubble, () => {
+      state.finishReveal = null;
+      if (live.reply && live.reply.truncated) addContinueButton();
+    });
+    state.finishReveal = live.view.flush;
+    return live;
+  }
+
+  /* Ответ пришёл целиком: подпись модели и кнопка «Копировать» с полным текстом. */
+  function finishStreamingReply(live, reply) {
+    live.reply = reply;
+    const meta = live.item.root.querySelector('.msg__meta');
+    const copy = meta.querySelector('[data-copy]');
+    if (copy) copy.dataset.copy = reply.content;
+    if (reply.model) {
+      const model = el('span', 'msg__model', modelTitle(reply.model));
+      model.title = reply.model;
+      meta.insertBefore(model, copy);
+    }
+    live.view.end(reply.content);
   }
 
   function addContinueButton() {
@@ -955,6 +1084,7 @@
     }
     updateWelcome();
     const typing = showTyping();
+    let live = null;
     if (fly) {
       // Сначала лента встаёт на место, потом сообщение летит в уже известную точку.
       scrollToBottom(false);
@@ -964,11 +1094,23 @@
     }
 
     try {
-      const data = attachment
-        ? await backend.photo(text, attachment.blob, state.model)
-        : await backend.chat(text, state.model);
+      let data;
+      if (attachment) {
+        data = await backend.photo(text, attachment.blob, state.model);
+      } else {
+        data = await backend.chatStream(text, state.model, (piece) => {
+          // Первый кусок ответа — убираем «печатает» и открываем пузырь.
+          if (!live) {
+            typing.dismiss();
+            live = startStreamingReply();
+          }
+          live.text += piece;
+          live.view.push(live.text);
+        });
+      }
       typing.dismiss();
-      addAssistantReply(data.reply);
+      if (live) finishStreamingReply(live, data.reply);
+      else addAssistantReply(data.reply);
       haptic('impact', 'soft');
       if (data.usage) state.usage = data.usage;
       watchNewMemories();
@@ -978,6 +1120,11 @@
       setBusy(false);
     } catch (error) {
       typing.dismiss();
+      if (live) {
+        // Ответ оборвался посреди: показанная часть остаётся, но помечается.
+        live.view.flush();
+        live.item.root.classList.add('msg--failed');
+      }
       setBusy(false);
       haptic('notify', 'error');
       if (error.status === 401 || error.status === 403) {

@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import json
 import re
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -79,6 +81,24 @@ def _wire_message(message: ChatMessage) -> dict[str, Any]:
     return {"role": message.role, "content": parts}
 
 
+_THINK_OPEN = "<think>"
+
+
+def _visible_text(raw: str) -> str:
+    """Текст, который можно показать, пока ответ ещё идёт: без блоков <think>…</think>,
+    без незакрытого <think> и без недописанного начала тега в самом конце."""
+    text = _THINK_RE.sub("", raw)
+    lower = text.lower()
+    start = lower.find(_THINK_OPEN)
+    if start != -1:
+        text = text[:start]
+    for size in range(len(_THINK_OPEN) - 1, 0, -1):
+        if text.lower().endswith(_THINK_OPEN[:size]):
+            text = text[:-size]
+            break
+    return text.lstrip()
+
+
 class OpenAICompatibleProvider(BaseProvider):
     def __init__(
         self,
@@ -143,6 +163,105 @@ class OpenAICompatibleProvider(BaseProvider):
             raise self._classify(code or 502, detail, model)
 
         return self._parse_completion(data, model)
+
+    async def stream(
+        self,
+        messages: list[ChatMessage],
+        *,
+        model: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> AsyncIterator[str | CompletionResult]:
+        """Потоковый ответ (stream: true, Server-Sent Events): куски текста, затем итог."""
+        payload = {
+            "model": model,
+            "messages": [_wire_message(m) for m in messages],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+        }
+        headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+        raw_parts: list[str] = []
+        shown = ""
+        finish_reason = None
+        served_model = model
+        try:
+            async with self._http.stream("POST", self._url, json=payload, headers=headers) as response:
+                if response.status_code != 200:
+                    body = await response.aread()
+                    try:
+                        data = json.loads(body)
+                    except ValueError:
+                        data = None
+                    detail = _error_detail(data)[0] if data is not None else body[:300].decode("utf-8", "replace")
+                    raise self._classify(
+                        response.status_code,
+                        detail,
+                        model,
+                        retry_after=_parse_retry_after(response.headers.get("retry-after")),
+                    )
+                if "text/event-stream" not in response.headers.get("content-type", ""):
+                    # Сервер проигнорировал stream — пришёл обычный JSON-ответ.
+                    try:
+                        data = json.loads(await response.aread())
+                    except ValueError as exc:
+                        raise BadResponseError("response is not JSON", provider=self.name, model=model) from exc
+                    if not isinstance(data, dict):
+                        raise BadResponseError("response is not a JSON object", provider=self.name, model=model)
+                    if data.get("error"):
+                        detail, code = _error_detail(data)
+                        raise self._classify(code or 502, detail, model)
+                    result = self._parse_completion(data, model)
+                    yield result.text
+                    yield result
+                    return
+
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    chunk_raw = line[5:].strip()
+                    if chunk_raw == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(chunk_raw)
+                    except ValueError:
+                        continue
+                    if not isinstance(chunk, dict):
+                        continue
+                    if chunk.get("error"):
+                        detail, code = _error_detail(chunk)
+                        raise self._classify(code or 502, detail, model)
+                    served_model = str(chunk.get("model") or served_model)
+                    choices = chunk.get("choices")
+                    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                        continue
+                    choice = choices[0]
+                    finish_reason = choice.get("finish_reason") or finish_reason
+                    delta = choice.get("delta") or {}
+                    piece = _extract_text(delta.get("content")) if isinstance(delta, dict) else ""
+                    if not piece:
+                        continue
+                    raw_parts.append(piece)
+                    visible = _visible_text("".join(raw_parts))
+                    if visible.startswith(shown) and len(visible) > len(shown):
+                        yield visible[len(shown):]
+                        shown = visible
+        except httpx.TimeoutException as exc:
+            raise ProviderUnavailableError("timeout", provider=self.name, model=model) from exc
+        except httpx.HTTPError as exc:
+            raise ProviderUnavailableError(
+                f"network error: {type(exc).__name__}", provider=self.name, model=model
+            ) from exc
+
+        text = _THINK_RE.sub("", "".join(raw_parts)).strip()
+        if not text:
+            reason = "blocked by safety filter" if finish_reason in ("content_filter", "safety") \
+                else f"empty response (finish_reason={finish_reason})"
+            raise BadResponseError(reason, provider=self.name, model=model)
+        yield CompletionResult(
+            text=text, provider=self.name, model=served_model, truncated=finish_reason == "length"
+        )
 
     def _parse_completion(self, data: dict[str, Any], model: str) -> CompletionResult:
         choices = data.get("choices")

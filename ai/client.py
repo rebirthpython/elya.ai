@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 
 from ai.providers.base import (
+    BadResponseError,
     BaseProvider,
     ChatMessage,
     CompletionResult,
@@ -123,15 +124,48 @@ class AIClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> CompletionResult:
-        vision = any(m.images for m in messages)
-        if vision and not self.has_vision:
-            raise NoVisionModelError
         """Возвращает ответ первой сработавшей модели.
 
         prefer=(провайдер, модель) — с какой модели начать; при её отказе
         остальные пробуются в обычном порядке. temperature и max_tokens
         переопределяют значения по умолчанию для служебных запросов.
         """
+        result: CompletionResult | None = None
+        async for event in self._attempts(messages, prefer, temperature, max_tokens, streaming=False):
+            if isinstance(event, CompletionResult):
+                result = event
+        assert result is not None
+        return result
+
+    async def stream(
+        self,
+        messages: list[ChatMessage],
+        *,
+        prefer: tuple[str, str] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[str | CompletionResult]:
+        """Ответ по частям: строки — новый текст по мере генерации, последним — CompletionResult.
+
+        Пока модель не начала отвечать, при ошибке пробуется следующая. Если поток
+        оборвался на середине, бросается AllProvidersFailedError: часть ответа уже
+        показана, и незаметно подменить модель нельзя.
+        """
+        async for event in self._attempts(messages, prefer, temperature, max_tokens, streaming=True):
+            yield event
+
+    async def _attempts(
+        self,
+        messages: list[ChatMessage],
+        prefer: tuple[str, str] | None,
+        temperature: float | None,
+        max_tokens: int | None,
+        *,
+        streaming: bool,
+    ) -> AsyncIterator[str | CompletionResult]:
+        vision = any(m.images for m in messages)
+        if vision and not self.has_vision:
+            raise NoVisionModelError
         errors: list[ProviderError] = []
 
         for provider, model in self._candidates(prefer, vision):
@@ -145,14 +179,26 @@ class AIClient:
             if self._usage and not await self._usage.try_consume():
                 raise DailyLimitExceededError(self._usage.daily_limit)
 
+            options = {
+                "model": model,
+                "max_tokens": max_tokens if max_tokens is not None else self._max_tokens,
+                "temperature": temperature if temperature is not None else self._temperature,
+            }
             started = self._clock()
+            emitted = False
+            result: CompletionResult | None = None
             try:
-                result = await provider.complete(
-                    messages,
-                    model=model,
-                    max_tokens=max_tokens if max_tokens is not None else self._max_tokens,
-                    temperature=temperature if temperature is not None else self._temperature,
-                )
+                if streaming:
+                    async for event in provider.stream(messages, **options):
+                        if isinstance(event, CompletionResult):
+                            result = event
+                        elif event:
+                            emitted = True
+                            yield event
+                    if result is None:
+                        raise BadResponseError("stream ended without a result", provider=provider.name, model=model)
+                else:
+                    result = await provider.complete(messages, **options)
             except ProviderError as exc:
                 logger.warning("AI request failed: %s", exc)
                 errors.append(exc)
@@ -161,17 +207,21 @@ class AIClient:
                     self._cool_down((provider.name, None), exc, self._base_cooldown * 10)
                 elif isinstance(exc, RateLimitError):
                     self._cool_down(key, exc, exc.retry_after)
+                if emitted:
+                    raise AllProvidersFailedError([exc]) from exc
                 continue
 
             self._cooldowns.pop(key, None)
             self._cooldowns.pop((provider.name, None), None)
             logger.info(
-                "AI response: provider=%s model=%s chars=%d time=%.1fs",
+                "AI response: provider=%s model=%s chars=%d time=%.1fs%s",
                 result.provider,
                 result.model,
                 len(result.text),
                 self._clock() - started,
+                " (stream)" if streaming else "",
             )
-            return result
+            yield result
+            return
 
         raise AllProvidersFailedError(errors)

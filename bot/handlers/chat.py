@@ -11,7 +11,8 @@ from aiogram.types import Message
 from aiogram.utils.chat_action import ChatActionSender
 
 from ai.client import AllProvidersFailedError, DailyLimitExceededError, NoVisionModelError
-from bot.utils.sender import send_long_text
+from ai.providers.base import CompletionResult
+from bot.utils.live import LiveMessage
 from services.chat import ChatService
 from services.speech import SpeechError, SpeechToText
 from services.vision import MAX_IMAGE_BYTES, NO_VISION_TEXT, ImageError, to_data_url
@@ -99,32 +100,45 @@ async def handle_photo(message: Message, bot: Bot, chat_service: ChatService) ->
 async def _reply(
     message: Message, bot: Bot, chat_service: ChatService, text: str, images: tuple[str, ...] = ()
 ) -> None:
+    """Ответ Эли, который появляется в чате по мере генерации."""
+    live = LiveMessage(bot, message)
+    answer = ""
+    result = None
     try:
         async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
-            result = await chat_service.ask(
+            async for event in chat_service.ask_stream(
                 message.from_user.id,
                 text,
                 user_name=message.from_user.first_name,
                 images=images,
-            )
+            ):
+                if isinstance(event, CompletionResult):
+                    result = event
+                else:
+                    answer += event
+                    await live.update(answer)
     except NoVisionModelError:
         await message.answer(NO_VISION_TEXT)
         return
     except DailyLimitExceededError as exc:
-        await message.answer(
+        await live.fail(
             f"📵 Достигнут дневной лимит запросов к ИИ ({exc.limit}). "
             "Он обновится в 00:00 по UTC. Это защита от перерасхода бесплатной квоты."
         )
         return
     except AllProvidersFailedError as exc:
         logger.error("All AI providers failed (%s)", exc.kind)
-        await message.answer(_FAILURE_TEXTS[exc.kind])
+        await live.fail(
+            "⚠️ Ответ оборвался: ИИ-сервис перестал отвечать. Отправь сообщение ещё раз."
+            if live.started
+            else _FAILURE_TEXTS[exc.kind]
+        )
         return
 
     reply = result.text
     if result.truncated:
         reply += "\n\n_(ответ обрезан из-за ограничения длины — напиши «продолжи»)_"
-    await send_long_text(message, reply)
+    await live.finish(reply)
 
 
 async def handle_unsupported(message: Message) -> None:

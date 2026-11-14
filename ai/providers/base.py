@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Literal
 
@@ -125,3 +126,21 @@ class BaseProvider(ABC):
         temperature: float,
     ) -> CompletionResult:
         raise NotImplementedError
+
+    async def stream(
+        self,
+        messages: list[ChatMessage],
+        *,
+        model: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> AsyncIterator[str | CompletionResult]:
+        """Ответ по частям: строки — новые куски текста, последним — CompletionResult.
+
+        По умолчанию — весь ответ одним куском; провайдеры с потоковым API переопределяют.
+        """
+        result = await self.complete(
+            messages, model=model, max_tokens=max_tokens, temperature=temperature
+        )
+        yield result.text
+        yield result

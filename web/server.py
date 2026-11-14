@@ -15,7 +15,14 @@ from typing import Any
 from aiogram.utils.web_app import WebAppUser
 from aiohttp import web
 
-from ai.client import AIClient, AllProvidersFailedError, DailyLimitExceededError, NoVisionModelError
+from ai.client import (
+    AIClient,
+    AIError,
+    AllProvidersFailedError,
+    DailyLimitExceededError,
+    NoVisionModelError,
+)
+from ai.providers.base import CompletionResult
 from config.settings import Settings
 from database.models import Message
 from memory.manager import MemoryManager
@@ -292,6 +299,51 @@ async def post_photo(request: web.Request) -> web.Response:
     return await _answer(request, user, text, fields.get("model"), images=(data_url,))
 
 
+def _rate_limited(app: web.Application, user: WebAppUser) -> web.Response | None:
+    retry_after = app[LIMITER].hit(user.id)
+    if retry_after is None:
+        return None
+    seconds = max(1, int(retry_after))
+    return _error(
+        429,
+        "rate_limited",
+        f"Слишком много сообщений подряд. Подожди примерно {seconds} сек.",
+        retry_after=seconds,
+    )
+
+
+def _ai_error(exc: AIError) -> tuple[int, str, str]:
+    """(HTTP-статус, код, текст для пользователя) для ошибки ИИ."""
+    if isinstance(exc, NoVisionModelError):
+        return 503, "no_vision", NO_VISION_TEXT
+    if isinstance(exc, DailyLimitExceededError):
+        return (
+            429,
+            "daily_limit",
+            f"Достигнут дневной лимит запросов к ИИ ({exc.limit}). Он обновится в 00:00 по UTC.",
+        )
+    if isinstance(exc, AllProvidersFailedError):
+        logger.error("All AI providers failed (%s)", exc.kind)
+        return 503, f"ai_{exc.kind}", _AI_FAILURE_TEXTS[exc.kind]
+    logger.error("AI error: %s", exc)
+    return 503, "ai_unavailable", _AI_FAILURE_TEXTS["unavailable"]
+
+
+async def _reply_payload(app: web.Application, result: CompletionResult) -> dict[str, Any]:
+    usage = app[USAGE]
+    return {
+        "reply": {
+            "role": "assistant",
+            "content": result.text,
+            "ts": int(datetime.now(timezone.utc).timestamp()),
+            "provider": result.provider,
+            "model": result.model,
+            "truncated": result.truncated,
+        },
+        "usage": {"used": await usage.used_today(), "limit": usage.daily_limit},
+    }
+
+
 async def _answer(
     request: web.Request,
     user: WebAppUser,
@@ -301,16 +353,8 @@ async def _answer(
 ) -> web.Response:
     """Общая часть /api/chat и /api/photo: лимит частоты, ответ модели, ошибки ИИ."""
     app = request.app
-    retry_after = app[LIMITER].hit(user.id)
-    if retry_after is not None:
-        seconds = max(1, int(retry_after))
-        return _error(
-            429,
-            "rate_limited",
-            f"Слишком много сообщений подряд. Подожди примерно {seconds} сек.",
-            retry_after=seconds,
-        )
-
+    if (limited := _rate_limited(app, user)) is not None:
+        return limited
     try:
         result = await app[CHAT].ask(
             user.id,
@@ -319,32 +363,69 @@ async def _answer(
             prefer=_resolve_model(app[AI_CLIENT], model),
             images=images,
         )
-    except NoVisionModelError:
-        return _error(503, "no_vision", NO_VISION_TEXT)
-    except DailyLimitExceededError as exc:
-        return _error(
-            429,
-            "daily_limit",
-            f"Достигнут дневной лимит запросов к ИИ ({exc.limit}). Он обновится в 00:00 по UTC.",
-        )
-    except AllProvidersFailedError as exc:
-        logger.error("All AI providers failed (%s)", exc.kind)
-        return _error(503, f"ai_{exc.kind}", _AI_FAILURE_TEXTS[exc.kind])
+    except AIError as exc:
+        return _error(*_ai_error(exc))
+    return web.json_response(await _reply_payload(app, result))
 
-    usage = app[USAGE]
-    return web.json_response(
-        {
-            "reply": {
-                "role": "assistant",
-                "content": result.text,
-                "ts": int(datetime.now(timezone.utc).timestamp()),
-                "provider": result.provider,
-                "model": result.model,
-                "truncated": result.truncated,
-            },
-            "usage": {"used": await usage.used_today(), "limit": usage.daily_limit},
-        }
+
+async def post_chat_stream(request: web.Request) -> web.StreamResponse:
+    """Как /api/chat, но ответ приходит по мере генерации — построчно (NDJSON):
+    {"type": "delta", "text": "..."} … и в конце {"type": "done", "reply": …, "usage": …}
+    или {"type": "error", "error": {...}}. Ошибки до начала ответа — обычный JSON со статусом."""
+    app = request.app
+    user: WebAppUser = request[_USER_KEY]
+    payload = await _read_json(request)
+    text = payload.get("text") if payload else None
+    if not isinstance(text, str) or not text.strip():
+        return _error(400, "bad_request", "Пустое сообщение.")
+    text = text.strip()
+    if len(text) > MAX_TEXT_LENGTH:
+        return _error(
+            400, "too_long", f"Сообщение длиннее {MAX_TEXT_LENGTH} символов — сократи его."
+        )
+    if (limited := _rate_limited(app, user)) is not None:
+        return limited
+
+    events = app[CHAT].ask_stream(
+        user.id,
+        text,
+        user_name=user.first_name,
+        prefer=_resolve_model(app[AI_CLIENT], payload.get("model")),
     )
+    try:
+        # Ждём начала ответа: если модель недоступна, честнее вернуть обычную ошибку.
+        try:
+            event = await anext(events)
+        except AIError as exc:
+            return _error(*_ai_error(exc))
+
+        response = web.StreamResponse(
+            headers={
+                "Content-Type": "application/x-ndjson; charset=utf-8",
+                "X-Accel-Buffering": "no",  # прокси не должны копить ответ целиком
+            }
+        )
+        _apply_headers(request, response.headers)
+        await response.prepare(request)
+
+        async def emit(item: dict[str, Any]) -> None:
+            await response.write((json.dumps(item, ensure_ascii=False) + "\n").encode("utf-8"))
+
+        try:
+            while True:
+                if isinstance(event, CompletionResult):
+                    await emit({"type": "done", **await _reply_payload(app, event)})
+                    break
+                await emit({"type": "delta", "text": event})
+                event = await anext(events)
+        except AIError as exc:
+            status, code, message = _ai_error(exc)
+            await emit({"type": "error", "error": {"code": code, "message": message}})
+        await response.write_eof()
+        return response
+    finally:
+        # Клиент ушёл посреди ответа — поток закрывается, история не меняется.
+        await events.aclose()
 
 
 async def post_preferences(request: web.Request) -> web.Response:
@@ -551,6 +632,7 @@ def create_web_app(
     app.router.add_get("/healthz", health)
     app.router.add_get("/api/state", get_state)
     app.router.add_post("/api/chat", post_chat)
+    app.router.add_post("/api/chat/stream", post_chat_stream)
     app.router.add_post("/api/clear", post_clear)
     app.router.add_post("/api/preferences", post_preferences)
     app.router.add_post("/api/memory", post_memory)

@@ -546,3 +546,30 @@ async def test_photo_from_stranger_is_ignored(env):
     dp, downloaded = _photo_dispatcher(env)
     await dp.feed_update(env["bot"], _photo_update("что это?", user_id=STRANGER_ID))
     assert env["session"].requests == [] and downloaded == []
+
+
+async def test_slow_answer_appears_early_and_is_edited_into_the_final_reply(env):
+    import asyncio
+
+    from aiogram.methods import EditMessageText
+
+    class Slow(BaseProvider):
+        def __init__(self):
+            super().__init__("slow", "Slow AI", ("s1",))
+
+        async def complete(self, messages, *, model, max_tokens, temperature):
+            raise AssertionError("stream expected")
+
+        async def stream(self, messages, *, model, max_tokens, temperature):
+            for piece in ("**При", "вет**, ", "Аня! ", "Как дела?"):
+                await asyncio.sleep(0.45)
+                yield piece
+            yield CompletionResult("**Привет**, Аня! Как дела?", "slow", model)
+
+    dp = create_dispatcher(_settings(), AIClient([Slow()], max_tokens=10, temperature=0.1), env["memory"], env["usage"])
+    await dp.feed_update(env["bot"], _message_update("привет"))
+    sent = [m for m in env["session"].requests if isinstance(m, SendMessage)]
+    edits = [m for m in env["session"].requests if isinstance(m, EditMessageText)]
+    assert len(sent) == 1 and sent[0].text.endswith(" ▍") and sent[0].parse_mode is None  # показан заранее
+    assert edits[-1].text == "<b>Привет</b>, Аня! Как дела?" and edits[-1].parse_mode == "HTML"
+    assert [m.content for m in await env["memory"].get_history(OWNER_ID)][-1] == "**Привет**, Аня! Как дела?"
