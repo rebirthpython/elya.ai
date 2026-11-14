@@ -17,8 +17,12 @@ class ThrottlingMiddleware(BaseMiddleware):
         limit: int,
         window: float = 60.0,
         clock: Callable[[], float] = time.monotonic,
+        exempt_states: frozenset[str] = frozenset(),
     ) -> None:
+        """exempt_states — FSM-состояния, в которых сообщения не ограничиваются
+        (например, приём длинной лекции, которую Telegram режет на много сообщений)."""
         self._limit = limit
+        self._exempt_states = exempt_states
         self._window = window
         self._clock = clock
         self._hits: defaultdict[int, deque[float]] = defaultdict(deque)
@@ -31,7 +35,7 @@ class ThrottlingMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         user: User | None = data.get("event_from_user")
-        if user is None:
+        if user is None or data.get("raw_state") in self._exempt_states:
             return await handler(event, data)
 
         now = self._clock()

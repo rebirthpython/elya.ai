@@ -13,6 +13,7 @@ from aiogram.utils.chat_action import ChatActionSender
 from ai.client import AIClient, AllProvidersFailedError, DailyLimitExceededError
 from ai.context import build_context
 from ai.prompts import build_system_prompt
+from bot.utils.ai_errors import ai_error_text
 from bot.utils.sender import send_long_text
 from config.settings import Settings
 from memory.manager import MemoryManager
@@ -22,22 +23,6 @@ logger = logging.getLogger(__name__)
 # Сообщения одного пользователя обрабатываются строго по очереди,
 # чтобы история диалога сохранялась в правильном порядке.
 _user_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
-
-_FAILURE_TEXTS = {
-    "rate_limit": (
-        "⏳ Сейчас исчерпан лимит запросов к ИИ-модели (бесплатные тарифы ограничены). "
-        "Попробуй ещё раз через минуту-другую."
-    ),
-    "config": (
-        "⚠️ Не получается подключиться к ИИ-сервису: похоже, проблема с API-ключом, "
-        "балансом или регионом сервера. Подробности — в логах бота."
-    ),
-    "unavailable": (
-        "😔 ИИ-сервис сейчас не отвечает, поэтому сообщение не обработано. "
-        "Отправь его ещё раз чуть позже."
-    ),
-}
-
 
 async def handle_text(
     message: Message,
@@ -65,14 +50,11 @@ async def handle_text(
             async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
                 result = await ai_client.complete(context)
         except DailyLimitExceededError as exc:
-            await message.answer(
-                f"📵 Достигнут дневной лимит запросов к ИИ ({exc.limit}). "
-                "Он обновится в 00:00 по UTC. Это защита от перерасхода бесплатной квоты."
-            )
+            await message.answer(ai_error_text(exc))
             return
         except AllProvidersFailedError as exc:
             logger.error("All AI providers failed (%s)", exc.kind)
-            await message.answer(_FAILURE_TEXTS[exc.kind])
+            await message.answer(ai_error_text(exc))
             return
 
         await memory.save_exchange(user_id, user_text, result.text)
@@ -85,7 +67,8 @@ async def handle_text(
 
 async def handle_unsupported(message: Message) -> None:
     await message.answer(
-        "Пока я понимаю только текстовые сообщения. Голосовые и фото научусь разбирать позже 🙂"
+        "Пока я понимаю только текстовые сообщения. Голосовые и фото научусь разбирать позже 🙂\n"
+        "Файл с лекцией (.txt, .docx, .pdf) можно прислать после команды /notes или /slides."
     )
 
 

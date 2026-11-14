@@ -39,6 +39,9 @@ class Settings:
     rate_limit_per_minute: int
     daily_request_limit: int
     log_level: str
+    # Конспекты и презентации: длина ответа модели и максимальный размер материала.
+    study_max_output_tokens: int = 8192
+    study_max_input_chars: int = 60000
 
 
 # Известные провайдеры с OpenAI-совместимым API (POST {base_url}/chat/completions).
@@ -188,4 +191,6 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         rate_limit_per_minute=_get_int("RATE_LIMIT_PER_MINUTE", 10, minimum=1),
         daily_request_limit=_get_int("DAILY_REQUEST_LIMIT", 300, minimum=0),
         log_level=_get_str("LOG_LEVEL", "INFO").upper() or "INFO",
+        study_max_output_tokens=_get_int("STUDY_MAX_OUTPUT_TOKENS", 8192, minimum=1024),
+        study_max_input_chars=_get_int("STUDY_MAX_INPUT_CHARS", 60000, minimum=1000),
     )

@@ -85,7 +85,15 @@ class AIClient:
             delay = self._base_cooldown * 2 ** (strikes - 1)
         self._cooldowns[key] = (self._clock() + min(delay, self._max_cooldown), strikes, error)
 
-    async def complete(self, messages: list[ChatMessage]) -> CompletionResult:
+    async def complete(
+        self,
+        messages: list[ChatMessage],
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> CompletionResult:
+        """max_tokens/temperature переопределяют значения по умолчанию для одного запроса
+        (например, конспекту нужен ответ длиннее, чем реплике в чате)."""
         errors: list[ProviderError] = []
 
         for provider in self._providers:
@@ -105,8 +113,8 @@ class AIClient:
                     result = await provider.complete(
                         messages,
                         model=model,
-                        max_tokens=self._max_tokens,
-                        temperature=self._temperature,
+                        max_tokens=max_tokens or self._max_tokens,
+                        temperature=self._temperature if temperature is None else temperature,
                     )
                 except ProviderError as exc:
                     logger.warning("AI request failed: %s", exc)
