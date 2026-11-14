@@ -23,6 +23,7 @@ from bot.handlers.study import StudyStates
 from bot.middlewares.access import AccessMiddleware
 from bot.middlewares.throttling import ThrottlingMiddleware
 from config.settings import ConfigError, Settings, load_settings
+from database.models import DailySearchUsage
 from database.session import (
     create_engine,
     create_session_factory,
@@ -39,6 +40,7 @@ from services.speech import SpeechToText
 from services.reminders import ReminderScheduler, Reminders
 from services.preferences import PreferencesStore
 from services.rate_limit import SlidingWindowLimiter
+from services.search import WebSearch, build_search_providers
 from services.usage import UsageTracker
 from study.pipeline import StudyService
 from web.server import create_web_app, start_web_server
@@ -49,6 +51,7 @@ BOT_COMMANDS = [
     BotCommand(command="start", description="Запуск и приветствие"),
     BotCommand(command="notes", description="Конспект или сокращение лекции"),
     BotCommand(command="slides", description="Презентация с анимациями"),
+    BotCommand(command="search", description="Найти в интернете со ссылками на источники"),
     BotCommand(command="help", description="Что я умею"),
     BotCommand(command="reminders", description="Мои напоминания"),
     BotCommand(command="timezone", description="Часовой пояс для напоминаний"),
@@ -72,6 +75,7 @@ def create_dispatcher(
     reminders: Reminders | None = None,
     speech: SpeechToText | None = None,
     instructions: InstructionsStore | None = None,
+    search: WebSearch | None = None,
 ) -> Dispatcher:
     """chat_service и limiter передаются снаружи, когда их делит с ботом Mini App."""
     dp = Dispatcher(storage=MemoryStorage())
@@ -83,8 +87,9 @@ def create_dispatcher(
     dp["reminders"] = reminders
     dp["instructions"] = instructions
     dp["speech"] = speech
+    dp["web_search"] = search
     dp["chat_service"] = chat_service or ChatService(
-        settings, ai_client, memory, instructions=instructions
+        settings, ai_client, memory, instructions=instructions, search=search
     )
 
     dp["study"] = StudyService(
@@ -103,6 +108,23 @@ def create_dispatcher(
     )
     dp.include_routers(*get_routers())
     return dp
+
+
+def create_web_search(
+    settings: Settings, http_client: httpx.AsyncClient, session_factory
+) -> WebSearch | None:
+    """Поиск в интернете, если задан ключ хотя бы одного поискового API."""
+    config = settings.search
+    if not config.enabled:
+        return None
+    return WebSearch(
+        build_search_providers(config, http_client),
+        max_results=config.max_results,
+        language=config.language,
+        region=config.region,
+        auto=config.auto,
+        usage=UsageTracker(session_factory, config.daily_limit, model=DailySearchUsage),
+    )
 
 
 def setup_logging(level: str) -> None:
@@ -163,8 +185,16 @@ async def run(settings: Settings) -> None:
         else None
     )
     instructions = InstructionsStore(session_factory)
+    search = create_web_search(settings, http_client, session_factory)
     chat_service = ChatService(
-        settings, ai_client, memory, preferences, long_memory, reminders, instructions=instructions
+        settings,
+        ai_client,
+        memory,
+        preferences,
+        long_memory,
+        reminders,
+        instructions=instructions,
+        search=search,
     )
     limiter = SlidingWindowLimiter(settings.rate_limit_per_minute)
 
@@ -180,6 +210,7 @@ async def run(settings: Settings) -> None:
         reminders=reminders,
         speech=speech,
         instructions=instructions,
+        search=search,
     )
     web_runner = None
     scheduler_task = None
@@ -210,6 +241,7 @@ async def run(settings: Settings) -> None:
                         reminders,
                         speech,
                         instructions,
+                        search,
                     ),
                     settings.webapp_host,
                     settings.webapp_port,
@@ -223,9 +255,15 @@ async def run(settings: Settings) -> None:
                 )
                 raise SystemExit(1) from None
         logger.info(
-            "Bot @%s started. Providers: %s. Mini App: %s",
+            "Bot @%s started. Providers: %s. Web search: %s. Mini App: %s",
             me.username,
             ", ".join(f"{p.name}[{','.join(p.models)}]" for p in settings.providers),
+            (
+                ",".join(name for name, _ in settings.search.providers)
+                + (" (auto)" if settings.search.auto else " (on request)")
+                if search
+                else "off (set SERPER_API_KEY or SERPAPI_API_KEY to enable)"
+            ),
             settings.webapp_url or "off (set WEBAPP_URL to enable)",
         )
         scheduler = ReminderScheduler(reminders, make_sender(bot))

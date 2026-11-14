@@ -10,6 +10,7 @@ def get_routers() -> list[Router]:
         errors.create_router(),
         study.create_router(),
         reminders.create_router(),
+        chat.create_search_router(),
         commands.create_router(),
         chat.create_router(),
     ]

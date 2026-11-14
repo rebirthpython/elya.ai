@@ -1113,6 +1113,31 @@ body.is-thinking .glow--think {
   animation: fade-in 0.5s ease both;
 }
 
+/* Эля ищет в интернете: длинный запрос не растягивает пузырь за край экрана */
+.typing--search .typing__hint {
+  max-width: min(62vw, 340px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Список источников под ответом с поиском */
+.md .md-sources__title {
+  margin: 0.9em 0 0.35em;
+  padding-top: 0.7em;
+  border-top: 1px solid var(--line);
+  color: var(--text-2);
+  font-size: 0.86em;
+}
+
+.md ol.md-sources {
+  color: var(--text-2);
+  font-size: 0.86em;
+}
+
+.md ol.md-sources a {
+  overflow-wrap: anywhere;
+}
+
 /* Ошибка отправки */
 
 .notice {
@@ -1600,6 +1625,50 @@ body.is-thinking .glow--think {
 
 .composer__box.is-recording .attach-btn,
 .composer__box.is-transcribing .attach-btn {
+  display: none;
+}
+
+/* Глобус — следующее сообщение с поиском в интернете (если поиск подключён) */
+.search-btn {
+  display: none;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  margin: 2px 0 2px -10px;
+  border-radius: 50%;
+  color: var(--text-2);
+  font-size: 21px;
+  transition: color 0.2s, background 0.25s, transform 0.4s var(--spring);
+}
+
+.composer__box.can-search .search-btn {
+  display: grid;
+}
+
+.composer__box.can-attach .search-btn {
+  margin-left: -8px;
+}
+
+.search-btn:active {
+  transform: scale(0.86);
+}
+
+.search-btn.is-on {
+  background: color-mix(in srgb, var(--rose) 16%, transparent);
+  color: var(--rose);
+}
+
+.search-btn.is-on svg {
+  animation: globe-on 0.6s var(--spring) both;
+}
+
+@keyframes globe-on {
+  from { transform: rotate(-120deg) scale(0.6); }
+}
+
+.composer__box.is-recording .search-btn,
+.composer__box.is-transcribing .search-btn {
   display: none;
 }
 

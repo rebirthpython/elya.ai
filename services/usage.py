@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from database.models import DailyUsage
+from database.models import DailySearchUsage, DailyUsage
 
 
 def _today() -> date:
@@ -14,24 +14,34 @@ def _today() -> date:
 
 
 class UsageTracker:
-    """Считает каждую HTTP-попытку к провайдеру. daily_limit=0 — без ограничения."""
+    """Считает каждую HTTP-попытку к провайдеру. daily_limit=0 — без ограничения.
 
-    def __init__(self, session_factory: async_sessionmaker, daily_limit: int) -> None:
+    model — таблица счётчика: DailyUsage для ИИ, DailySearchUsage для поиска.
+    """
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker,
+        daily_limit: int,
+        *,
+        model: type[DailyUsage] | type[DailySearchUsage] = DailyUsage,
+    ) -> None:
         self._session_factory = session_factory
         self.daily_limit = daily_limit
+        self._model = model
 
     async def used_today(self) -> int:
         async with self._session_factory() as session:
-            row = await session.get(DailyUsage, _today())
+            row = await session.get(self._model, _today())
             return row.requests if row else 0
 
     async def try_consume(self) -> bool:
         """Резервирует один запрос. False — дневной лимит исчерпан."""
         today = _today()
         async with self._session_factory.begin() as session:
-            row = await session.get(DailyUsage, today)
+            row = await session.get(self._model, today)
             if row is None:
-                row = DailyUsage(day=today, requests=0)
+                row = self._model(day=today, requests=0)
                 session.add(row)
             if self.daily_limit and row.requests >= self.daily_limit:
                 return False
