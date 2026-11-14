@@ -47,6 +47,15 @@ class DailyUsage(Base):
     requests: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class DailyImageUsage(Base):
+    """Сколько картинок нарисовано за сутки (UTC) — свой лимит, отдельный от текстовых запросов."""
+
+    __tablename__ = "daily_image_usage"
+
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    requests: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class UserPreferences(Base):
     """Как Эля общается с пользователем: стиль и подробность ответов."""
 

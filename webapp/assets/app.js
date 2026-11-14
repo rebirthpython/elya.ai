@@ -394,6 +394,7 @@
     },
     reminderAdd: (text, when, repeat) => request('api/reminders/add', { text, when, repeat }),
     reminderDelete: (id) => request('api/reminders/delete', { id }),
+    drawAgain: (id) => request('api/draw/again', { id }),
   };
 
   /* Демо-режим: тот же интерфейс, но без сервера и настоящей модели. */
@@ -415,6 +416,32 @@
       : [];
     let used = 12;
     let turn = 0;
+    let drawingId = 0;
+
+    /* В демо «рисунок» — случайный градиент с кругами: так видно, как выглядит ответ с картинкой. */
+    function demoDrawing(request, id) {
+      const hue = Math.floor(Math.random() * 360);
+      const circles = Array.from({ length: 6 }, (_, i) => {
+        const x = 80 + Math.random() * 360;
+        const y = 80 + Math.random() * 360;
+        const r = 30 + Math.random() * 90;
+        return '<circle cx="' + x.toFixed(0) + '" cy="' + y.toFixed(0) + '" r="' + r.toFixed(0) +
+          '" fill="hsl(' + ((hue + i * 40) % 360) + ' 80% 70% / 0.55)"/>';
+      }).join('');
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">' +
+        '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(' + hue +
+        ' 70% 45%)"/><stop offset="1" stop-color="hsl(' + ((hue + 90) % 360) + ' 70% 25%)"/></linearGradient></defs>' +
+        '<rect width="512" height="512" fill="url(#g)"/>' + circles + '</svg>';
+      const content = '🎨 Нарисовала картинку: демо-рисунок\n\n_Промпт: в демо-режиме я рисую узоры, а в Telegram — настоящую картинку по описанию_';
+      history.push({ role: 'user', content: request, ts: nowTs() }, { role: 'assistant', content, ts: nowTs() });
+      return {
+        reply: {
+          role: 'assistant', content, ts: nowTs(), provider: 'images', model: 'demo', truncated: false,
+          image: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg), drawing_id: id, sent_to_chat: false,
+        },
+        usage: { used, limit: 300 },
+      };
+    }
     let preferences = { style: 'friendly', verbosity: 'normal' };
     let instructions = { about: '', style: '', enabled: true, max_length: 1500 };
     let memory = { enabled: false, facts: [], max_facts: 50, max_fact_length: 200 };
@@ -525,9 +552,13 @@
         memory.facts = [];
         return memoryView();
       },
+      async drawAgain(id) {
+        await sleep(1500);
+        return demoDrawing('🔄 Ещё вариант', id);
+      },
       async chatStream(text, model, onDelta) {
         const data = await this.chat(text, model);
-        if (data.reply.provider === 'reminders') return data;
+        if (data.reply.provider === 'reminders' || data.reply.image) return data;
         const words = data.reply.content.split(/(\s+)/);
         for (let i = 0; i < words.length; i += 4) {
           onDelta(words.slice(i, i + 4).join(''));
@@ -539,6 +570,10 @@
         await sleep(1100 + Math.random() * 700);
         if (/ошибк/i.test(text)) {
           throw new ApiError('ai_unavailable', 'ИИ-сервис сейчас не отвечает. Отправь сообщение ещё раз чуть позже.', 503);
+        }
+        if (/нарису|изобрази|картинк/i.test(text)) {
+          drawingId += 1;
+          return demoDrawing(text, drawingId);
         }
         if (/напомни/i.test(text)) {
           reminderId += 1;
@@ -746,6 +781,26 @@
     return button;
   }
 
+  function artImage(src) {
+    const image = el('img', 'bubble__art');
+    image.alt = 'Нарисованная картинка';
+    image.decoding = 'async';
+    // Картинка подгружается после пузыря: лента досматривается до конца, если была внизу.
+    image.addEventListener('load', () => {
+      if (state.stick && !userIsScrolling()) scrollToBottom(false);
+    });
+    image.src = src;
+    return image;
+  }
+
+  function againChip(id) {
+    const button = el('button', 'chip-btn');
+    button.type = 'button';
+    button.append(icon('i-retry'), el('span', '', 'Ещё вариант'));
+    button.addEventListener('click', () => drawAgain(id));
+    return button;
+  }
+
   function addMessage(message, options) {
     const fresh = Boolean(options && options.fresh);
     addDay(message.ts, fresh);
@@ -764,8 +819,17 @@
         model.title = message.model;
         meta.append(model);
       }
-      meta.append(copyChip(message.content, 'Копировать'));
-      if (!(options && options.reveal)) bubble.append(window.ElyaMarkdown.render(message.content));
+      if (message.image) {
+        // Нарисованная картинка: сама картинка, под ней подпись и промпт.
+        bubble.classList.add('bubble--art');
+        bubble.append(artImage(message.image));
+        if (message.content) bubble.append(window.ElyaMarkdown.render(message.content));
+        if (message.sent_to_chat) bubble.append(el('p', 'bubble__note', 'Картинка есть и в чате с ботом — там её можно сохранить.'));
+        if (message.drawing_id) meta.append(againChip(message.drawing_id));
+      } else {
+        meta.append(copyChip(message.content, 'Копировать'));
+        if (!(options && options.reveal)) bubble.append(window.ElyaMarkdown.render(message.content));
+      }
     } else if (options && options.image) {
       const photo = el('img', 'bubble__photo');
       photo.src = options.image;
@@ -880,6 +944,10 @@
   }
 
   function addAssistantReply(reply) {
+    if (reply.image) {
+      addMessage(reply, { fresh: true });
+      return;
+    }
     const item = addMessage(reply, { fresh: true, reveal: true });
     state.finishReveal = reveal(item.root, item.bubble, reply.content, () => {
       state.finishReveal = null;
@@ -1158,6 +1226,43 @@
       if (error.code === 'network') setStatus('offline');
       item.root.classList.add('msg--failed');
       showNotice(error.message, () => send(text, item, null, attachment));
+      scrollToBottom(true);
+    }
+  }
+
+  /* «Ещё вариант» под картинкой: в ленте — как сообщение пользователя, затем новая картинка. */
+  async function drawAgain(id) {
+    if (state.busy) return;
+    if (state.finishReveal) state.finishReveal();
+    clearNotice();
+    setBusy(true);
+    haptic('impact', 'light');
+    const item = addMessage({ role: 'user', content: '🔄 Ещё вариант', ts: nowTs() }, { fresh: true });
+    const typing = showTyping();
+    scrollToBottom(true);
+    try {
+      const data = await backend.drawAgain(id);
+      typing.dismiss();
+      addAssistantReply(data.reply);
+      haptic('impact', 'soft');
+      if (data.usage) state.usage = data.usage;
+      state.signature = '';
+      state.syncedAt = Date.now();
+      setBusy(false);
+    } catch (error) {
+      typing.dismiss();
+      setBusy(false);
+      haptic('notify', 'error');
+      if (error.status === 401 || error.status === 403) {
+        showLoadError(error, boot);
+        return;
+      }
+      if (error.code === 'network') setStatus('offline');
+      item.root.classList.add('msg--failed');
+      showNotice(error.message, () => {
+        item.root.remove();
+        drawAgain(id);
+      });
       scrollToBottom(true);
     }
   }

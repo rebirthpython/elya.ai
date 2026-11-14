@@ -1,6 +1,6 @@
 from aiogram import Router
 
-from bot.handlers import chat, commands, errors, reminders, study
+from bot.handlers import chat, commands, draw, errors, reminders, study
 
 
 def get_routers() -> list[Router]:
@@ -10,6 +10,7 @@ def get_routers() -> list[Router]:
         errors.create_router(),
         study.create_router(),
         reminders.create_router(),
+        draw.create_router(),
         commands.create_router(),
         chat.create_router(),
     ]

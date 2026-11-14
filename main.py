@@ -23,6 +23,7 @@ from bot.handlers.study import StudyStates
 from bot.middlewares.access import AccessMiddleware
 from bot.middlewares.throttling import ThrottlingMiddleware
 from config.settings import ConfigError, Settings, load_settings
+from database.models import DailyImageUsage
 from database.session import (
     create_engine,
     create_session_factory,
@@ -32,6 +33,8 @@ from database.session import (
 from memory.manager import MemoryManager
 from memory.repository import MessageRepository
 from services.chat import ChatService
+from services.drawing import DrawingService
+from services.imagegen import ImageGenerator, build_image_backends
 from bot.handlers.reminders import make_sender
 from services.instructions import InstructionsStore
 from services.longterm import LongTermMemory
@@ -49,6 +52,7 @@ BOT_COMMANDS = [
     BotCommand(command="start", description="Запуск и приветствие"),
     BotCommand(command="notes", description="Конспект или сокращение лекции"),
     BotCommand(command="slides", description="Презентация с анимациями"),
+    BotCommand(command="draw", description="Нарисовать картинку"),
     BotCommand(command="help", description="Что я умею"),
     BotCommand(command="reminders", description="Мои напоминания"),
     BotCommand(command="timezone", description="Часовой пояс для напоминаний"),
@@ -72,6 +76,7 @@ def create_dispatcher(
     reminders: Reminders | None = None,
     speech: SpeechToText | None = None,
     instructions: InstructionsStore | None = None,
+    drawing: DrawingService | None = None,
 ) -> Dispatcher:
     """chat_service и limiter передаются снаружи, когда их делит с ботом Mini App."""
     dp = Dispatcher(storage=MemoryStorage())
@@ -83,6 +88,7 @@ def create_dispatcher(
     dp["reminders"] = reminders
     dp["instructions"] = instructions
     dp["speech"] = speech
+    dp["drawing"] = drawing
     dp["chat_service"] = chat_service or ChatService(
         settings, ai_client, memory, instructions=instructions
     )
@@ -163,6 +169,15 @@ async def run(settings: Settings) -> None:
         else None
     )
     instructions = InstructionsStore(session_factory)
+    drawing = DrawingService(
+        ImageGenerator(
+            build_image_backends(settings.image_providers, http_client),
+            usage=UsageTracker(session_factory, settings.image_daily_limit, table=DailyImageUsage),
+        ),
+        ai_client,
+        memory,
+        assistant_name=settings.assistant_name,
+    )
     chat_service = ChatService(
         settings, ai_client, memory, preferences, long_memory, reminders, instructions=instructions
     )
@@ -180,6 +195,7 @@ async def run(settings: Settings) -> None:
         reminders=reminders,
         speech=speech,
         instructions=instructions,
+        drawing=drawing,
     )
     web_runner = None
     scheduler_task = None
@@ -210,6 +226,8 @@ async def run(settings: Settings) -> None:
                         reminders,
                         speech,
                         instructions,
+                        drawing,
+                        bot,
                     ),
                     settings.webapp_host,
                     settings.webapp_port,
@@ -223,9 +241,11 @@ async def run(settings: Settings) -> None:
                 )
                 raise SystemExit(1) from None
         logger.info(
-            "Bot @%s started. Providers: %s. Mini App: %s",
+            "Bot @%s started. Providers: %s. Images: %s. Mini App: %s",
             me.username,
             ", ".join(f"{p.name}[{','.join(p.models)}]" for p in settings.providers),
+            ", ".join(f"{p.name}[{p.model}]" for p in settings.image_providers)
+            or "off (set CLOUDFLARE_API_TOKEN or POLLINATIONS_API_KEY to enable)",
             settings.webapp_url or "off (set WEBAPP_URL to enable)",
         )
         scheduler = ReminderScheduler(reminders, make_sender(bot))
