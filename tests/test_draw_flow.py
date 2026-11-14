@@ -103,7 +103,7 @@ async def env(tmp_path):
     provider = WriterProvider()
     usage = UsageTracker(session_factory, 100)
     ai_client = AIClient([provider], max_tokens=256, temperature=0.5, usage=usage)
-    memory = MemoryManager(MessageRepository(session_factory, store_limit=500), history_limit=30)
+    memory = MemoryManager(MessageRepository(session_factory), history_limit=30)
     backend = FakeBackend()
     drawing = DrawingService(ImageGenerator([backend]), ai_client, memory)
     session = PhotoSession()

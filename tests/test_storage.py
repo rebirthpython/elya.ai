@@ -15,7 +15,7 @@ async def session_factory(tmp_path):
 
 
 async def test_history_roundtrip_and_clear(session_factory):
-    memory = MemoryManager(MessageRepository(session_factory, store_limit=100), history_limit=10)
+    memory = MemoryManager(MessageRepository(session_factory), history_limit=10)
     await memory.save_exchange(1, "привет", "здравствуй")
     await memory.save_exchange(1, "как дела?", "отлично")
     await memory.save_exchange(2, "чужое", "сообщение")
@@ -31,19 +31,19 @@ async def test_history_roundtrip_and_clear(session_factory):
 
 
 async def test_history_limit_returns_newest(session_factory):
-    memory = MemoryManager(MessageRepository(session_factory, store_limit=100), history_limit=3)
+    memory = MemoryManager(MessageRepository(session_factory), history_limit=3)
     for i in range(5):
         await memory.save_exchange(1, f"q{i}", f"a{i}")
     assert [m.content for m in await memory.get_history(1)] == ["a3", "q4", "a4"]
 
 
-async def test_old_messages_are_pruned(session_factory):
-    repo = MessageRepository(session_factory, store_limit=10)
-    for i in range(20):
+async def test_old_messages_are_kept(session_factory):
+    repo = MessageRepository(session_factory)
+    for i in range(300):
         await repo.add_exchange(1, f"q{i}", f"a{i}")
-    assert await repo.count(1) == 10
-    rows = await repo.get_recent(1, 100)
-    assert rows[0].content == "q15" and rows[-1].content == "a19"
+    assert await repo.count(1) == 600
+    rows = await repo.get_recent(1, 1000)
+    assert rows[0].content == "q0" and rows[-1].content == "a299"
 
 
 async def test_usage_tracker_limit(session_factory):

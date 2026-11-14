@@ -136,7 +136,7 @@ class FakeBackend:
 async def memory(tmp_path):
     engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'draw.db'}")
     await init_db(engine)
-    yield MemoryManager(MessageRepository(create_session_factory(engine), store_limit=500), history_limit=30)
+    yield MemoryManager(MessageRepository(create_session_factory(engine)), history_limit=30)
     await engine.dispose()
 
 

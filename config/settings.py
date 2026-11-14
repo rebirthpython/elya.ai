@@ -50,7 +50,6 @@ class Settings:
     assistant_name: str
     history_max_messages: int
     history_max_chars: int
-    history_store_limit: int
     max_output_tokens: int
     temperature: float
     request_timeout: float
@@ -337,7 +336,6 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         assistant_name=_get_str("ASSISTANT_NAME", "Эля") or "Эля",
         history_max_messages=_get_int("HISTORY_MAX_MESSAGES", 30, minimum=2),
         history_max_chars=_get_int("HISTORY_MAX_CHARS", 12000, minimum=1000),
-        history_store_limit=_get_int("HISTORY_STORE_LIMIT", 500, minimum=10),
         max_output_tokens=_get_int("MAX_OUTPUT_TOKENS", 2048, minimum=64),
         temperature=_get_float("TEMPERATURE", 0.7, minimum=0.0, maximum=2.0),
         request_timeout=_get_float("REQUEST_TIMEOUT", 60.0, minimum=5.0, maximum=600.0),

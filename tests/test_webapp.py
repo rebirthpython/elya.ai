@@ -74,7 +74,7 @@ def _settings(**overrides) -> Settings:
         bot_token=TOKEN, allowed_user_ids=frozenset({OWNER_ID}),
         providers=(ProviderConfig("alpha", "Alpha AI", "http://x", "", ("a1",)),),
         database_url="", assistant_name="Эля", history_max_messages=30, history_max_chars=12000,
-        history_store_limit=500, max_output_tokens=256, temperature=0.5, request_timeout=30,
+        max_output_tokens=256, temperature=0.5, request_timeout=30,
         rate_limit_per_minute=10, daily_request_limit=100, log_level="INFO",
         webapp_url="https://elya.example", webapp_auth_max_age=3600,
     )
@@ -87,7 +87,7 @@ async def env(tmp_path):
     engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'web.db'}")
     await init_db(engine)
     session_factory = create_session_factory(engine)
-    memory = MemoryManager(MessageRepository(session_factory, store_limit=500), history_limit=30)
+    memory = MemoryManager(MessageRepository(session_factory), history_limit=30)
     preferences = PreferencesStore(session_factory)
     long_memory = LongTermMemory(session_factory)
     instructions = InstructionsStore(session_factory)

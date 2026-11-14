@@ -68,7 +68,7 @@ def _settings(**overrides) -> Settings:
         bot_token="42:TEST", allowed_user_ids=frozenset({OWNER_ID}),
         providers=(ProviderConfig("echo", "Echo AI", "http://x", "", ("echo-1",)),),
         database_url="", assistant_name="Эля", history_max_messages=30, history_max_chars=12000,
-        history_store_limit=500, max_output_tokens=256, temperature=0.5, request_timeout=30,
+        max_output_tokens=256, temperature=0.5, request_timeout=30,
         rate_limit_per_minute=10, daily_request_limit=100, log_level="INFO",
     )
     values.update(overrides)
@@ -83,7 +83,7 @@ async def env(tmp_path):
     provider = EchoProvider()
     usage = UsageTracker(session_factory, 100)
     ai_client = AIClient([provider], max_tokens=256, temperature=0.5, usage=usage)
-    memory = MemoryManager(MessageRepository(session_factory, store_limit=500), history_limit=30)
+    memory = MemoryManager(MessageRepository(session_factory), history_limit=30)
     session = RecordingSession()
     bot = Bot(token="42:TEST", session=session)
 

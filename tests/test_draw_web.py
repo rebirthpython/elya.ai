@@ -42,7 +42,7 @@ async def env(tmp_path):
     engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'web-draw.db'}")
     await init_db(engine)
     session_factory = create_session_factory(engine)
-    memory = MemoryManager(MessageRepository(session_factory, store_limit=500), history_limit=30)
+    memory = MemoryManager(MessageRepository(session_factory), history_limit=30)
     clients: list[TestClient] = []
 
     async def make(*, images=True, bot=None, image_limit=0, rate_limit=10):

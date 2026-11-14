@@ -142,7 +142,7 @@ async def run(settings: Settings) -> None:
         usage=usage,
     )
     memory = MemoryManager(
-        MessageRepository(session_factory, store_limit=settings.history_store_limit),
+        MessageRepository(session_factory),
         history_limit=settings.history_max_messages,
     )
 
