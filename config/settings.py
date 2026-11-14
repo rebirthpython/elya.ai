@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -21,6 +22,7 @@ class ProviderConfig:
     base_url: str
     api_key: str
     models: tuple[str, ...]
+    vision_models: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +44,18 @@ class Settings:
     # Конспекты и презентации: длина ответа модели и максимальный размер материала.
     study_max_output_tokens: int = 8192
     study_max_input_chars: int = 60000
+    # Mini App (HTML5-интерфейс внутри Telegram). Пустой webapp_url — Mini App выключен.
+    webapp_url: str = ""
+    webapp_host: str = "0.0.0.0"
+    webapp_port: int = 8080
+    webapp_auth_max_age: int = 86400
+    # Голосовые: ключ Groq (тот же, что для провайдера groq) и модель распознавания
+    speech_api_key: str = ""
+    speech_model: str = "whisper-large-v3-turbo"
+
+    @property
+    def webapp_enabled(self) -> bool:
+        return bool(self.webapp_url)
 
 
 # Известные провайдеры с OpenAI-совместимым API (POST {base_url}/chat/completions).
@@ -51,6 +65,7 @@ KNOWN_PROVIDERS: dict[str, dict[str, str]] = {
         "title": "Google Gemini API",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "models": "gemini-flash-latest,gemini-flash-lite-latest",
+        "vision": "*",  # все модели Gemini понимают картинки
     },
     "openrouter": {
         "title": "OpenRouter",
@@ -61,6 +76,12 @@ KNOWN_PROVIDERS: dict[str, dict[str, str]] = {
         "title": "Groq",
         "base_url": "https://api.groq.com/openai/v1",
         "models": "",
+        "vision": "meta-llama/llama-4-scout-17b-16e-instruct",
+    },
+    "mistral": {
+        "title": "Mistral AI",
+        "base_url": "https://api.mistral.ai/v1",
+        "models": "mistral-small-latest",
     },
     "custom": {
         "title": "Custom OpenAI-compatible API",
@@ -114,6 +135,29 @@ def _parse_user_ids(raw: str) -> frozenset[int]:
     return frozenset(ids)
 
 
+def _load_webapp_url() -> str:
+    """Публичный адрес Mini App. Telegram открывает Mini App только по HTTPS."""
+    url = _get_str("WEBAPP_URL")
+    if not url:
+        return ""
+    parts = urlsplit(url)
+    if parts.scheme != "https" or not parts.netloc or parts.query or parts.fragment:
+        raise ConfigError(
+            "WEBAPP_URL должен быть публичным HTTPS-адресом без параметров "
+            f"(например, https://elya.example.com), получено: {url!r}"
+        )
+    # Интерфейс подключает файлы по относительным путям, поэтому адрес — всегда «папка».
+    return url.rstrip("/") + "/"
+
+
+def _load_webapp_port() -> int:
+    # Хостинги (Render, Railway, Koyeb) сообщают нужный порт через PORT.
+    port = _get_int("WEBAPP_PORT", _get_int("PORT", 8080, minimum=1), minimum=1)
+    if port > 65535:
+        raise ConfigError(f"WEBAPP_PORT должен быть в диапазоне 1–65535, получено: {port}")
+    return port
+
+
 def _load_provider(name: str) -> ProviderConfig | None:
     """Возвращает конфиг провайдера или None, если для него не задан ключ."""
     known = KNOWN_PROVIDERS.get(name)
@@ -139,12 +183,22 @@ def _load_provider(name: str) -> ProviderConfig | None:
             f"Для провайдера {name!r} не указаны модели: задайте {prefix}_MODELS "
             "(через запятую, в порядке приоритета)."
         )
+    # <NAME>_VISION_MODELS: модели для запросов с фото; «*» — те же, что в <NAME>_MODELS,
+    # «-» — провайдер фото не получает.
+    vision_raw = _get_str(f"{prefix}_VISION_MODELS", known.get("vision", "")) or ""
+    if vision_raw == "*":
+        vision_models = models
+    elif vision_raw == "-":
+        vision_models = ()
+    else:
+        vision_models = tuple(_split_csv(vision_raw))
     return ProviderConfig(
         name=name,
         title=known["title"],
         base_url=base_url,
         api_key=api_key,
         models=models,
+        vision_models=vision_models,
     )
 
 
@@ -193,4 +247,10 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         log_level=_get_str("LOG_LEVEL", "INFO").upper() or "INFO",
         study_max_output_tokens=_get_int("STUDY_MAX_OUTPUT_TOKENS", 8192, minimum=1024),
         study_max_input_chars=_get_int("STUDY_MAX_INPUT_CHARS", 60000, minimum=1000),
+        webapp_url=_load_webapp_url(),
+        webapp_host=_get_str("WEBAPP_HOST", "0.0.0.0") or "0.0.0.0",
+        webapp_port=_load_webapp_port(),
+        webapp_auth_max_age=_get_int("WEBAPP_AUTH_MAX_AGE", 86400, minimum=60),
+        speech_api_key=_get_str("GROQ_API_KEY"),
+        speech_model=_get_str("SPEECH_MODEL", "whisper-large-v3-turbo") or "whisper-large-v3-turbo",
     )

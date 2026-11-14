@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Literal
 
@@ -13,6 +14,8 @@ Role = Literal["system", "user", "assistant"]
 class ChatMessage:
     role: Role
     content: str
+    # Картинки (data:-URL), приложенные к сообщению; в истории диалога не хранятся.
+    images: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,10 +103,18 @@ class BadResponseError(ProviderError):
 class BaseProvider(ABC):
     """Интерфейс AI-провайдера. Новые провайдеры реализуют complete()."""
 
-    def __init__(self, name: str, title: str, models: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        name: str,
+        title: str,
+        models: tuple[str, ...],
+        vision_models: tuple[str, ...] = (),
+    ) -> None:
         self.name = name
         self.title = title
         self.models = models
+        # Модели, которые понимают картинки (по ним идут запросы с фото).
+        self.vision_models = vision_models
 
     @abstractmethod
     async def complete(
@@ -115,3 +126,21 @@ class BaseProvider(ABC):
         temperature: float,
     ) -> CompletionResult:
         raise NotImplementedError
+
+    async def stream(
+        self,
+        messages: list[ChatMessage],
+        *,
+        model: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> AsyncIterator[str | CompletionResult]:
+        """Ответ по частям: строки — новые куски текста, последним — CompletionResult.
+
+        По умолчанию — весь ответ одним куском; провайдеры с потоковым API переопределяют.
+        """
+        result = await self.complete(
+            messages, model=model, max_tokens=max_tokens, temperature=temperature
+        )
+        yield result.text
+        yield result

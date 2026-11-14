@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="format-detection" content="telephone=no">
+  <title>Эля</title>
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/styles.css">
+  <!-- SDK Telegram должен загрузиться раньше остальных скриптов -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="assets/markdown.js" defer></script>
+  <script src="assets/app.js" defer></script>
+</head>
+<body>
+  <!-- Набор иконок -->
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5m0 0-6 6m6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><g fill="currentColor"><circle cx="5" cy="12" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="19" cy="12" r="1.9"/></g></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14m0 0 6-6m-6 6-6-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="3"/><path d="M15 9V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v5a3 3 0 0 0 3 3h2"/></g></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 7h15M9.5 7V5.5A1.5 1.5 0 0 1 11 4h2a1.5 1.5 0 0 1 1.5 1.5V7M6.5 7l.8 11a2 2 0 0 0 2 1.9h5.4a2 2 0 0 0 2-1.9l.8-11M10 11v5M14 11v5"/></g></symbol>
+    <symbol id="i-retry" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/></g></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.4v.1"/></g></symbol>
+    <symbol id="i-calendar" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="15.5" rx="4"/><path d="M8 3v4M16 3v4M3.5 10.5h17M8.5 15l2.3 2.3 4.7-4.8"/></g></symbol>
+    <symbol id="i-bulb" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 17.5h6M10 21h4M12 3a6.5 6.5 0 0 0-4 11.6c.6.5 1 1.2 1 2v.9h6v-.9c0-.8.4-1.5 1-2A6.5 6.5 0 0 0 12 3Z"/></g></symbol>
+    <symbol id="i-pen" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4.2L19.3 8.9a2.4 2.4 0 0 0 0-3.4l-.8-.8a2.4 2.4 0 0 0-3.4 0L4 15.8V20Z"/><path d="m13.5 6.5 4 4"/></g></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 11.5c0 4.1-3.8 7.5-8.5 7.5-1.1 0-2.2-.2-3.2-.5L4 20l1.3-3.6c-1.1-1.3-1.8-3-1.8-4.9C3.5 7.4 7.3 4 12 4s8.5 3.4 8.5 7.5Z"/><path d="M8.5 11.5h.01M12 11.5h.01M15.5 11.5h.01"/></g></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16.5V11a6 6 0 1 1 12 0v5.5l1.5 2h-15L6 16.5Z"/><path d="M10 21a2.2 2.2 0 0 0 4 0"/></g></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11.5" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></g></symbol>
+    <symbol id="i-clip" viewBox="0 0 24 24"><path d="m20 11.5-7.8 7.8a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.8v2M12 19.2v2M2.8 12h2M19.2 12h2M5.5 5.5l1.4 1.4M17.1 17.1l1.4 1.4M5.5 18.5l1.4-1.4M17.1 6.9l1.4-1.4"/></g></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></symbol>
+    <symbol id="i-auto" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="8.5"/></g><path d="M12 3.5a8.5 8.5 0 0 1 0 17Z" fill="currentColor"/></symbol>
+  </svg>
+
+  <div class="backdrop-art" aria-hidden="true">
+    <span class="glow glow--a"></span>
+    <span class="glow glow--b"></span>
+    <span class="glow glow--c"></span>
+    <span class="glow glow--think"></span>
+  </div>
+
+  <div class="app" id="app" hidden>
+    <header class="topbar" id="topbar">
+      <div class="orb orb--sm" id="avatar" aria-hidden="true"><span class="orb__body"><span class="orb__blob orb__blob--a"></span><span class="orb__blob orb__blob--b"></span><span class="orb__blob orb__blob--c"></span><span class="orb__gloss"></span></span><span class="orb__letter">Э</span></div>
+      <div class="topbar__text">
+        <div class="topbar__name" id="assistant-name">Эля</div>
+        <div class="status" id="status" data-state="online">
+          <span class="status__dot"></span>
+          <span class="status__label" id="status-label">на связи</span>
+        </div>
+      </div>
+      <button class="icon-btn ripple" id="bell-btn" type="button" aria-label="Напоминания">
+        <svg><use href="#i-bell"/></svg>
+        <span class="bell-badge" id="bell-badge" hidden></span>
+      </button>
+      <button class="icon-btn ripple" id="menu-btn" type="button" aria-label="Настройки" aria-haspopup="dialog">
+        <svg><use href="#i-more"/></svg>
+      </button>
+    </header>
+
+    <main class="chat" id="chat">
+      <div class="chat__inner">
+        <section class="welcome" id="welcome" hidden>
+          <div class="orb orb--hero" id="hero-orb" aria-hidden="true"><span class="orb__ring"></span><span class="orb__ring orb__ring--late"></span><span class="orb__body"><span class="orb__blob orb__blob--a"></span><span class="orb__blob orb__blob--b"></span><span class="orb__blob orb__blob--c"></span><span class="orb__gloss"></span></span></div>
+          <h1 class="welcome__title" id="welcome-title">Привет!</h1>
+          <p class="welcome__text">Я <b id="welcome-name">Эля</b>, твой ИИ-ассистент. Спроси о чём угодно или выбери, с чего начнём.</p>
+          <div class="suggestions" id="suggestions">
+            <button class="suggestion ripple" type="button" data-prompt="Помоги спланировать мой день. Сначала спроси, какие у меня дела и сколько на них времени.">
+              <span class="suggestion__icon"><svg><use href="#i-calendar"/></svg></span>
+              <span class="suggestion__title">Спланировать день</span>
+              <span class="suggestion__text">Разложу дела по времени</span>
+            </button>
+            <button class="suggestion ripple" type="button" data-prompt="Хочу разобраться в одной теме. Спроси, в какой именно, и объясни простыми словами с примерами.">
+              <span class="suggestion__icon"><svg><use href="#i-bulb"/></svg></span>
+              <span class="suggestion__title">Объяснить сложное</span>
+              <span class="suggestion__text">Простыми словами, с примерами</span>
+            </button>
+            <button class="suggestion ripple" type="button" data-prompt="Помоги написать текст. Спроси, для кого он, о чём и в каком тоне.">
+              <span class="suggestion__icon"><svg><use href="#i-pen"/></svg></span>
+              <span class="suggestion__title">Написать текст</span>
+              <span class="suggestion__text">Сообщение, пост или письмо</span>
+            </button>
+            <button class="suggestion ripple" type="button" data-prompt="Давай просто поболтаем. Спроси, как прошёл мой день.">
+              <span class="suggestion__icon"><svg><use href="#i-chat"/></svg></span>
+              <span class="suggestion__title">Просто поболтать</span>
+              <span class="suggestion__text">Выслушаю и поддержу беседу</span>
+            </button>
+          </div>
+        </section>
+
+        <div class="messages" id="messages" role="log" aria-live="polite" aria-label="Диалог"></div>
+      </div>
+    </main>
+
+    <button class="scroll-down ripple" id="scroll-down" type="button" aria-label="К последним сообщениям" tabindex="-1">
+      <svg><use href="#i-down"/></svg>
+    </button>
+
+    <footer class="composer">
+      <div class="attachment" id="attachment" hidden>
+        <img class="attachment__img" id="attachment-img" alt="Выбранное фото">
+        <button class="attachment__remove ripple" id="attachment-remove" type="button" aria-label="Убрать фото"><svg><use href="#i-close"/></svg></button>
+      </div>
+      <div class="composer__box" id="composer-box">
+        <span class="composer__glow" aria-hidden="true"></span>
+        <button class="attach-btn ripple" id="attach" type="button" aria-label="Прикрепить фото"><svg><use href="#i-clip"/></svg></button>
+        <input class="visually-hidden" id="file-input" type="file" accept="image/*" tabindex="-1" aria-hidden="true">
+        <textarea class="composer__input" id="input" rows="1" maxlength="4000"
+                  placeholder="Напиши сообщение…" aria-label="Сообщение" autocomplete="off"></textarea>
+        <span class="composer__counter" id="counter" hidden></span>
+        <div class="recorder" id="recorder" hidden>
+          <button class="recorder__cancel ripple" id="rec-cancel" type="button" aria-label="Отменить запись"><svg><use href="#i-close"/></svg></button>
+          <span class="recorder__dot" aria-hidden="true"></span>
+          <span class="recorder__time" id="rec-time">0:00</span>
+          <span class="recorder__wave" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
+          <span class="recorder__hint" id="rec-hint">➤ — отправить</span>
+        </div>
+        <button class="mic-btn ripple" id="mic" type="button" aria-label="Записать голосовое"><svg><use href="#i-mic"/></svg></button>
+        <button class="send-btn ripple" id="send" type="button" aria-label="Отправить" disabled>
+          <span class="send-btn__spinner" aria-hidden="true"></span>
+          <svg><use href="#i-send"/></svg>
+        </button>
+      </div>
+      <p class="composer__hint" id="hint">Эля — ИИ и может ошибаться. Важное лучше перепроверить.</p>
+    </footer>
+  </div>
+
+  <div class="sheet-backdrop" id="sheet-backdrop" hidden></div>
+  <section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden>
+    <div class="sheet__grip" id="sheet-grip" aria-hidden="true"></div>
+    <header class="sheet__head" id="sheet-head">
+      <button class="icon-btn icon-btn--soft ripple sheet__back" id="sheet-back" type="button" aria-label="Назад к настройкам" hidden><svg><use href="#i-back"/></svg></button>
+      <h2 class="sheet__title" id="sheet-title">Настройки</h2>
+      <button class="icon-btn icon-btn--soft ripple" id="sheet-close" type="button" aria-label="Закрыть">
+        <svg><use href="#i-close"/></svg>
+      </button>
+    </header>
+
+    <div class="sheet__body" id="sheet-body">
+      <section class="block">
+        <h3 class="block__title">Оформление</h3>
+        <div class="segmented" id="theme-control" role="radiogroup" aria-label="Тема">
+          <span class="segmented__thumb" aria-hidden="true"></span>
+          <button class="segmented__item" type="button" role="radio" data-value="auto"><svg><use href="#i-auto"/></svg><span>Как в Telegram</span></button>
+          <button class="segmented__item" type="button" role="radio" data-value="light"><svg><use href="#i-sun"/></svg><span>Светлая</span></button>
+          <button class="segmented__item" type="button" role="radio" data-value="dark"><svg><use href="#i-moon"/></svg><span>Тёмная</span></button>
+        </div>
+      </section>
+
+      <section class="block" id="instructions-block">
+        <h3 class="block__title">Инструкции</h3>
+        <button class="nav-row ripple" id="open-instructions" type="button">
+          <span class="nav-row__icon" aria-hidden="true">✍️</span>
+          <span class="nav-row__text">
+            <span class="nav-row__title">Инструкции для Эли</span>
+            <span class="nav-row__sub" id="instructions-summary">Не заданы</span>
+          </span>
+          <svg class="nav-row__chevron" aria-hidden="true"><use href="#i-chevron"/></svg>
+        </button>
+        <p class="block__note">Один раз напиши, что Эле знать о тебе и как отвечать, — и не повторяй это в каждом разговоре.</p>
+      </section>
+
+      <section class="block">
+        <h3 class="block__title">Стиль общения</h3>
+        <div class="options" id="style-list" role="radiogroup" aria-label="Стиль общения"></div>
+        <p class="block__note">Эля начнёт общаться по-новому со следующего ответа — и здесь, и в чате с ботом.</p>
+      </section>
+
+      <section class="block">
+        <h3 class="block__title">Полнота ответа</h3>
+        <div class="segmented" id="verbosity-control" role="radiogroup" aria-label="Полнота ответа">
+          <span class="segmented__thumb" aria-hidden="true"></span>
+        </div>
+        <p class="block__note" id="verbosity-note"></p>
+      </section>
+
+      <section class="block" id="reminders-block">
+        <h3 class="block__title">Напоминания</h3>
+        <div class="card">
+          <ul class="facts" id="reminders-list" aria-label="Напоминания"></ul>
+          <p class="memory__empty" id="reminders-empty" hidden>Пока нет напоминаний. Напиши Эле «напомни завтра в 9 позвонить маме» или добавь ниже.</p>
+          <form class="reminder-form" id="reminder-form" autocomplete="off" novalidate>
+            <input class="fact-form__input reminder-form__text" id="reminder-text" type="text" maxlength="300"
+                   placeholder="Что напомнить" aria-label="Что напомнить" enterkeyhint="done">
+            <div class="reminder-form__row">
+              <input class="reminder-form__when" id="reminder-when" type="datetime-local" aria-label="Когда">
+              <select class="reminder-form__repeat" id="reminder-repeat" aria-label="Повтор">
+                <option value="none">Один раз</option>
+                <option value="daily">Каждый день</option>
+                <option value="weekdays">По будням</option>
+                <option value="weekly">Каждую неделю</option>
+                <option value="monthly">Каждый месяц</option>
+              </select>
+              <button class="fact-form__btn ripple" id="reminder-add" type="submit" aria-label="Добавить напоминание" disabled><svg><use href="#i-plus"/></svg></button>
+            </div>
+          </form>
+        </div>
+        <p class="block__note" id="tz-note">Эля пришлёт напоминание сообщением в Telegram. Часовой пояс определяется по телефону.</p>
+      </section>
+
+      <section class="block" id="memory-block">
+        <h3 class="block__title">Память</h3>
+        <div class="memory">
+          <button class="switch-row ripple" id="memory-toggle" type="button" role="switch" aria-checked="false">
+            <span class="switch-row__text">
+              <span class="switch-row__title">Запоминать о тебе</span>
+              <span class="switch-row__sub" id="memory-sub">Выключено</span>
+            </span>
+            <span class="switch" aria-hidden="true"><span class="switch__knob"></span></span>
+          </button>
+          <div class="memory__body" id="memory-body">
+            <ul class="facts" id="facts" aria-label="Что помнит Эля"></ul>
+            <p class="memory__empty" id="facts-empty" hidden></p>
+            <form class="fact-form" id="fact-form" autocomplete="off">
+              <input class="fact-form__input" id="fact-input" type="text" maxlength="200" enterkeyhint="done"
+                     placeholder="Добавить: например, «Люблю чай»" aria-label="Новый факт">
+              <button class="fact-form__btn ripple" id="fact-add" type="submit" aria-label="Добавить" disabled><svg><use href="#i-plus"/></svg></button>
+            </form>
+            <button class="row-btn row-btn--danger ripple" id="facts-clear" type="button" hidden>
+              <svg><use href="#i-trash"/></svg>
+              <span id="facts-clear-label">Забыть всё</span>
+            </button>
+          </div>
+        </div>
+        <p class="block__note">Эля запоминает важное из разговоров: имя, близких, вкусы, планы. Пароли и номера карт — никогда. Всё можно посмотреть и удалить. Память общая для чата с ботом и приложения.</p>
+      </section>
+
+      <section class="block">
+        <h3 class="block__title">Модель</h3>
+        <div class="options" id="model-list" role="radiogroup" aria-label="Модель"></div>
+        <p class="block__note">Если выбранная модель недоступна или исчерпала лимит, ответит следующая по списку.</p>
+      </section>
+
+      <section class="block">
+        <h3 class="block__title">Запросы к ИИ сегодня</h3>
+        <div class="usage">
+          <div class="usage__row">
+            <span class="usage__value" id="usage-value">0</span>
+            <span class="usage__limit" id="usage-limit"></span>
+          </div>
+          <div class="usage__bar" id="usage-bar"><span id="usage-fill"></span></div>
+          <p class="block__note">Счётчик общий для чата с ботом и приложения. Обновляется в 00:00 UTC.</p>
+        </div>
+      </section>
+
+      <section class="block">
+        <h3 class="block__title">История</h3>
+        <div class="danger" id="clear-box">
+          <button class="row-btn row-btn--danger ripple" id="clear-btn" type="button">
+            <svg><use href="#i-trash"/></svg>
+            <span>Очистить историю диалога</span>
+          </button>
+          <div class="confirm" id="clear-confirm" hidden>
+            <p>Удалить всю переписку? Вернуть её не получится.</p>
+            <div class="confirm__actions">
+              <button class="btn btn--ghost ripple" id="clear-cancel" type="button">Отмена</button>
+              <button class="btn btn--danger ripple" id="clear-yes" type="button">Удалить</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="block block--about">
+        <h3 class="block__title">О приватности</h3>
+        <p class="block__note" id="privacy-text"></p>
+      </section>
+    </div>
+      <div class="sheet__body sheet__page" id="instructions-page" hidden>
+      <div class="memory instr-switch">
+        <button class="switch-row ripple" id="instructions-toggle" type="button" role="switch" aria-checked="true">
+          <span class="switch-row__text">
+            <span class="switch-row__title">Использовать инструкции</span>
+            <span class="switch-row__sub" id="instructions-status">В новых ответах — здесь и в чате с ботом</span>
+          </span>
+          <span class="switch" aria-hidden="true"><span class="switch__knob"></span></span>
+        </button>
+      </div>
+
+      <section class="block">
+        <label class="block__title" for="instr-about">Что Эле знать о тебе?</label>
+        <div class="field">
+          <textarea class="field__input" id="instr-about" rows="5" maxlength="1500"
+                    placeholder="Например: меня зовут Аня, я учусь на втором курсе медицинского, живу в Казани. Готовлюсь к сессии и много работаю с конспектами."></textarea>
+          <span class="field__count" id="instr-about-count">0 / 1500</span>
+        </div>
+        <div class="chips" data-target="instr-about"><button class="chip ripple" type="button" data-insert="Меня зовут … Мне … лет.">👤 Кто я</button><button class="chip ripple" type="button" data-insert="Я учусь / работаю: …">🎓 Учёба / работа</button><button class="chip ripple" type="button" data-insert="Сейчас моя главная цель — …">🎯 Мои цели</button><button class="chip ripple" type="button" data-insert="Я увлекаюсь …">❤️ Увлечения</button></div>
+      </section>
+
+      <section class="block">
+        <label class="block__title" for="instr-style">Как Эле отвечать?</label>
+        <div class="field">
+          <textarea class="field__input" id="instr-style" rows="5" maxlength="1500"
+                    placeholder="Например: отвечай коротко и по делу, объясняй на примерах из медицины, а в конце предлагай, что сделать дальше."></textarea>
+          <span class="field__count" id="instr-style-count">0 / 1500</span>
+        </div>
+        <div class="chips" data-target="instr-style"><button class="chip ripple" type="button" data-insert="Отвечай коротко и по делу, без вступлений.">✂️ Без воды</button><button class="chip ripple" type="button" data-insert="Объясняй на простых примерах.">🧩 С примерами</button><button class="chip ripple" type="button" data-insert="Объясняй так, будто я новичок в теме.">🐣 Как новичку</button><button class="chip ripple" type="button" data-insert="Где можно — оформляй ответ списком.">📋 Списками</button><button class="chip ripple" type="button" data-insert="В конце предлагай, что сделать дальше.">➡️ Следующий шаг</button></div>
+      </section>
+
+      <p class="block__note">Инструкции добавляются к каждому разговору, но правила безопасности Эли важнее них. Не пиши сюда пароли и номера карт.</p>
+
+      <div class="instr-actions">
+        <button class="btn btn--primary ripple instr-save" id="instr-save" type="button" disabled>Сохранить</button>
+      </div>
+    </div>
+  </section>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <!-- Экран загрузки и состояний, когда чат недоступен -->
+  <div class="gate" id="gate">
+    <div class="orb orb--hero orb--thinking" aria-hidden="true"><span class="orb__ring"></span><span class="orb__ring orb__ring--late"></span><span class="orb__body"><span class="orb__blob orb__blob--a"></span><span class="orb__blob orb__blob--b"></span><span class="orb__blob orb__blob--c"></span><span class="orb__gloss"></span></span></div>
+    <h1 class="gate__title" id="gate-title">Эля просыпается…</h1>
+    <p class="gate__text" id="gate-text"></p>
+    <button class="btn btn--primary ripple" id="gate-btn" type="button" hidden></button>
+  </div>
+
+  <noscript><p class="noscript">Для работы приложения нужен JavaScript.</p></noscript>
+</body>
+</html>

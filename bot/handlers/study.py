@@ -186,8 +186,8 @@ async def on_material_file(message: Message, state: FSMContext, bot: Bot, settin
 
 async def on_unsupported_material(message: Message) -> None:
     await message.answer(
-        "Пока понимаю только текст и файлы " + ", ".join(SUPPORTED_EXTENSIONS) + ". "
-        "Фото и голосовые научусь разбирать позже."
+        "Для конспекта и презентации принимаю текст и файлы " + ", ".join(SUPPORTED_EXTENSIONS) + ". "
+        "Фото и голосовые я понимаю в обычном чате — выйти туда можно через /cancel."
     )
 
 
