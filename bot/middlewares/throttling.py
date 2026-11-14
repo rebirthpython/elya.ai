@@ -17,9 +17,13 @@ class ThrottlingMiddleware(BaseMiddleware):
         self,
         limiter: SlidingWindowLimiter,
         clock: Callable[[], float] = time.monotonic,
+        exempt_states: frozenset[str] = frozenset(),
     ) -> None:
+        """exempt_states — FSM-состояния, в которых сообщения не ограничиваются
+        (например, приём длинной лекции, которую Telegram режет на много сообщений)."""
         self._limiter = limiter
         self._clock = clock
+        self._exempt_states = exempt_states
         self._warned_until: dict[int, float] = {}
 
     async def __call__(
@@ -29,7 +33,7 @@ class ThrottlingMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         user: User | None = data.get("event_from_user")
-        if user is None:
+        if user is None or data.get("raw_state") in self._exempt_states:
             return await handler(event, data)
 
         retry_after = self._limiter.hit(user.id)

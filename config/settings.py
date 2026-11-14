@@ -56,6 +56,9 @@ class Settings:
     rate_limit_per_minute: int
     daily_request_limit: int
     log_level: str
+    # Конспекты и презентации: длина ответа модели и максимальный размер материала.
+    study_max_output_tokens: int = 8192
+    study_max_input_chars: int = 60000
     # Mini App (HTML5-интерфейс внутри Telegram). Пустой webapp_url — Mini App выключен.
     webapp_url: str = ""
     webapp_host: str = "0.0.0.0"
@@ -342,6 +345,8 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         rate_limit_per_minute=_get_int("RATE_LIMIT_PER_MINUTE", 10, minimum=1),
         daily_request_limit=_get_int("DAILY_REQUEST_LIMIT", 300, minimum=0),
         log_level=_get_str("LOG_LEVEL", "INFO").upper() or "INFO",
+        study_max_output_tokens=_get_int("STUDY_MAX_OUTPUT_TOKENS", 8192, minimum=1024),
+        study_max_input_chars=_get_int("STUDY_MAX_INPUT_CHARS", 60000, minimum=1000),
         webapp_url=_load_webapp_url(),
         webapp_host=_get_str("WEBAPP_HOST", "0.0.0.0") or "0.0.0.0",
         webapp_port=_load_webapp_port(),

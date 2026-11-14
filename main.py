@@ -19,6 +19,7 @@ from aiogram.types import BotCommand, MenuButtonWebApp, WebAppInfo
 from ai.client import AIClient
 from ai.providers import build_providers
 from bot.handlers import get_routers
+from bot.handlers.study import StudyStates
 from bot.middlewares.access import AccessMiddleware
 from bot.middlewares.throttling import ThrottlingMiddleware
 from config.settings import ConfigError, Settings, load_settings
@@ -42,12 +43,15 @@ from services.reminders import ReminderScheduler, Reminders
 from services.preferences import PreferencesStore
 from services.rate_limit import SlidingWindowLimiter
 from services.usage import UsageTracker
+from study.pipeline import StudyService
 from web.server import create_web_app, start_web_server
 
 logger = logging.getLogger("assistant")
 
 BOT_COMMANDS = [
     BotCommand(command="start", description="Запуск и приветствие"),
+    BotCommand(command="notes", description="Конспект или сокращение лекции"),
+    BotCommand(command="slides", description="Презентация с анимациями"),
     BotCommand(command="draw", description="Нарисовать картинку"),
     BotCommand(command="help", description="Что я умею"),
     BotCommand(command="reminders", description="Мои напоминания"),
@@ -89,9 +93,19 @@ def create_dispatcher(
         settings, ai_client, memory, instructions=instructions
     )
 
+    dp["study"] = StudyService(
+        ai_client,
+        assistant_name=settings.assistant_name,
+        max_tokens=settings.study_max_output_tokens,
+    )
+
     dp.update.outer_middleware(AccessMiddleware(settings.allowed_user_ids))
+    # Пока бот собирает материал для конспекта, к модели запросов нет — частоту не ограничиваем.
     dp.message.middleware(
-        ThrottlingMiddleware(limiter or SlidingWindowLimiter(settings.rate_limit_per_minute))
+        ThrottlingMiddleware(
+            limiter or SlidingWindowLimiter(settings.rate_limit_per_minute),
+            exempt_states=frozenset({StudyStates.collecting.state}),
+        )
     )
     dp.include_routers(*get_routers())
     return dp
