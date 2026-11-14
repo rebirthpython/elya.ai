@@ -86,6 +86,26 @@
     instrStyleCount: $('instr-style-count'),
     instrSave: $('instr-save'),
     remindersBlock: $('reminders-block'),
+    memoryBlock: $('memory-block'),
+    drawerBtn: $('drawer-btn'),
+    drawer: $('drawer'),
+    drawerBackdrop: $('drawer-backdrop'),
+    drawerClose: $('drawer-close'),
+    drawerTitle: $('drawer-title'),
+    drawerScroll: $('drawer-scroll'),
+    drawerDraw: $('drawer-draw'),
+    drawerReminders: $('drawer-reminders'),
+    drawerMemory: $('drawer-memory'),
+    drawerInstructions: $('drawer-instructions'),
+    drawerInstructionsMeta: $('drawer-instructions-meta'),
+    drawerRecent: $('drawer-recent'),
+    drawerEmpty: $('drawer-empty'),
+    drawerConfirm: $('drawer-confirm'),
+    drawerConfirmNo: $('drawer-confirm-no'),
+    drawerConfirmYes: $('drawer-confirm-yes'),
+    drawerNew: $('drawer-new'),
+    drawerMe: $('drawer-me'),
+    drawerInitials: $('drawer-initials'),
     remindersList: $('reminders-list'),
     remindersEmpty: $('reminders-empty'),
     reminderForm: $('reminder-form'),
@@ -146,6 +166,11 @@
     instructionsEdited: false, // пользователь правил поля и ещё не сохранил
     sheetPage: 'main',
     clearArmed: null,
+    images: { enabled: false },
+    drawerAnim: null,
+    drawerClosing: false,
+    drawerTargets: [],
+    drawerDragged: false,
   };
 
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -472,6 +497,7 @@
           reminders: remindersView(),
           voice: true,
           vision: true,
+          images: { enabled: true, used: 0, limit: 50 },
           preference_options: {
             style: [
               { id: 'friendly', title: 'Дружелюбный', description: 'Тепло, с лёгким юмором' },
@@ -2105,11 +2131,12 @@
     setTimeout(renderUsage, reducedMotion ? 0 : 180);
     if (supports('6.1')) tg.BackButton.show();
     haptic('impact', 'light');
-    if (opts.focus === 'reminders') {
-      // Колокольчик открывает настройки сразу на напоминаниях.
+    const focusBlock = { reminders: dom.remindersBlock, memory: dom.memoryBlock }[opts.focus];
+    if (focusBlock) {
+      // Колокольчик и шторка открывают настройки сразу на нужном разделе.
       setTimeout(() => {
         // offsetTop не зависит от анимации появления блоков (transform), в отличие от getBoundingClientRect.
-        dom.sheetBody.scrollTo({ top: dom.remindersBlock.offsetTop - 8, behavior: reducedMotion ? 'auto' : 'smooth' });
+        dom.sheetBody.scrollTo({ top: focusBlock.offsetTop - 8, behavior: reducedMotion ? 'auto' : 'smooth' });
       }, reducedMotion ? 0 : 380);
     } else {
       dom.sheetBody.scrollTop = 0;
@@ -2226,6 +2253,11 @@
       return;
     }
     closeSheet();
+    await wipeFeed('История очищена');
+  }
+
+  /* Сообщения разлетаются, лента начинается заново. */
+  async function wipeFeed(toast) {
     const nodes = Array.from(dom.messages.children).slice(-14).reverse();
     nodes.forEach((node, index) => {
       node.style.setProperty('--i', index);
@@ -2233,8 +2265,268 @@
     });
     if (nodes.length && !reducedMotion) await sleep(380 + nodes.length * 35);
     renderHistory([]);
-    showToast('История очищена');
+    showToast(toast);
     haptic('notify', 'success');
+  }
+
+  /* ---------- Боковая шторка ---------- */
+
+  function initials(name) {
+    const words = String(name || '').trim().split(/\s+/).filter(Boolean);
+    if (!words.length) return state.assistantName.charAt(0).toUpperCase();
+    return words.slice(0, 2).map((word) => word.charAt(0).toUpperCase()).join('');
+  }
+
+  function plural(n, forms) {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return forms[0];
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return forms[1];
+    return forms[2];
+  }
+
+  /* «Недавнее» — последние сообщения пользователя из ленты, новые сверху. */
+  function renderDrawerRecent() {
+    const nodes = Array.from(dom.messages.querySelectorAll('.msg--user')).reverse().slice(0, 12);
+    state.drawerTargets = nodes;
+    dom.drawerRecent.replaceChildren(...nodes.map((node, index) => {
+      const bubble = node.querySelector('.bubble');
+      const text = (bubble ? bubble.textContent : '').replace(/\s+/g, ' ').trim()
+        || (node.querySelector('.bubble__photo') ? '📷 Фото' : '…');
+      const item = el('li');
+      const button = el('button', 'drawer__recent-btn ripple', text);
+      button.type = 'button';
+      button.dataset.recent = String(index);
+      item.append(button);
+      return item;
+    }));
+    dom.drawerEmpty.hidden = nodes.length > 0;
+  }
+
+  function renderDrawer() {
+    dom.drawerTitle.textContent = state.assistantName;
+    dom.drawerInitials.textContent = initials(state.firstName);
+    dom.drawerDraw.hidden = !(state.images && state.images.enabled);
+    const pending = (state.reminders.items || []).length;
+    dom.drawerReminders.textContent = pending ? String(pending) : '';
+    dom.drawerReminders.classList.toggle('is-badge', pending > 0);
+    const facts = (state.memory.facts || []).length;
+    dom.drawerMemory.textContent = state.memory.enabled
+      ? (facts ? facts + ' ' + plural(facts, ['факт', 'факта', 'фактов']) : 'вкл.')
+      : 'выкл.';
+    dom.drawerInstructions.hidden = !state.instructions;
+    const instr = state.instructions;
+    dom.drawerInstructionsMeta.textContent = !instr || (!instr.about && !instr.style)
+      ? 'не заданы'
+      : instr.enabled ? 'вкл.' : 'выкл.';
+    dom.drawerConfirm.hidden = true;
+    renderDrawerRecent();
+  }
+
+  function openDrawer() {
+    if (!dom.drawer.hidden && !state.drawerClosing) return;
+    if (state.finishReveal) state.finishReveal();
+    renderDrawer();
+    if (state.drawerAnim) state.drawerAnim.cancel();
+    state.drawerClosing = false;
+    dom.drawer.getAnimations().forEach((animation) => animation.cancel());
+    dom.drawerBackdrop.getAnimations().forEach((animation) => animation.cancel());
+    dom.drawer.style.transform = '';
+    dom.drawerBackdrop.style.opacity = '';
+    dom.drawerBackdrop.hidden = false;
+    dom.drawer.hidden = false;
+    dom.drawerScroll.scrollTop = 0;
+    dom.input.blur();
+    state.drawerAnim = motion(dom.drawer, [{ transform: 'translateX(-102%)' }, { transform: 'none' }],
+      { duration: 460, easing: 'cubic-bezier(0.2, 1.04, 0.32, 1)' });
+    motion(dom.drawerBackdrop, [{ opacity: 0 }, { opacity: 1 }], { duration: 280, easing: 'ease-out' });
+    dom.drawerBtn.setAttribute('aria-expanded', 'true');
+    if (supports('6.1')) tg.BackButton.show();
+    haptic('impact', 'light');
+    if (finePointer) dom.drawerClose.focus();
+  }
+
+  /* then — что сделать, когда шторка закроется (например, открыть настройки). */
+  function closeDrawer(then) {
+    if (dom.drawer.hidden || state.drawerClosing) {
+      if (typeof then === 'function') then();
+      return;
+    }
+    state.drawerClosing = true;
+    if (supports('6.1')) tg.BackButton.hide();
+    dom.drawerBtn.setAttribute('aria-expanded', 'false');
+    const fromTransform = dom.drawer.style.transform || 'none';
+    const fromOpacity = dom.drawerBackdrop.style.opacity || '1';
+    if (state.drawerAnim) state.drawerAnim.cancel();
+    const out = motion(dom.drawer, [{ transform: fromTransform }, { transform: 'translateX(-102%)' }],
+      { duration: 240, easing: 'cubic-bezier(0.4, 0, 0.9, 0.6)', fill: 'forwards' });
+    const fade = motion(dom.drawerBackdrop, [{ opacity: fromOpacity }, { opacity: 0 }], { duration: 240, fill: 'forwards' });
+    const done = () => {
+      dom.drawer.hidden = true;
+      dom.drawerBackdrop.hidden = true;
+      if (out) out.cancel();
+      if (fade) fade.cancel();
+      dom.drawer.style.transform = '';
+      dom.drawerBackdrop.style.opacity = '';
+      dom.drawer.classList.remove('is-dragging');
+      state.drawerClosing = false;
+      if (typeof then === 'function') then();
+    };
+    if (out) out.onfinish = done;
+    else done();
+  }
+
+  function drawerAction(action) {
+    if (action === 'draw') {
+      closeDrawer(() => {
+        if (!/^нарисуй/i.test(dom.input.value.trim())) dom.input.value = 'Нарисуй ' + dom.input.value.trim();
+        autosize();
+        updateComposer();
+        dom.input.focus();
+        const end = dom.input.value.length;
+        dom.input.setSelectionRange(end, end);
+      });
+    } else if (action === 'reminders' || action === 'memory') {
+      closeDrawer(() => openSheet({ focus: action }));
+    } else if (action === 'instructions') {
+      closeDrawer(() => {
+        openSheet();
+        setTimeout(openInstructionsPage, reducedMotion ? 0 : 320);
+      });
+    } else if (action === 'settings') {
+      closeDrawer(() => openSheet());
+    }
+  }
+
+  function jumpToRecent(index) {
+    const node = state.drawerTargets[index];
+    closeDrawer(() => {
+      if (!node || !node.isConnected) return;
+      node.scrollIntoView({ block: 'center', behavior: reducedMotion ? 'auto' : 'smooth' });
+      node.classList.remove('is-found');
+      void node.offsetWidth;
+      node.classList.add('is-found');
+      setTimeout(() => node.classList.remove('is-found'), 1700);
+    });
+  }
+
+  async function startNewChat() {
+    dom.drawerConfirmYes.disabled = true;
+    try {
+      await backend.clear();
+    } catch (error) {
+      showToast(error.message);
+      haptic('notify', 'error');
+      return;
+    } finally {
+      dom.drawerConfirmYes.disabled = false;
+    }
+    dom.drawerConfirm.hidden = true;
+    closeDrawer(() => wipeFeed('Новый чат'));
+  }
+
+  /* Шторку можно смахнуть влево. Вертикальная прокрутка внутри работает как обычно. */
+  function bindDrawerDrag() {
+    let pointer = null;
+    let startX = 0;
+    let startY = 0;
+    let lastX = 0;
+    let lastTime = 0;
+    let velocity = 0;
+    let width = 0;
+    let dragging = false;
+
+    dom.drawer.addEventListener('pointerdown', (event) => {
+      if (event.pointerType === 'mouse' && event.button !== 0) return;
+      pointer = event.pointerId;
+      startX = lastX = event.clientX;
+      startY = event.clientY;
+      lastTime = event.timeStamp;
+      velocity = 0;
+      dragging = false;
+      state.drawerDragged = false;
+      width = dom.drawer.offsetWidth;
+    });
+
+    dom.drawer.addEventListener('pointermove', (event) => {
+      if (event.pointerId !== pointer) return;
+      const dx = event.clientX - startX;
+      const dy = event.clientY - startY;
+      if (!dragging) {
+        if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) {
+          pointer = null; // это прокрутка списка
+          return;
+        }
+        if (dx > -10 || Math.abs(dx) < Math.abs(dy)) return;
+        dragging = true;
+        state.drawerDragged = true;
+        if (state.drawerAnim) state.drawerAnim.cancel();
+        dom.drawer.classList.add('is-dragging');
+        try {
+          dom.drawer.setPointerCapture(event.pointerId);
+        } catch (error) { /* указатель уже ушёл */ }
+      }
+      const offset = Math.min(0, dx);
+      dom.drawer.style.transform = 'translateX(' + offset + 'px)';
+      dom.drawerBackdrop.style.opacity = String(Math.max(0, 1 + offset / width));
+      const dt = event.timeStamp - lastTime;
+      if (dt > 0) velocity = (event.clientX - lastX) / dt;
+      lastX = event.clientX;
+      lastTime = event.timeStamp;
+    });
+
+    const up = (event) => {
+      if (event.pointerId !== pointer) return;
+      pointer = null;
+      if (!dragging) return;
+      dragging = false;
+      dom.drawer.classList.remove('is-dragging');
+      const dx = event.clientX - startX;
+      if (dx < -Math.min(120, width * 0.3) || (dx < -10 && velocity < -0.5)) {
+        haptic('impact', 'light');
+        closeDrawer();
+        return;
+      }
+      // Не дотянули — шторка пружинит обратно.
+      const fromTransform = dom.drawer.style.transform || 'none';
+      const fromOpacity = dom.drawerBackdrop.style.opacity || '1';
+      dom.drawer.style.transform = '';
+      dom.drawerBackdrop.style.opacity = '';
+      motion(dom.drawer, [{ transform: fromTransform }, { transform: 'none' }], { duration: 420, easing: SPRING });
+      motion(dom.drawerBackdrop, [{ opacity: fromOpacity }, { opacity: 1 }], { duration: 260, easing: 'ease-out' });
+    };
+    dom.drawer.addEventListener('pointerup', up);
+    dom.drawer.addEventListener('pointercancel', up);
+  }
+
+  function bindDrawer() {
+    bindDrawerDrag();
+    dom.drawerBtn.addEventListener('click', openDrawer);
+    dom.drawerClose.addEventListener('click', () => closeDrawer());
+    dom.drawerBackdrop.addEventListener('click', () => closeDrawer());
+    dom.drawer.addEventListener('click', (event) => {
+      if (state.drawerDragged) {
+        // Это был свайп, а не нажатие.
+        state.drawerDragged = false;
+        return;
+      }
+      const item = event.target.closest('[data-drawer]');
+      if (item) {
+        drawerAction(item.dataset.drawer);
+        return;
+      }
+      const recent = event.target.closest('[data-recent]');
+      if (recent) jumpToRecent(Number(recent.dataset.recent));
+    });
+    dom.drawerNew.addEventListener('click', () => {
+      dom.drawerConfirm.hidden = false;
+      haptic('impact', 'medium');
+    });
+    dom.drawerConfirmNo.addEventListener('click', () => {
+      dom.drawerConfirm.hidden = true;
+    });
+    dom.drawerConfirmYes.addEventListener('click', startNewChat);
+    dom.drawerMe.addEventListener('click', () => closeDrawer(() => openSheet()));
   }
 
   /* ---------- Загрузка и синхронизация ---------- */
@@ -2248,6 +2540,7 @@
     state.maxLength = (data.limits && data.limits.max_text_length) || 4000;
     state.voice = Boolean(data.voice);
     state.vision = Boolean(data.vision);
+    state.images = data.images || { enabled: false };
     if (data.preferences) state.preferences = data.preferences;
     if (data.memory) state.memory = Object.assign({}, state.memory, data.memory);
     if (data.reminders) state.reminders = Object.assign({}, state.reminders, data.reminders);
@@ -2306,7 +2599,7 @@
 
   /* Сообщения, отправленные тем временем в чате с ботом, подтягиваются при возврате. */
   async function sync() {
-    if (dom.app.hidden || state.busy || state.finishReveal || Date.now() - state.syncedAt < 5000) return;
+    if (dom.app.hidden || state.busy || state.finishReveal || !dom.drawer.hidden || Date.now() - state.syncedAt < 5000) return;
     state.syncedAt = Date.now();
     let data;
     try {
@@ -2406,6 +2699,7 @@
     bindSheetDrag();
     dom.scrollDown.addEventListener('click', () => scrollToBottom(true));
 
+    bindDrawer();
     dom.menuBtn.addEventListener('click', () => openSheet());
     dom.bellBtn.addEventListener('click', () => openSheet({ focus: 'reminders' }));
     dom.reminderForm.addEventListener('submit', (event) => {
@@ -2437,7 +2731,8 @@
     dom.backdrop.addEventListener('click', closeSheet);
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') {
-        if (state.sheetPage === 'instructions') leaveInstructionsPage();
+        if (!dom.drawer.hidden) closeDrawer();
+        else if (state.sheetPage === 'instructions') leaveInstructionsPage();
         else closeSheet();
       }
     });
@@ -2564,7 +2859,13 @@
       tg.expand();
       if (supports('7.7')) tg.disableVerticalSwipes(); // прокрутка ленты не должна сворачивать приложение
       // Кнопка «Назад» Telegram: из инструкций — к настройкам, из настроек — закрыть.
-      if (supports('6.1')) tg.BackButton.onClick(() => (state.sheetPage === 'instructions' ? leaveInstructionsPage() : closeSheet()));
+      if (supports('6.1')) {
+        tg.BackButton.onClick(() => {
+          if (!dom.drawer.hidden) closeDrawer();
+          else if (state.sheetPage === 'instructions') leaveInstructionsPage();
+          else closeSheet();
+        });
+      }
       tg.onEvent('themeChanged', () => applyTheme({ x: window.innerWidth / 2, y: 0 }));
     } else {
       const scheme = window.matchMedia('(prefers-color-scheme: light)');
