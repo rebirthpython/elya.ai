@@ -42,6 +42,7 @@ from services.artifacts import OutputFile, wants_presentation
 from services.documents import PLAIN_TEXT_EXTENSIONS, is_document, unsupported_hint
 from services.modes import CODE, ModeStore
 from services.drawing import DrawingService
+from services.links import LinkStarted
 from services.search import SearchStarted
 from services.speech import SpeechError, SpeechToText
 from services.vision import MAX_IMAGE_BYTES, NO_VISION_TEXT, ImageError, history_text, to_data_url
@@ -347,6 +348,8 @@ async def send_reply(
                     result = event
                 elif isinstance(event, SearchStarted):
                     await live.status(f"🔎 Ищу в интернете: «{event.query}»…")
+                elif isinstance(event, LinkStarted):
+                    await live.status(event.status_text())
                 else:
                     answer += event
                     await live.update(answer)
@@ -385,7 +388,7 @@ async def send_reply(
 
 async def handle_unsupported(message: Message) -> None:
     await message.answer(
-        "Я понимаю текст, голосовые, фото и документы (PDF, Word, Excel, CSV, .txt), "
+        "Я понимаю текст, голосовые, фото, ссылки на статьи и видео и документы (PDF, Word, Excel, CSV, .txt), "
         "а видео умею монтировать (/video). Стикеры и другие файлы пока не разбираю 🙂\n"
         "Конспект лекции — команда /notes или /slides, файл с кодом — в режиме кода: /code."
     )

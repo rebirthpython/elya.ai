@@ -55,6 +55,7 @@ from services.reminders import (
 )
 from services.preferences import options as preference_options
 from services.rate_limit import SlidingWindowLimiter
+from services.links import LinkStarted
 from services.search import SearchStarted, WebSearch
 from services.usage import UsageTracker
 from web import video_api
@@ -972,6 +973,8 @@ async def post_chat_stream(request: web.Request) -> web.StreamResponse:
                     break
                 if isinstance(event, SearchStarted):
                     await emit({"type": "search", "query": event.query})
+                elif isinstance(event, LinkStarted):
+                    await emit({"type": "status", "text": event.status_text()})
                 else:
                     await emit({"type": "delta", "text": event})
                 event = await anext(events)

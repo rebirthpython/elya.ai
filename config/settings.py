@@ -101,6 +101,8 @@ class Settings:
     github_repo_token: str = ""
     # Документы (PDF, Word, таблицы): сколько символов фрагментов добавлять к вопросу.
     documents_context_chars: int = 10000
+    # Разбор ссылок: статью или видео (субтитры) по ссылке Эля читает сама.
+    links_enabled: bool = True
     # Mini App (HTML5-интерфейс внутри Telegram). Пустой webapp_url — Mini App выключен.
     webapp_url: str = ""
     webapp_host: str = "0.0.0.0"
@@ -621,6 +623,7 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         code_history_max_chars=_get_int("CODE_HISTORY_MAX_CHARS", 40000, minimum=1000),
         code_max_file_chars=_get_int("CODE_MAX_FILE_CHARS", 30000, minimum=1000),
         documents_context_chars=_get_int("DOCUMENTS_CONTEXT_CHARS", 10000, minimum=2000),
+        links_enabled=_get_bool("LINKS_ENABLED", True),
         github_repo_token=_get_str("GITHUB_REPO_TOKEN"),
         webapp_url=_load_webapp_url(),
         webapp_host=_get_str("WEBAPP_HOST", "0.0.0.0") or "0.0.0.0",

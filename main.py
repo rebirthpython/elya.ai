@@ -40,6 +40,7 @@ from services.chat import ChatService
 from services.artifacts import FileStore
 from services.github import GitHubService
 from services.documents import DocumentStore
+from services.links import LinkReader
 from services.drawing import DrawingService
 from services.imagegen import ImageGenerator, build_image_backends
 from bot.handlers.reminders import make_sender
@@ -247,6 +248,7 @@ async def run(settings: Settings) -> None:
     )
     search = create_web_search(settings, http_client, session_factory)
     documents = DocumentStore(session_factory, chats=chats, context_chars=settings.documents_context_chars)
+    links = LinkReader() if settings.links_enabled else None
     chat_service = ChatService(
         settings,
         ai_client,
@@ -262,6 +264,7 @@ async def run(settings: Settings) -> None:
         github=GitHubService(
             session_factory, http_client, secret=settings.bot_token, env_token=settings.github_repo_token
         ),
+        links=links,
     )
     limiter = SlidingWindowLimiter(settings.rate_limit_per_minute)
 
@@ -354,6 +357,8 @@ async def run(settings: Settings) -> None:
             await web_runner.cleanup()
         await ai_client.aclose()
         await http_client.aclose()
+        if links is not None:
+            await links.close()
         await bot.session.close()
         await engine.dispose()
 

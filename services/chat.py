@@ -48,6 +48,18 @@ from services.documents import (
 )
 from services.documents import history_text as document_history_text
 from services.instructions import InstructionsStore
+from services.links import (
+    DEFAULT_ARTICLE_QUESTION,
+    DEFAULT_LINKS_QUESTION,
+    DEFAULT_VIDEO_QUESTION,
+    LinkError,
+    LinkReader,
+    LinkStarted,
+    failure_block,
+    find_urls,
+    is_video_url,
+    strip_urls,
+)
 from services.longterm import LongTermMemory
 from services.modes import CODE, DEFAULT_MODE, ModeStore
 from services.preferences import Preferences, PreferencesStore
@@ -90,6 +102,7 @@ class ChatService:
         documents: DocumentStore | None = None,
         files: FileStore | None = None,
         github=None,
+        links: LinkReader | None = None,
     ) -> None:
         self._settings = settings
         self._ai = ai_client
@@ -103,6 +116,8 @@ class ChatService:
         self._documents = documents
         self._files = files
         self._github = github  # services.github.GitHubService
+        # Ссылки читаются в документы разговора, поэтому без DocumentStore они выключены.
+        self._links = links if documents is not None else None
         self._background: set[asyncio.Task] = set()
         # Сообщения одного пользователя обрабатываются строго по очереди,
         # чтобы история диалога сохранялась в правильном порядке.
@@ -130,6 +145,10 @@ class ChatService:
     def documents(self) -> DocumentStore | None:
         """Документы разговора (PDF, Word, таблицы); None — функция выключена."""
         return self._documents
+
+    @property
+    def links_enabled(self) -> bool:
+        return self._links is not None
 
     @property
     def search_auto(self) -> bool:
@@ -171,9 +190,10 @@ class ChatService:
         file: CodeFile | None = None,
         search: bool | None = None,
         documents: tuple[int, ...] = (),
-    ) -> AsyncIterator[str | SearchStarted | CompletionResult]:
+    ) -> AsyncIterator[str | SearchStarted | LinkStarted | CompletionResult]:
         """Как ask(), но по частям: строки — новый текст ответа по мере генерации,
-        SearchStarted — Эля ищет в интернете, последним — CompletionResult. Обмен
+        SearchStarted — Эля ищет в интернете, LinkStarted — читает присланную ссылку,
+        последним — CompletionResult. Обмен
         сохраняется в историю, только когда ответ пришёл целиком; если поток прервали,
         история не меняется.
 
@@ -235,9 +255,39 @@ class ChatService:
             )
             recall = await self._long_memory.recall(user_id) if self._long_memory else None
             custom = await self._instructions.get(user_id) if self._instructions else None
+            # Ссылки: статья или видео становятся документами разговора.
+            link_ids: list[int] = []
+            link_failures: list[tuple[str, str]] = []
+            retrieval = question
+            urls = (
+                find_urls(user_text)
+                if self._links is not None and not images and file is None and not looks_like_code
+                else []
+            )
+            for url in urls:
+                yield LinkStarted(url, video=is_video_url(url))
+                try:
+                    parsed = await self._links.read(url)
+                    info = await self._documents.add(user_id, parsed, chat_id=chat.id)
+                except LinkError as exc:
+                    link_failures.append((url, str(exc)))
+                    continue
+                except Exception:  # noqa: BLE001 — сбой чтения ссылки не должен ронять ответ
+                    logger.exception("Could not read the link %s", url)
+                    link_failures.append((url, "Не получилось прочитать страницу."))
+                    continue
+                link_ids.append(info.id)
+            if link_ids and not strip_urls(user_text):
+                # Просто ссылка без вопроса — выделить главное (обзор всего текста, а не поиск по словам).
+                retrieval = ""
+                if len(urls) > 1:
+                    question = DEFAULT_LINKS_QUESTION
+                else:
+                    question = DEFAULT_VIDEO_QUESTION if is_video_url(urls[0]) else DEFAULT_ARTICLE_QUESTION
+            fresh = tuple(documents) + tuple(link_ids)
             docs = DocumentContext()
             if self._documents is not None and not images and file is None:
-                docs = await self._documents.context(user_id, question, fresh=documents, chat_id=chat.id)
+                docs = await self._documents.context(user_id, retrieval, fresh=fresh, chat_id=chat.id)
             if documents:
                 names = [info.name for info in docs.documents if info.id in documents]
                 stored_text = document_history_text(names or ["документ"], user_text)
@@ -246,6 +296,8 @@ class ChatService:
             wants_doc = file is None and not images and wants_document(user_text)
             wants_zip = file is None and not images and wants_project(user_text)
             output_rules = (DOCUMENT_RULE if wants_doc else "") + (PROJECT_RULE if wants_zip else "")
+            if link_failures:
+                output_rules += failure_block(link_failures)
             if self._github is not None and not images:
                 # Подключённый репозиторий: модель знает его файлы и пишет код с путями.
                 try:
