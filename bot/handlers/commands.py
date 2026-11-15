@@ -1,30 +1,35 @@
-"""Команды: /start, /help, /clear, /cancel и неизвестные команды."""
+"""Команды: /start, /help, /code, /clear, /cancel и неизвестные команды."""
 
 from __future__ import annotations
 
 from html import escape
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.enums import ParseMode
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from ai.client import AIClient
+from bot.handlers.chat import send_reply
 from bot.keyboards.common import (
     ClearHistoryCallback,
+    CodeModeCallback,
     InstructionsCallback,
     instructions_keyboard,
     MemoryCallback,
     clear_confirm_keyboard,
+    code_mode_keyboard,
     forget_confirm_keyboard,
     memory_keyboard,
     open_app_keyboard,
 )
 from config.settings import Settings
 from memory.manager import MemoryManager
+from services.chat import ChatService
 from services.instructions import Instructions, InstructionsStore
 from services.longterm import LongTermMemory
+from services.modes import CHAT, CODE, ModeStore
 from services.usage import UsageTracker
 
 
@@ -57,7 +62,8 @@ async def cmd_start(
         "спланировать день или просто поболтать. Я помню контекст нашего разговора.\n\n"
         f"{app_note}"
         "📝 /notes — сделаю конспект или сокращу лекцию, 🎞 /slides — соберу презентацию, "
-        "🎬 /video — смонтирую видео (или просто пришли его мне).\n\n"
+        "🎬 /video — смонтирую видео (или просто пришли его мне), "
+        "👩‍💻 /code — режим кода: пишу программы и ищу ошибки.\n\n"
         f"{_privacy_note(ai_client)}\n\n"
         "Все команды — в /help.",
         parse_mode=ParseMode.HTML,
@@ -82,11 +88,13 @@ async def cmd_help(
         "📝 Делать конспекты и сокращать лекции, выделяя термины, даты и имена\n"
         "🎞 Делать презентации с анимациями и заметками докладчика\n"
         "🎬 Монтировать видео: обрезать, склеить, ускорить, убрать паузы, субтитры, вертикальный формат\n"
+        "👩‍💻 Программировать: писать и объяснять код, искать ошибки, разбирать файлы\n"
         "🗓 Помогать с планированием и организацией дел\n\n"
         "<b>Команды</b>\n"
         "/notes — конспект, краткая выжимка или главные детали из лекции\n"
         "/slides — презентация (.pptx) по теме или материалу\n"
         "/video — монтаж видео (можно и просто прислать видео)\n"
+        "/code — режим кода (выключить: /code off)\n"
         "/start — приветствие\n"
         "/help — эта справка\n"
         "/reminders — мои напоминания (ставятся фразой «напомни завтра в 9 …»)\n"
@@ -232,6 +240,86 @@ async def on_instructions_action(
     await callback.answer("Включены" if current.enabled else "Выключены")
 
 
+_CODE_OFF_WORDS = frozenset({"off", "выкл", "выключи", "выключить", "stop", "стоп", "exit", "выход"})
+_CODE_ON_WORDS = frozenset({"on", "вкл", "включи", "включить"})
+_CODE_MODE_OFF = (
+    "💬 <b>Режим кода выключен.</b> Снова общаемся как обычно. Включить его можно командой /code."
+)
+
+
+def _code_mode_text(already: bool, sees_photos: bool) -> str:
+    title = "Режим кода уже включён." if already else "Режим кода включён."
+    screenshot = "• Скриншот ошибки тоже разберу\n" if sees_photos else ""
+    return (
+        f"👩‍💻 <b>{title}</b>\n\n"
+        "Теперь я отвечаю как программист: пишу код, объясняю, ищу ошибки и делаю ревью.\n\n"
+        "• Опиши задачу или пришли код с вопросом\n"
+        "• Пришли файл с кодом (.py, .js, .json…) — прочитаю его и отвечу на подпись\n"
+        f"{screenshot}"
+        "• Длинный код пришлю ещё и файлом\n\n"
+        "Режим общий для чата и приложения. Вернуться к обычному общению — /code off "
+        "или кнопка ниже.\n\n"
+        "<i>Я не запускаю код, поэтому проверяй его у себя, прежде чем использовать.</i>"
+    )
+
+
+async def cmd_code(
+    message: Message,
+    command: CommandObject,
+    bot: Bot,
+    chat_service: ChatService,
+    ai_client: AIClient,
+    modes: ModeStore | None = None,
+) -> None:
+    """/code — включить режим кода, /code off — выключить, /code <задача> — включить и сразу ответить."""
+    if modes is None or message.from_user is None:
+        await message.answer("Режим кода сейчас недоступен.")
+        return
+    user_id = message.from_user.id
+    task = (command.args or "").strip()
+    already = await modes.get(user_id) == CODE
+
+    if task.lower() in _CODE_OFF_WORDS:
+        await modes.set(user_id, CHAT)
+        await message.answer(
+            _CODE_MODE_OFF if already else "Режим кода и так выключен. Включить его — /code.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=code_mode_keyboard(False),
+        )
+        return
+
+    await modes.set(user_id, CODE)
+    if task and task.lower() not in _CODE_ON_WORDS:
+        if not already:
+            await message.answer("👩‍💻 Режим кода включён. Вернуться к обычному общению — /code off.")
+        await send_reply(message, bot, chat_service, task)
+        return
+    await message.answer(
+        _code_mode_text(already, ai_client.has_vision),
+        parse_mode=ParseMode.HTML,
+        reply_markup=code_mode_keyboard(True),
+    )
+
+
+async def on_code_mode_action(
+    callback: CallbackQuery,
+    callback_data: CodeModeCallback,
+    ai_client: AIClient,
+    modes: ModeStore | None = None,
+) -> None:
+    if modes is None or not isinstance(callback.message, Message):
+        await callback.answer()
+        return
+    enabled = callback_data.action == "on"
+    await modes.set(callback.from_user.id, CODE if enabled else CHAT)
+    await callback.message.edit_text(
+        _code_mode_text(False, ai_client.has_vision) if enabled else _CODE_MODE_OFF,
+        parse_mode=ParseMode.HTML,
+        reply_markup=code_mode_keyboard(enabled),
+    )
+    await callback.answer("Режим кода включён" if enabled else "Обычный режим")
+
+
 async def cmd_clear(message: Message) -> None:
     await message.answer(
         "Удалить всю историю нашего диалога? Это действие нельзя отменить.",
@@ -268,6 +356,7 @@ def create_router() -> Router:
     router = Router(name="commands")
     router.message.register(cmd_start, CommandStart())
     router.message.register(cmd_help, Command("help"))
+    router.message.register(cmd_code, Command("code"))
     router.message.register(cmd_instructions, Command("instructions"))
     router.message.register(cmd_memory, Command("memory"))
     router.message.register(cmd_forget, Command("forget"))
@@ -276,5 +365,6 @@ def create_router() -> Router:
     router.callback_query.register(on_clear_confirm, ClearHistoryCallback.filter())
     router.callback_query.register(on_memory_action, MemoryCallback.filter())
     router.callback_query.register(on_instructions_action, InstructionsCallback.filter())
+    router.callback_query.register(on_code_mode_action, CodeModeCallback.filter())
     router.message.register(cmd_unknown, F.text.startswith("/"))
     return router

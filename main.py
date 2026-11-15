@@ -38,6 +38,7 @@ from services.chat import ChatService
 from bot.handlers.reminders import make_sender
 from services.instructions import InstructionsStore
 from services.longterm import LongTermMemory
+from services.modes import ModeStore
 from services.speech import SpeechToText
 from services.reminders import ReminderScheduler, Reminders
 from services.preferences import PreferencesStore
@@ -55,6 +56,7 @@ BOT_COMMANDS = [
     BotCommand(command="notes", description="Конспект или сокращение лекции"),
     BotCommand(command="slides", description="Презентация с анимациями"),
     BotCommand(command="video", description="Монтаж видео"),
+    BotCommand(command="code", description="Режим кода: пишу и разбираю программы"),
     BotCommand(command="help", description="Что я умею"),
     BotCommand(command="reminders", description="Мои напоминания"),
     BotCommand(command="timezone", description="Часовой пояс для напоминаний"),
@@ -79,6 +81,7 @@ def create_dispatcher(
     speech: SpeechToText | None = None,
     instructions: InstructionsStore | None = None,
     video: VideoService | None = None,
+    modes: ModeStore | None = None,
 ) -> Dispatcher:
     """chat_service и limiter передаются снаружи, когда их делит с ботом Mini App."""
     dp = Dispatcher(storage=MemoryStorage())
@@ -91,8 +94,9 @@ def create_dispatcher(
     dp["instructions"] = instructions
     dp["speech"] = speech
     dp["video"] = video
+    dp["modes"] = modes
     dp["chat_service"] = chat_service or ChatService(
-        settings, ai_client, memory, instructions=instructions
+        settings, ai_client, memory, instructions=instructions, modes=modes
     )
 
     dp["study"] = StudyService(
@@ -185,8 +189,16 @@ async def run(settings: Settings) -> None:
     )
     await video.start()
     logger.info("Video editing: %s", video.status)
+    modes = ModeStore(session_factory)
     chat_service = ChatService(
-        settings, ai_client, memory, preferences, long_memory, reminders, instructions=instructions
+        settings,
+        ai_client,
+        memory,
+        preferences,
+        long_memory,
+        reminders,
+        instructions=instructions,
+        modes=modes,
     )
     limiter = SlidingWindowLimiter(settings.rate_limit_per_minute)
 
@@ -203,6 +215,7 @@ async def run(settings: Settings) -> None:
         speech=speech,
         instructions=instructions,
         video=video,
+        modes=modes,
     )
     web_runner = None
     scheduler_task = None
@@ -233,6 +246,7 @@ async def run(settings: Settings) -> None:
                         reminders,
                         speech,
                         instructions,
+                        modes,
                     ),
                     settings.webapp_host,
                     settings.webapp_port,

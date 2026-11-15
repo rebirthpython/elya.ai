@@ -61,6 +61,19 @@ def instructions_keyboard(enabled: bool, has_text: bool, webapp_url: str) -> Inl
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
+class CodeModeCallback(CallbackData, prefix="code"):
+    action: str  # on | off
+
+
+def code_mode_keyboard(enabled: bool) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    if enabled:
+        builder.button(text="💬 Обычный режим", callback_data=CodeModeCallback(action="off"))
+    else:
+        builder.button(text="👩‍💻 Включить режим кода", callback_data=CodeModeCallback(action="on"))
+    return builder.as_markup()
+
+
 def open_app_keyboard(webapp_url: str, assistant_name: str) -> InlineKeyboardMarkup:
     """Кнопка, открывающая Mini App (работает только в личном чате с ботом)."""
     button = InlineKeyboardButton(

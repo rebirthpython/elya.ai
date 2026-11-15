@@ -44,6 +44,11 @@ class Settings:
     # Конспекты и презентации: длина ответа модели и максимальный размер материала.
     study_max_output_tokens: int = 8192
     study_max_input_chars: int = 60000
+    # Режим кода (/code): ответы длиннее и точнее, в контекст помещаются файлы с кодом.
+    code_max_output_tokens: int = 4096
+    code_temperature: float = 0.2
+    code_history_max_chars: int = 40000
+    code_max_file_chars: int = 30000
     # Mini App (HTML5-интерфейс внутри Telegram). Пустой webapp_url — Mini App выключен.
     webapp_url: str = ""
     webapp_host: str = "0.0.0.0"
@@ -262,6 +267,10 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         log_level=_get_str("LOG_LEVEL", "INFO").upper() or "INFO",
         study_max_output_tokens=_get_int("STUDY_MAX_OUTPUT_TOKENS", 8192, minimum=1024),
         study_max_input_chars=_get_int("STUDY_MAX_INPUT_CHARS", 60000, minimum=1000),
+        code_max_output_tokens=_get_int("CODE_MAX_OUTPUT_TOKENS", 4096, minimum=256),
+        code_temperature=_get_float("CODE_TEMPERATURE", 0.2, minimum=0.0, maximum=2.0),
+        code_history_max_chars=_get_int("CODE_HISTORY_MAX_CHARS", 40000, minimum=1000),
+        code_max_file_chars=_get_int("CODE_MAX_FILE_CHARS", 30000, minimum=1000),
         webapp_url=_load_webapp_url(),
         webapp_host=_get_str("WEBAPP_HOST", "0.0.0.0") or "0.0.0.0",
         webapp_port=_load_webapp_port(),
