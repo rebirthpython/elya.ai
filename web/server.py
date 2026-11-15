@@ -55,6 +55,7 @@ from services.reminders import (
 )
 from services.preferences import options as preference_options
 from services.rate_limit import SlidingWindowLimiter
+from services.coderun import CodeRunStarted
 from services.search import SearchStarted, WebSearch
 from services.usage import UsageTracker
 from web import video_api
@@ -907,6 +908,7 @@ async def _presentation_stream(request: web.Request, user: WebAppUser, text: str
 async def post_chat_stream(request: web.Request) -> web.StreamResponse:
     """Как /api/chat, но ответ приходит по мере генерации — построчно (NDJSON):
     {"type": "search", "query": "..."} — Эля ищет в интернете (если понадобилось),
+    {"type": "run", "number": n} — Эля запускает код в песочнице (вывод придёт дельтами),
     {"type": "delta", "text": "..."} … и в конце {"type": "done", "reply": …, "usage": …}
     или {"type": "error", "error": {...}}. Ошибки до начала ответа — обычный JSON со статусом.
 
@@ -972,6 +974,8 @@ async def post_chat_stream(request: web.Request) -> web.StreamResponse:
                     break
                 if isinstance(event, SearchStarted):
                     await emit({"type": "search", "query": event.query})
+                elif isinstance(event, CodeRunStarted):
+                    await emit({"type": "run", "number": event.number})
                 else:
                     await emit({"type": "delta", "text": event})
                 event = await anext(events)

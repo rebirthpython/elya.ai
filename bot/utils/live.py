@@ -71,13 +71,14 @@ class LiveMessage:
             text = text[:DEFAULT_CHUNK_LIMIT] + "…"
         return text + CURSOR
 
-    async def update(self, text: str) -> None:
-        """Новый текст ответа целиком (не прирост)."""
+    async def update(self, text: str, *, force: bool = False) -> None:
+        """Новый текст ответа целиком (не прирост). force — показать сразу, без паузы
+        между правками (например, «Запускаю код…»: дальше несколько секунд ничего не придёт)."""
         now = self._clock()
         if not text.strip():
             return
         if self._sent is None:
-            if now - self._started < self._first_delay:
+            if now - self._started < self._first_delay and not force:
                 return  # короткий ответ успеет прийти целиком — не мигаем лишним сообщением
             preview = self._preview(text)
             try:
@@ -87,7 +88,7 @@ class LiveMessage:
                 return
             self._shown, self._last_edit = preview, now
             return
-        if now - self._last_edit < self._interval:
+        if now - self._last_edit < self._interval and not force:
             return
         preview = self._preview(text)
         if preview != self._shown:

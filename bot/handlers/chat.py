@@ -42,6 +42,7 @@ from services.artifacts import OutputFile, wants_presentation
 from services.documents import PLAIN_TEXT_EXTENSIONS, is_document, unsupported_hint
 from services.modes import CODE, ModeStore
 from services.drawing import DrawingService
+from services.coderun import CodeRunStarted
 from services.search import SearchStarted
 from services.speech import SpeechError, SpeechToText
 from services.vision import MAX_IMAGE_BYTES, NO_VISION_TEXT, ImageError, history_text, to_data_url
@@ -266,15 +267,26 @@ _FILE_CAPTIONS = {
     "docx": "📄 Документ Word — можно сразу открыть, распечатать или сдать",
     "zip": "🗂 Проект целиком — распакуй архив, там все файлы по папкам",
     "html": "🌐 Веб-страница — открой файл в браузере",
+    "data": "📎 Файл, который создал код",
 }
 
 
 async def send_output_files(message: Message, files: tuple, settings: Settings | None) -> None:
-    """Готовые файлы к ответу: DOCX, ZIP, HTML (для HTML — кнопка предпросмотра в приложении)."""
+    """Готовые файлы к ответу: DOCX, ZIP, HTML (для HTML — кнопка предпросмотра в приложении),
+    графики из песочницы — картинками."""
     for output, stored in files:
         if not isinstance(output, OutputFile):
             continue
-        caption = _FILE_CAPTIONS.get(output.kind, "📎 Файл")
+        if output.kind == "image":
+            try:
+                await message.answer_photo(
+                    BufferedInputFile(output.data, filename=output.name), caption=f"📈 {output.name}"
+                )
+                continue
+            except TelegramAPIError as exc:
+                # Слишком большая или необычная картинка — пусть придёт файлом.
+                logger.info("Could not send %s as a photo: %s", output.name, exc)
+        caption = _FILE_CAPTIONS.get(output.kind, "📎 Файл") if output.kind != "image" else f"📈 {output.name}"
         markup = None
         if output.preview and stored is not None and settings is not None and settings.webapp_enabled:
             caption += " или посмотри в приложении 👇"
@@ -347,6 +359,9 @@ async def send_reply(
                     result = event
                 elif isinstance(event, SearchStarted):
                     await live.status(f"🔎 Ищу в интернете: «{event.query}»…")
+                elif isinstance(event, CodeRunStarted):
+                    # Пока код работает, под ответом видно, что он запущен.
+                    await live.update(answer + "\n\n⏳ Запускаю код…", force=True)
                 else:
                     answer += event
                     await live.update(answer)

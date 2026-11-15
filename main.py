@@ -50,6 +50,7 @@ from services.speech import SpeechToText
 from services.reminders import ReminderScheduler, Reminders
 from services.preferences import PreferencesStore
 from services.rate_limit import SlidingWindowLimiter
+from services.sandbox import create_sandbox
 from services.search import WebSearch, build_search_providers
 from services.usage import UsageTracker
 from study.pipeline import StudyService
@@ -65,6 +66,7 @@ BOT_COMMANDS = [
     BotCommand(command="slides", description="Презентация с анимациями"),
     BotCommand(command="video", description="Монтаж видео"),
     BotCommand(command="code", description="Режим кода: пишу и разбираю программы"),
+    BotCommand(command="run", description="Запустить Python в песочнице"),
     BotCommand(command="draw", description="Нарисовать картинку"),
     BotCommand(command="edit", description="Изменить картинку: убрать фон, добавить, перекрасить"),
     BotCommand(command="search", description="Найти в интернете со ссылками на источники"),
@@ -247,6 +249,8 @@ async def run(settings: Settings) -> None:
     )
     search = create_web_search(settings, http_client, session_factory)
     documents = DocumentStore(session_factory, chats=chats, context_chars=settings.documents_context_chars)
+    # Песочница для кода: отдельный процесс или контейнер, без сети и ключей бота.
+    sandbox = await create_sandbox(settings)
     chat_service = ChatService(
         settings,
         ai_client,
@@ -262,6 +266,7 @@ async def run(settings: Settings) -> None:
         github=GitHubService(
             session_factory, http_client, secret=settings.bot_token, env_token=settings.github_repo_token
         ),
+        sandbox=sandbox,
     )
     limiter = SlidingWindowLimiter(settings.rate_limit_per_minute)
 

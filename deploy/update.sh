@@ -66,12 +66,17 @@ install_deps() {
     req="$(requirements_file)"
     log "Устанавливаю зависимости из $req"
     "$PY" -m pip install --quiet --disable-pip-version-check -r "$REPO_DIR/$req"
+    # Пакеты для кода в песочнице (графики): без них бот работает, поэтому ошибка не роняет обновление.
+    if [[ -f $REPO_DIR/sandbox/requirements.txt ]]; then
+        "$PY" -m pip install --quiet --disable-pip-version-check -r "$REPO_DIR/sandbox/requirements.txt" ||
+            log "ВНИМАНИЕ: не удалось поставить пакеты песочницы (sandbox/requirements.txt)"
+    fi
 }
 
 # Нужно ли ставить зависимости при переходе с коммита $1 на $2.
 deps_outdated() {
     if [[ $FORCE == 1 ]]; then return 0; fi
-    if ! git diff --quiet "$1" "$2" -- 'requirements*.txt'; then return 0; fi
+    if ! git diff --quiet "$1" "$2" -- 'requirements*.txt' 'sandbox/requirements.txt'; then return 0; fi
     if [[ $RUN_TESTS == 1 ]] && ! "$PY" -c 'import pytest' >/dev/null 2>&1; then return 0; fi
     return 1
 }

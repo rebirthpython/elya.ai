@@ -99,6 +99,14 @@ class Settings:
     code_max_file_chars: int = 30000
     # GitHub: токен для репозиториев (необязательно — можно подключить командой /github).
     github_repo_token: str = ""
+    # Песочница для запуска кода (services/sandbox.py): auto | docker | bwrap | process | off.
+    sandbox_backend: str = "auto"
+    sandbox_timeout: float = 15.0
+    sandbox_memory_mb: int = 512
+    sandbox_max_runs: int = 3
+    sandbox_image: str = "elya-sandbox"
+    sandbox_python: str = ""
+    sandbox_dir: str = ""
     # Документы (PDF, Word, таблицы): сколько символов фрагментов добавлять к вопросу.
     documents_context_chars: int = 10000
     # Mini App (HTML5-интерфейс внутри Telegram). Пустой webapp_url — Mini App выключен.
@@ -294,6 +302,14 @@ KNOWN_IMAGE_PROVIDERS: dict[str, dict[str, str]] = {
     },
 }
 CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4/accounts"
+
+
+def _load_sandbox_backend() -> str:
+    value = (_get_str("SANDBOX_BACKEND", "auto") or "auto").lower()
+    allowed = ("auto", "docker", "bwrap", "process", "off")
+    if value not in allowed:
+        raise ConfigError(f"SANDBOX_BACKEND должен быть одним из: {', '.join(allowed)} (сейчас {value!r})")
+    return value
 
 
 def _get_str(name: str, default: str = "") -> str:
@@ -622,6 +638,13 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         code_max_file_chars=_get_int("CODE_MAX_FILE_CHARS", 30000, minimum=1000),
         documents_context_chars=_get_int("DOCUMENTS_CONTEXT_CHARS", 10000, minimum=2000),
         github_repo_token=_get_str("GITHUB_REPO_TOKEN"),
+        sandbox_backend=_load_sandbox_backend(),
+        sandbox_timeout=_get_float("SANDBOX_TIMEOUT", 15.0, minimum=1.0, maximum=300.0),
+        sandbox_memory_mb=_get_int("SANDBOX_MEMORY_MB", 512, minimum=64),
+        sandbox_max_runs=_get_int("SANDBOX_MAX_RUNS", 3, minimum=1),
+        sandbox_image=_get_str("SANDBOX_IMAGE", "elya-sandbox") or "elya-sandbox",
+        sandbox_python=_get_str("SANDBOX_PYTHON"),
+        sandbox_dir=_get_str("SANDBOX_DIR"),
         webapp_url=_load_webapp_url(),
         webapp_host=_get_str("WEBAPP_HOST", "0.0.0.0") or "0.0.0.0",
         webapp_port=_load_webapp_port(),

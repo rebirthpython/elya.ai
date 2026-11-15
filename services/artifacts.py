@@ -38,6 +38,8 @@ MIME = {
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "zip": "application/zip",
     "html": "text/html",
+    "image": "image/png",  # картинки и файлы из песочницы — тип задаётся у файла
+    "data": "application/octet-stream",
 }
 MIN_DOCUMENT_CHARS = 600  # короче — это не реферат, а ответ в чат
 MAX_ZIP_FILES = 60
@@ -111,12 +113,13 @@ PROJECT_RULE = (
 class OutputFile:
     name: str
     data: bytes
-    kind: str  # docx | pptx | zip | html
+    kind: str  # docx | pptx | zip | html | image | data (image и data — из песочницы)
     preview: bool = False  # можно посмотреть в приложении (HTML)
+    content_type: str = ""  # MIME, если он не следует из kind (картинки, CSV)
 
     @property
     def mime(self) -> str:
-        return MIME[self.kind]
+        return self.content_type or MIME[self.kind]
 
 
 _PATH_HINT_RE = re.compile(r"`?((?:[\w.-]+/)*[\w.-]+\.[A-Za-z0-9]{1,10}|Dockerfile|Makefile|README)`?")

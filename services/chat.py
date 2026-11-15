@@ -40,6 +40,15 @@ from services.artifacts import (
     wants_project,
 )
 from services.code import CodeFile, file_message
+from services.coderun import (
+    CodeRunStarted,
+    RunCutter,
+    display_block,
+    model_report,
+    output_files,
+    run_rule,
+    strip_run_marks,
+)
 from services.documents import (
     DEFAULT_DOCUMENT_QUESTION,
     DEFAULT_DOCUMENTS_QUESTION,
@@ -65,9 +74,34 @@ from services.search import (
     strip_sources,
     wants_search,
 )
+from services.sandbox import RunResult, Sandbox
 from services.vision import DEFAULT_QUESTION, history_text
 
 logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass(slots=True)
+class _Runs:
+    """Запуски кода в одном ответе."""
+
+    limit: int
+    results: list[RunResult] = dataclasses.field(default_factory=list)
+
+    @property
+    def left(self) -> int:
+        return self.limit - len(self.results)
+
+    def outputs(self) -> list[OutputFile]:
+        return output_files(item for result in self.results for item in result.files)
+
+
+@dataclasses.dataclass(slots=True)
+class _Step:
+    """Один ответ модели, пропущенный через RunCutter."""
+
+    cutter: RunCutter
+    result: CompletionResult | None = None
+
 
 # В режиме кода «напомни» может встретиться во вставленном коде, поэтому просьбой
 # о напоминании считается только короткое сообщение без блоков кода.
@@ -90,6 +124,7 @@ class ChatService:
         documents: DocumentStore | None = None,
         files: FileStore | None = None,
         github=None,
+        sandbox: Sandbox | None = None,
     ) -> None:
         self._settings = settings
         self._ai = ai_client
@@ -103,6 +138,7 @@ class ChatService:
         self._documents = documents
         self._files = files
         self._github = github  # services.github.GitHubService
+        self._sandbox = sandbox
         self._background: set[asyncio.Task] = set()
         # Сообщения одного пользователя обрабатываются строго по очереди,
         # чтобы история диалога сохранялась в правильном порядке.
@@ -121,6 +157,11 @@ class ChatService:
     def github(self):
         """GitHub (services.github.GitHubService); None — выключен."""
         return self._github
+
+    @property
+    def sandbox(self) -> Sandbox | None:
+        """Песочница для запуска кода; None — Эля код не запускает."""
+        return self._sandbox
 
     @property
     def settings(self) -> Settings:
@@ -171,9 +212,10 @@ class ChatService:
         file: CodeFile | None = None,
         search: bool | None = None,
         documents: tuple[int, ...] = (),
-    ) -> AsyncIterator[str | SearchStarted | CompletionResult]:
+    ) -> AsyncIterator[str | SearchStarted | CodeRunStarted | CompletionResult]:
         """Как ask(), но по частям: строки — новый текст ответа по мере генерации,
-        SearchStarted — Эля ищет в интернете, последним — CompletionResult. Обмен
+        SearchStarted — Эля ищет в интернете, CodeRunStarted — запускает код в песочнице
+        (результат запуска придёт следующими строками), последним — CompletionResult. Обмен
         сохраняется в историю, только когда ответ пришёл целиком; если поток прервали,
         история не меняется.
 
@@ -252,6 +294,10 @@ class ChatService:
                     output_rules += await asyncio.wait_for(self._github.prompt_block(user_id), 6)
                 except Exception:  # noqa: BLE001 — без GitHub ответ всё равно нужен
                     logger.warning("GitHub context unavailable", exc_info=True)
+            can_run = self._sandbox is not None
+            runs = _Runs(limit=self._sandbox.max_runs if can_run else 0)
+            if can_run:
+                output_rules += run_rule(self._sandbox, runs=runs.limit)
 
             def context(rule: str = NO_INTERNET_RULE, results: str = "") -> list[ChatMessage]:
                 return build_context(
@@ -269,6 +315,7 @@ class ChatService:
                         internet_rule=rule,
                         search_results=results,
                         documents=docs.block,
+                        can_run=can_run,
                     ),
                     history,
                     question,
@@ -299,7 +346,7 @@ class ChatService:
                 )
             result: CompletionResult | None = None
             if search_mode is None:
-                async for event in self._ai.stream(context(), prefer=prefer, **options):
+                async for event in self._generate(context(), prefer, options, runs):
                     if isinstance(event, CompletionResult):
                         result = event
                     else:
@@ -308,25 +355,26 @@ class ChatService:
                 # Шаг 1: модель либо сразу отвечает (текст идёт пользователю как обычно),
                 # либо просит поискать — тогда служебная строка не показывается.
                 detector = MarkerDetector()
-                first = self._ai.stream(
-                    context(SEARCH_FORCE_RULE if search_mode == "force" else SEARCH_AUTO_RULE),
-                    prefer=prefer,
-                    **options,
-                )
+                step = _Step(RunCutter(active=runs.left > 0))
+                first_messages = context(SEARCH_FORCE_RULE if search_mode == "force" else SEARCH_AUTO_RULE)
+                first = self._ai.stream(first_messages, prefer=prefer, **options)
                 try:
                     async for event in first:
                         if isinstance(event, CompletionResult):
-                            result = event
+                            step.result = event
                             break
                         shown = detector.feed(event)
                         if detector.complete or (search_mode == "force" and detector.mode == "text"):
                             break  # запрос дописан или модель не стала искать, хотя просили
-                        if shown:
+                        if shown and (shown := step.cutter.feed(shown)):
                             yield shown
+                        if step.cutter.block is not None:
+                            break  # модель ответила сама и просит запустить код
                 finally:
                     await first.aclose()
+                result = step.result
                 if detector.mode is None and result is not None:
-                    if tail := detector.flush():
+                    if (tail := detector.flush()) and (tail := step.cutter.feed(tail)):
                         yield tail
                 if detector.mode == "search" or (search_mode == "force" and detector.mode == "text"):
                     # Шаг 2: поиск и ответ по результатам.
@@ -342,7 +390,7 @@ class ChatService:
                         else context(SEARCH_FAILED_RULE)
                     )
                     result = None
-                    async for event in self._ai.stream(second, prefer=prefer, **options):
+                    async for event in self._generate(second, prefer, options, runs):
                         if isinstance(event, CompletionResult):
                             result = event
                         else:
@@ -350,10 +398,20 @@ class ChatService:
                     assert result is not None
                     result = dataclasses.replace(result, text=attach_sources(result.text, results))
                 else:
-                    assert result is not None
-                    result = dataclasses.replace(result, text=strip_markers(result.text) or result.text)
+                    if result is not None and (tail := step.cutter.finish(result.truncated)):
+                        yield tail
+                    if step.cutter.block is not None:
+                        async for event in self._continue_runs(first_messages, step, prefer, options, runs):
+                            if isinstance(event, CompletionResult):
+                                result = event
+                            else:
+                                yield event
+                    else:
+                        assert result is not None
+                        text = strip_markers(result.text) or result.text
+                        result = dataclasses.replace(result, text=strip_run_marks(text))
             assert result is not None
-            stored_files = await self._attach_files(user_id, user_text, result.text, coding)
+            stored_files = await self._attach_files(user_id, user_text, result.text, coding, runs.outputs())
             if stored_files:
                 result = dataclasses.replace(result, files=tuple(stored_files))
             push = await self._remember_push(user_id, user_text, result.text)
@@ -373,19 +431,90 @@ class ChatService:
         yield result
 
     async def _attach_files(
-        self, user_id: int, request: str, answer: str, coding: bool
+        self, user_id: int, request: str, answer: str, coding: bool, extra: list[OutputFile] = ()
     ) -> list[tuple[OutputFile, object]]:
-        """Файлы из ответа (DOCX, ZIP, HTML) и их записи в хранилище (None — не сохранён)."""
+        """Файлы из ответа (DOCX, ZIP, HTML), графики и файлы из песочницы (extra)
+        и их записи в хранилище (None — не сохранён)."""
         try:
             outputs = await asyncio.to_thread(build_outputs, request, answer, code_mode=coding)
         except Exception:  # noqa: BLE001 — файл — дополнение, ответ важнее
             logger.exception("Could not build files for the answer")
-            return []
+            outputs = []
+        outputs = [*extra, *outputs]
         result = []
         for output in outputs:
             stored = await self._files.save(user_id, output) if self._files is not None else None
             result.append((output, stored))
         return result
+
+    async def _stream_step(
+        self, messages: list[ChatMessage], prefer, options: dict, step: _Step
+    ) -> AsyncIterator[str]:
+        """Ответ модели через RunCutter: поток останавливается, как только закрылся блок run."""
+        stream = self._ai.stream(messages, prefer=prefer, **options)
+        try:
+            async for event in stream:
+                if isinstance(event, CompletionResult):
+                    step.result = event
+                    break
+                if shown := step.cutter.feed(event):
+                    yield shown
+                if step.cutter.block is not None:
+                    break
+        finally:
+            await stream.aclose()
+        if step.result is not None and (tail := step.cutter.finish(step.result.truncated)):
+            yield tail
+
+    async def _generate(
+        self, messages: list[ChatMessage], prefer, options: dict, runs: _Runs
+    ) -> AsyncIterator[str | CodeRunStarted | CompletionResult]:
+        """Ответ модели; если она просит запустить код — запуски и продолжение ответа."""
+        step = _Step(RunCutter(active=runs.left > 0))
+        async for shown in self._stream_step(messages, prefer, options, step):
+            yield shown
+        if step.cutter.block is None:
+            assert step.result is not None
+            yield dataclasses.replace(step.result, text=strip_run_marks(step.result.text))
+            return
+        async for event in self._continue_runs(messages, step, prefer, options, runs):
+            yield event
+
+    async def _continue_runs(
+        self, messages: list[ChatMessage], step: _Step, prefer, options: dict, runs: _Runs
+    ) -> AsyncIterator[str | CodeRunStarted | CompletionResult]:
+        """Запускает код из ответа, показывает результат и просит модель продолжить —
+        пока она запускает код и запуски не кончились. Последним — весь ответ целиком."""
+        conversation = messages
+        text = step.cutter.text
+        last = step.result
+        while step.cutter.block is not None:
+            yield CodeRunStarted(len(runs.results) + 1)
+            run = await self._sandbox.run(step.cutter.block)
+            runs.results.append(run)
+            logger.info(
+                "Code run #%d: exit=%s timeout=%s reason=%s files=%d time=%.1fs",
+                len(runs.results), run.exit_code, run.timed_out, run.reason or "-", len(run.files), run.duration,
+            )
+            shown = display_block(run)
+            text += shown
+            yield shown
+            conversation = [
+                *conversation,
+                ChatMessage("assistant", step.cutter.text),
+                ChatMessage("user", model_report(run, len(runs.results), runs.left)),
+            ]
+            step = _Step(RunCutter(active=runs.left > 0))
+            async for piece in self._stream_step(conversation, prefer, options, step):
+                yield piece
+            text += step.cutter.text
+            last = step.result or last
+        yield CompletionResult(
+            text=text.strip(),
+            provider=last.provider if last else "",
+            model=last.model if last else "",
+            truncated=bool(last and last.truncated),
+        )
 
     async def _remember_push(self, user_id: int, request: str, answer: str) -> int | None:
         """Файлы с путями из ответа — для кнопки «Отправить в GitHub» (если репозиторий выбран)."""

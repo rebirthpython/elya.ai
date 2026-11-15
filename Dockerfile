@@ -11,6 +11,11 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Пакеты для кода Эли в песочнице (графики, таблицы): в контейнере бота код запускается
+# отдельным процессом от пользователя nobody (SANDBOX_BACKEND=process, см. README).
+COPY sandbox/requirements.txt sandbox-requirements.txt
+RUN pip install --no-cache-dir -r sandbox-requirements.txt
+
 COPY . .
 
 # Порт берётся из PORT (его задаёт хостинг) или WEBAPP_PORT.

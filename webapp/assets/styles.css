@@ -4410,6 +4410,41 @@ audio.video-player {
   margin-top: 8px;
 }
 
+/* График из песочницы прямо в чате. */
+.file-image {
+  display: grid;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: var(--shadow-bubble);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: zoom-in;
+  animation: rise-3d 0.5s var(--spring-soft) both;
+  animation-delay: calc(var(--i, 0) * 70ms);
+}
+
+.file-image__img {
+  display: block;
+  width: 100%;
+  min-height: 80px;
+  border-radius: 13px;
+  background: #fff;
+  object-fit: contain;
+}
+
+.file-image__name {
+  padding: 0 6px 2px;
+  font-size: 12px;
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .file-card {
   display: flex;
   align-items: center;

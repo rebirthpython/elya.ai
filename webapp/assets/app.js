@@ -480,6 +480,8 @@
           if (extra && extra.onStatus) extra.onStatus(String(event.text || ''));
         } else if (event.type === 'search') {
           if (extra && extra.onSearch) extra.onSearch(String(event.query || ''));
+        } else if (event.type === 'run') {
+          if (extra && extra.onRun) extra.onRun(Number(event.number) || 1);
         } else if (event.type === 'done') result = event;
         else if (event.type === 'error') {
           const info = event.error || {};
@@ -1023,6 +1025,7 @@
           }
           return { reply: { role: 'assistant', content, ts: nowTs(), provider: 'demo', model: 'gemini-flash-latest', truncated: false }, usage: { used, limit: 300 } };
         }
+        if (/график|посчитай|запусти/i.test(text)) return this.demoRun(text, onDelta, extra);
         const searching = Boolean(extra && extra.search) || /гугл|в интернете|источник/i.test(text);
         if (searching && extra && extra.onSearch) {
           await sleep(600);
@@ -1048,6 +1051,37 @@
           await sleep(60);
         }
         return data;
+      },
+      /* Демо запуска кода: блок кода, «Запускаю код…», вывод и график. */
+      async demoRun(text, onDelta, extra) {
+        await sleep(900);
+        const before = 'Построю график и проверю расчёт:\n\n```python\nimport numpy as np\nimport matplotlib.pyplot as plt\n\n' +
+          'x = np.linspace(0, 2 * np.pi, 100)\nplt.plot(x, np.sin(x))\nplt.title("Синус")\nprint(round(np.sin(np.pi / 2), 3))\n```';
+        const result = '\n\n▶️ **Результат:**\n```text\n1.0\n```\n📈 График `figure_1.png` — ниже.\n\n';
+        const after = 'Код отработал без ошибок: sin(π/2) = 1, а график — ниже. В демо-режиме это заготовка, ' +
+          'а в Telegram я запускаю код по-настоящему, в песочнице без интернета.';
+        const words = before.split(/(\s+)/);
+        for (let i = 0; i < words.length; i += 3) {
+          onDelta(words.slice(i, i + 3).join(''));
+          await sleep(40);
+        }
+        if (extra && extra.onRun) extra.onRun(1);
+        await sleep(1200);
+        onDelta(result);
+        for (const piece of after.split(/(\s+)/)) {
+          onDelta(piece);
+          await sleep(25);
+        }
+        const content = before + result + after;
+        history.push({ role: 'user', content: text, ts: nowTs() }, { role: 'assistant', content, ts: nowTs() });
+        used += 1;
+        return {
+          reply: {
+            role: 'assistant', content, ts: nowTs(), provider: 'demo', model: 'gemini-flash-latest', truncated: false,
+            files: [{ token: 'demo', name: 'figure_1.png', kind: 'image', size: 36000, preview: false }],
+          },
+          usage: { used, limit: 300 },
+        };
       },
       async chat(text, model, searching) {
         await sleep(1100 + Math.random() * 700);
@@ -1696,16 +1730,49 @@
 
   /* ---------- Готовые файлы: DOCX, PPTX, ZIP, HTML ---------- */
 
-  const FILE_ICONS = { docx: '📄', pptx: '🎞', zip: '🗂', html: '🌐' };
-  const FILE_KINDS = { docx: 'Документ Word', pptx: 'Презентация', zip: 'Архив проекта', html: 'Веб-страница' };
+  const FILE_ICONS = { docx: '📄', pptx: '🎞', zip: '🗂', html: '🌐', image: '📈', data: '📎' };
+  const FILE_KINDS = {
+    docx: 'Документ Word', pptx: 'Презентация', zip: 'Архив проекта', html: 'Веб-страница',
+    image: 'График', data: 'Файл из песочницы',
+  };
 
   function fileUrl(file) {
     return new URL('files/' + encodeURIComponent(file.token) + '/' + encodeURIComponent(file.name), window.location.href).href;
   }
 
+  // Картинка-заглушка для демо-режима: синусоида.
+  const DEMO_CHART = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect width="320" height="180" fill="#fff"/>' +
+    '<path d="M20 90 H300 M20 20 V160" stroke="#bbb"/><path d="' +
+    Array.from({ length: 57 }, (_, i) => (i ? 'L' : 'M') + (20 + i * 5) + ' ' + (90 - 55 * Math.sin(i * Math.PI / 28)).toFixed(1)).join(' ') +
+    '" fill="none" stroke="#1f77b4" stroke-width="2.5"/><text x="160" y="16" font-size="13" text-anchor="middle" font-family="sans-serif">Синус</text></svg>'
+  );
+
+  /* График из песочницы — сразу картинкой; по нажатию открывается целиком. */
+  function imageCard(file, index) {
+    const figure = el('button', 'file-image ripple');
+    figure.type = 'button';
+    figure.style.setProperty('--i', index);
+    figure.setAttribute('aria-label', 'Открыть ' + file.name);
+    const img = el('img', 'file-image__img');
+    img.alt = file.name;
+    img.loading = 'lazy';
+    img.src = DEMO ? DEMO_CHART : fileUrl(file);
+    img.addEventListener('load', () => {
+      if (state.stick) scrollToBottom(true);
+    });
+    figure.append(img, el('span', 'file-image__name', '📈 ' + file.name));
+    figure.addEventListener('click', () => downloadFile(file));
+    return figure;
+  }
+
   function fileCards(files) {
     const box = el('div', 'file-cards');
     files.forEach((file, index) => {
+      if (file.kind === 'image') {
+        box.append(imageCard(file, index));
+        return;
+      }
       const card = el('div', 'file-card');
       card.style.setProperty('--i', index);
       card.append(el('span', 'file-card__icon', FILE_ICONS[file.kind] || '📎'));
@@ -2088,6 +2155,14 @@
       },
       onStatus: (text) => {
         if (!live) typing.status(text);
+      },
+      // Эля запустила код: до результата под текстом видно, что он выполняется.
+      onRun: () => {
+        if (!live) {
+          typing.status('запускаю код…');
+          return;
+        }
+        live.view.push(live.text + '\n\n⏳ *Запускаю код…*');
       },
     });
 

@@ -88,6 +88,22 @@ else
         "Установить: sudo apt install ffmpeg fonts-dejavu-core и перезапустить бота." >&2
 fi
 
+step "Песочница для кода (Эля сама запускает Python и строит графики)"
+# Пакеты для графиков и расчётов — в .venv: им пользуются способы bwrap и process.
+"$VENV_DIR/bin/python" -m pip install --quiet --disable-pip-version-check -r sandbox/requirements.txt ||
+    echo "ВНИМАНИЕ: не удалось поставить numpy/pandas/matplotlib — код будет запускаться без них." >&2
+if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
+    # Самая надёжная изоляция — отдельный контейнер на каждый запуск.
+    docker build --quiet -t elya-sandbox sandbox >/dev/null &&
+        echo "Собран Docker-образ elya-sandbox: код запускается в контейнере без сети." ||
+        echo "ВНИМАНИЕ: не удалось собрать образ elya-sandbox (docker build -t elya-sandbox sandbox)." >&2
+elif command -v bwrap >/dev/null; then
+    echo "bubblewrap найден: код запускается в изолированном окружении без сети."
+else
+    echo "Совет: для полной изоляции кода поставь bubblewrap (sudo apt install bubblewrap)" \
+        "или Docker и перезапусти бота. Сейчас код запускается отдельным процессом с лимитами."
+fi
+
 step "Автозапуск после перезагрузки сервера (loginctl enable-linger)"
 if [[ "$(loginctl show-user "$USER_NAME" --property=Linger --value 2>/dev/null || true)" != yes ]]; then
     loginctl enable-linger "$USER_NAME" 2>/dev/null ||

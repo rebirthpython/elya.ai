@@ -1,0 +1,8 @@
+# Пакеты, которые доступны коду Эли в песочнице (графики, данные, математика).
+# Ставятся в образ песочницы (sandbox/Dockerfile), в образ бота (Dockerfile) и в .venv
+# (deploy/install.sh) — для способов bwrap и process код запускается тем же Python, что и бот.
+numpy==2.5.4
+pandas==3.1.1
+matplotlib==3.11.2
+scipy==1.18.1
+sympy==1.14.0
