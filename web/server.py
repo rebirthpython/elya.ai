@@ -35,6 +35,7 @@ from memory.repository import CHAT_BREAK
 from services.chat import ChatService
 from services.code_stats import project_code_lines
 from services.documents import MAX_DOCUMENT_BYTES, MAX_DOCUMENTS, DocumentError, parse_document
+from services.artifacts import OutputFile, attachments_json, parse_attachments, wants_presentation
 from services.drawing import Drawing, DrawingService, history_text
 from services.imagegen import ImageGenerationError, ImageLimitError, SourceImageError
 from services.instructions import MAX_INSTRUCTION_LENGTH, InstructionsStore
@@ -90,6 +91,7 @@ SPEECH = web.AppKey("speech", object)
 MODES_STORE = web.AppKey("modes", object)
 DRAWING = web.AppKey("drawing", object)
 SEARCH = web.AppKey("search", object)
+STUDY = web.AppKey("study", object)
 
 MAX_VOICE_BYTES = 5 * 1024 * 1024
 # Что умеет записывать браузер телефона → расширение файла для Whisper
@@ -140,11 +142,14 @@ def _timestamp(value: datetime) -> int:
 def _serialize(message: Message) -> dict[str, Any]:
     if message.role == CHAT_BREAK:
         return {"role": "break", "content": "", "ts": _timestamp(message.created_at)}
-    return {
+    data = {
         "role": "assistant" if message.role == "assistant" else "user",
         "content": message.content,
         "ts": _timestamp(message.created_at),
     }
+    if files := parse_attachments(getattr(message, "attachments", None)):
+        data["files"] = files
+    return data
 
 
 @web.middleware
@@ -676,15 +681,19 @@ def _ai_error(exc: AIError) -> tuple[int, str, str]:
 
 async def _reply_payload(app: web.Application, result: CompletionResult) -> dict[str, Any]:
     usage = app[USAGE]
+    reply = {
+        "role": "assistant",
+        "content": result.text,
+        "ts": int(datetime.now(timezone.utc).timestamp()),
+        "provider": result.provider,
+        "model": result.model,
+        "truncated": result.truncated,
+    }
+    files = [stored.as_dict() for _, stored in result.files if stored is not None]
+    if files:
+        reply["files"] = files
     return {
-        "reply": {
-            "role": "assistant",
-            "content": result.text,
-            "ts": int(datetime.now(timezone.utc).timestamp()),
-            "provider": result.provider,
-            "model": result.model,
-            "truncated": result.truncated,
-        },
+        "reply": reply,
         "usage": {"used": await usage.used_today(), "limit": usage.daily_limit},
     }
 
@@ -722,6 +731,129 @@ async def _answer(
     return web.json_response(await _reply_payload(app, result))
 
 
+# Предпросмотр чужого (сгенерированного) HTML: страница работает со своими скриптами и
+# стилями, но в изолированной «песочнице» — без доступа к приложению, его данным и cookie.
+_PREVIEW_CSP = (
+    "sandbox allow-scripts allow-forms allow-modals allow-popups allow-pointer-lock; "
+    "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; frame-ancestors 'self'"
+)
+
+
+async def get_file(request: web.Request) -> web.Response:
+    """GET /files/{token}/{name} — скачать готовый файл. Токен случайный и длинный: без него
+    файл не найти, поэтому ссылку можно открыть в браузере (Telegram скачивает по ссылке)."""
+    store = request.app[CHAT].files
+    record = await store.get(request.match_info["token"]) if store is not None else None
+    if record is None:
+        raise web.HTTPNotFound(text="Файл не найден или уже удалён.")
+    name = record.name.replace('"', "")
+    from urllib.parse import quote
+
+    return web.Response(
+        body=record.data,
+        headers={
+            "Content-Type": record.mime,
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}",
+            # Даже HTML здесь не выполняется в адресе приложения.
+            "Content-Security-Policy": "sandbox; default-src 'none'",
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
+
+
+async def get_preview(request: web.Request) -> web.Response:
+    """GET /preview/{token} — HTML-страница из ответа для предпросмотра в приложении."""
+    store = request.app[CHAT].files
+    record = await store.get(request.match_info["token"]) if store is not None else None
+    if record is None or record.kind != "html":
+        raise web.HTTPNotFound(text="Предпросмотр больше недоступен.")
+    return web.Response(
+        body=record.data,
+        headers={
+            "Content-Type": "text/html; charset=utf-8",
+            "Content-Security-Policy": _PREVIEW_CSP,
+            "X-Frame-Options": "SAMEORIGIN",
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
+
+
+async def post_file_info(request: web.Request) -> web.Response:
+    """{"token": "..."} — имя и вид файла (приложение открывает предпросмотр по кнопке из бота)."""
+    user: WebAppUser = request[_USER_KEY]
+    payload = await _read_json(request) or {}
+    store = request.app[CHAT].files
+    token = payload.get("token")
+    record = await store.get(token) if store is not None and isinstance(token, str) else None
+    if record is None or record.user_id != user.id:
+        return _error(404, "not_found", "Файл не найден или уже удалён.")
+    return web.json_response(
+        {"file": {"token": record.token, "name": record.name, "kind": record.kind,
+                  "size": len(record.data), "preview": record.kind == "html"}}
+    )
+
+
+async def _presentation_stream(request: web.Request, user: WebAppUser, text: str) -> web.StreamResponse:
+    """«Сделай презентацию про …» в приложении: план → слайды → PPTX (оформление по умолчанию).
+    Ход работы — событиями {"type": "status"}, в конце — ответ с файлом."""
+    from study.pipeline import Material, StudyError
+    from study.render_pptx import render_presentation
+    from study.sources import safe_filename
+    from study.themes import THEMES
+
+    app = request.app
+    study = app[STUDY]
+    response = web.StreamResponse(
+        headers={"Content-Type": "application/x-ndjson; charset=utf-8", "X-Accel-Buffering": "no"}
+    )
+    _apply_headers(request, response.headers)
+    await response.prepare(request)
+
+    async def emit(item: dict[str, Any]) -> None:
+        await response.write((json.dumps(item, ensure_ascii=False) + "\n").encode("utf-8"))
+
+    material = Material(text)
+    try:
+        await emit({"type": "status", "text": "составляю план презентации…"})
+        outline = await study.make_outline(material)
+        await emit({"type": "status", "text": f"пишу {len(outline.slides)} слайдов…"})
+        presentation = await study.make_presentation(material, outline)
+        theme = next(iter(THEMES.values()))
+        data = await asyncio.to_thread(render_presentation, presentation, theme)
+    except AIError as exc:
+        _, code, message = _ai_error(exc)
+        await emit({"type": "error", "error": {"code": code, "message": message}})
+        await response.write_eof()
+        return response
+    except StudyError:
+        await emit({"type": "error", "error": {"code": "study_failed", "message": "Не получилось собрать презентацию — попробуй ещё раз."}})
+        await response.write_eof()
+        return response
+
+    output = OutputFile(name=safe_filename(presentation.title, ".pptx"), data=data, kind="pptx")
+    store = app[CHAT].files
+    stored = await store.save(user.id, output) if store is not None else None
+    reply_text = (
+        f"🎞 Готова презентация «{presentation.title}» — {len(presentation.slides) + 2} слайдов, "
+        f"оформление «{theme.title}». Пункты появляются по щелчку, что говорить — в заметках "
+        "докладчика.\n\n" + outline.as_text()
+    )
+    await app[MEMORY].save_exchange(user.id, text, reply_text, attachments=attachments_json([stored] if stored else []))
+    bot: Bot | None = app[BOT]
+    if bot is not None:
+        try:
+            from aiogram.types import BufferedInputFile
+
+            await bot.send_document(user.id, BufferedInputFile(data, filename=output.name),
+                                    caption=f"🎞 «{presentation.title}» (из приложения)")
+        except TelegramAPIError as exc:
+            logger.warning("Could not send the presentation to the chat: %s", exc)
+    result = CompletionResult(text=reply_text, provider="study", model="", files=((output, stored),))
+    await emit({"type": "done", **await _reply_payload(app, result)})
+    await response.write_eof()
+    return response
+
+
 async def post_chat_stream(request: web.Request) -> web.StreamResponse:
     """Как /api/chat, но ответ приходит по мере генерации — построчно (NDJSON):
     {"type": "search", "query": "..."} — Эля ищет в интернете (если понадобилось),
@@ -743,6 +875,8 @@ async def post_chat_stream(request: web.Request) -> web.StreamResponse:
         return text
     if (limited := _rate_limited(app, user)) is not None:
         return limited
+    if not documents and app[STUDY] is not None and wants_presentation(text):
+        return await _presentation_stream(request, user, text)
     drawn = await _try_draw(request, user, text) if not documents else None
     if isinstance(drawn, web.Response):
         return drawn
@@ -1137,6 +1271,7 @@ def create_web_app(
     search: WebSearch | None = None,
     video: object | None = None,
     fsm_storage: object | None = None,
+    study: object | None = None,
 ) -> web.Application:
     """video, bot и fsm_storage — для монтажа видео: сессия общая с чатом, результат уходит в чат."""
     app = web.Application(
@@ -1158,10 +1293,20 @@ def create_web_app(
     app[BOT] = bot
     app[SEARCH] = search
     app[video_api.VIDEO] = video
+    if study is None:
+        from study.pipeline import StudyService
+
+        study = StudyService(
+            ai_client, assistant_name=settings.assistant_name, max_tokens=settings.study_max_output_tokens
+        )
+    app[STUDY] = study
     app[video_api.FSM_STORAGE] = fsm_storage
 
     app.router.add_get("/", index)
     app.router.add_get("/healthz", health)
+    app.router.add_get("/files/{token}/{name}", get_file)
+    app.router.add_get("/preview/{token}", get_preview)
+    app.router.add_post("/api/files/info", post_file_info)
     app.router.add_get("/api/state", get_state)
     app.router.add_post("/api/chat", post_chat)
     app.router.add_post("/api/chat/stream", post_chat_stream)

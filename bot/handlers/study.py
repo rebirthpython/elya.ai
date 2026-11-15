@@ -125,6 +125,11 @@ async def cmd_slides(message: Message, command: CommandObject, state: FSMContext
     await _start(message, state, bot, settings, KIND_SLIDES, command.args)
 
 
+async def start_slides(message: Message, state: FSMContext, bot: Bot, settings: Settings, request: str) -> None:
+    """Презентация по просьбе из обычного чата («сделай презентацию про космос»)."""
+    await _start(message, state, bot, settings, KIND_SLIDES, request)
+
+
 async def _add_material(message: Message, state: FSMContext, bot: Bot, settings: Settings,
                         text: str) -> None:
     user_id = message.from_user.id if message.from_user else 0

@@ -11,7 +11,13 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
-from aiogram.types import BufferedInputFile, Message
+from aiogram.types import (
+    BufferedInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    WebAppInfo,
+)
 from aiogram.utils.chat_action import ChatActionSender
 
 from ai.client import AllProvidersFailedError, DailyLimitExceededError, NoVisionModelError
@@ -30,6 +36,7 @@ from services.code import (
     looks_like_code,
     read_code_file,
 )
+from services.artifacts import OutputFile, wants_presentation
 from services.documents import PLAIN_TEXT_EXTENSIONS, is_document, unsupported_hint
 from services.modes import CODE, ModeStore
 from services.drawing import DrawingService
@@ -57,12 +64,31 @@ _FAILURE_TEXTS = {
 }
 
 
+async def maybe_presentation(
+    message: Message, bot: Bot, text: str, state: FSMContext | None, settings: Settings | None
+) -> bool:
+    """«Сделай презентацию про космос» — тот же путь, что /slides: план, оформление, PPTX."""
+    if state is None or settings is None or not wants_presentation(text):
+        return False
+    from bot.handlers.study import start_slides  # study импортирует этот модуль
+
+    await start_slides(message, state, bot, settings, text)
+    return True
+
+
 async def handle_text(
-    message: Message, bot: Bot, chat_service: ChatService, drawing: DrawingService | None = None
+    message: Message,
+    bot: Bot,
+    chat_service: ChatService,
+    drawing: DrawingService | None = None,
+    state: FSMContext | None = None,
+    settings: Settings | None = None,
 ) -> None:
     if message.from_user is None or not message.text or not message.text.strip():
         return
     text = message.text.strip()
+    if await maybe_presentation(message, bot, text, state, settings):
+        return
     if await maybe_draw(message, bot, drawing, text):
         return
     if await maybe_edit(message, bot, drawing, text):
@@ -77,6 +103,7 @@ async def handle_voice(
     speech: SpeechToText | None = None,
     drawing: DrawingService | None = None,
     state: FSMContext | None = None,
+    settings: Settings | None = None,
 ) -> None:
     """Голосовое → текст (Groq Whisper) → обычный ответ Эли (или картинка, если просят нарисовать)."""
     if message.from_user is None or message.voice is None:
@@ -107,6 +134,8 @@ async def handle_voice(
         # После /draw описание картинки можно надиктовать.
         await state.clear()
         await draw_and_send(message, bot, drawing, text, explicit=True)
+        return
+    if await maybe_presentation(message, bot, text, state, settings):
         return
     if await maybe_draw(message, bot, drawing, text):
         return
@@ -228,6 +257,37 @@ async def _send_code_files(message: Message, text: str) -> None:
             return
 
 
+_FILE_CAPTIONS = {
+    "docx": "📄 Документ Word — можно сразу открыть, распечатать или сдать",
+    "zip": "🗂 Проект целиком — распакуй архив, там все файлы по папкам",
+    "html": "🌐 Веб-страница — открой файл в браузере",
+}
+
+
+async def send_output_files(message: Message, files: tuple, settings: Settings | None) -> None:
+    """Готовые файлы к ответу: DOCX, ZIP, HTML (для HTML — кнопка предпросмотра в приложении)."""
+    for output, stored in files:
+        if not isinstance(output, OutputFile):
+            continue
+        caption = _FILE_CAPTIONS.get(output.kind, "📎 Файл")
+        markup = None
+        if output.preview and stored is not None and settings is not None and settings.webapp_enabled:
+            caption += " или посмотри в приложении 👇"
+            separator = "&" if "?" in settings.webapp_url else "?"
+            markup = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="👁 Посмотреть в приложении",
+                    web_app=WebAppInfo(url=f"{settings.webapp_url}{separator}preview={stored.token}"),
+                )
+            ]])
+        try:
+            await message.answer_document(
+                BufferedInputFile(output.data, filename=output.name), caption=caption, reply_markup=markup
+            )
+        except TelegramAPIError as exc:
+            logger.warning("Could not send the file %s: %s", output.name, exc)
+
+
 async def cmd_search(
     message: Message, command: CommandObject, bot: Bot, chat_service: ChatService
 ) -> None:
@@ -309,7 +369,11 @@ async def send_reply(
         reply = close_open_fence(reply)
         reply += "\n\n_(ответ обрезан из-за ограничения длины — напиши «продолжи»)_"
     await live.finish(reply)
-    await _send_code_files(message, result.text)
+    files = result.files
+    if not any(output.kind == "zip" for output, _ in files):
+        # Проект уже в архиве — по одному файлы не нужны.
+        await _send_code_files(message, result.text)
+    await send_output_files(message, files, chat_service.settings)
 
 
 async def handle_unsupported(message: Message) -> None:

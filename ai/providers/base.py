@@ -24,6 +24,8 @@ class CompletionResult:
     provider: str
     model: str
     truncated: bool = False
+    # Готовые файлы к ответу (services.artifacts.StoredFile) — заполняет ChatService.
+    files: tuple = ()
 
 
 class ProviderError(Exception):

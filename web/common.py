@@ -27,6 +27,7 @@ _CSP = (
     "img-src 'self' data: blob:; "
     "media-src 'self' blob:; "
     "connect-src 'self'; "
+    "frame-src 'self'; "  # предпросмотр HTML-страниц (/preview/…), изолированный sandbox
     "base-uri 'none'; "
     "form-action 'none'"
 )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -38,6 +38,8 @@ class Message(Base):
     # Чат, к которому относится сообщение (None — старая история до появления чатов).
     chat_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Готовые файлы к ответу (JSON: [{token, name, kind, size, preview}]) — для приложения.
+    attachments: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class DailyUsage(Base):
@@ -207,3 +209,18 @@ class ChatState(Base):
     chat_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Проекты по умолчанию уже созданы (если пользователь их удалит, они не вернутся).
     projects_seeded: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class UserFile(Base):
+    """Готовый файл к ответу (DOCX, PPTX, ZIP, HTML): приложение скачивает его по токену."""
+
+    __tablename__ = "user_files"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(16))
+    mime: Mapped[str] = mapped_column(String(120))
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

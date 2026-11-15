@@ -47,7 +47,7 @@ def create_session_factory(engine: AsyncEngine) -> async_sessionmaker:
 
 # Столбцы, добавленные после первых версий: в старой базе их нет, create_all их не добавит.
 _ADDED_COLUMNS = {
-    "messages": {"chat_id": "INTEGER"},
+    "messages": {"chat_id": "INTEGER", "attachments": "TEXT"},
     "user_documents": {"chat_id": "INTEGER", "project_id": "INTEGER"},
 }
 

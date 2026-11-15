@@ -24,15 +24,23 @@ class MessageRepository:
             await session.flush()
 
     async def add_exchange(
-        self, user_id: int, user_text: str, assistant_text: str, chat_id: int | None = None
+        self,
+        user_id: int,
+        user_text: str,
+        assistant_text: str,
+        chat_id: int | None = None,
+        attachments: str | None = None,
     ) -> None:
-        """Сохраняет пару «вопрос — ответ» в чат."""
+        """Сохраняет пару «вопрос — ответ» в чат; attachments — файлы к ответу (JSON)."""
         async with self._session_factory.begin() as session:
             await self._ensure_user(session, user_id)
             session.add_all(
                 [
                     Message(user_id=user_id, role="user", content=user_text, chat_id=chat_id),
-                    Message(user_id=user_id, role="assistant", content=assistant_text, chat_id=chat_id),
+                    Message(
+                        user_id=user_id, role="assistant", content=assistant_text, chat_id=chat_id,
+                        attachments=attachments,
+                    ),
                 ]
             )
 

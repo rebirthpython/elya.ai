@@ -28,6 +28,16 @@ from ai.prompts import (
 from ai.providers.base import ChatMessage, CompletionResult
 from config.settings import Settings
 from memory.manager import MemoryManager
+from services.artifacts import (
+    DOCUMENT_RULE,
+    PROJECT_RULE,
+    FileStore,
+    OutputFile,
+    attachments_json,
+    build_outputs,
+    wants_document,
+    wants_project,
+)
 from services.code import CodeFile, file_message
 from services.documents import (
     DEFAULT_DOCUMENT_QUESTION,
@@ -77,6 +87,7 @@ class ChatService:
         modes: ModeStore | None = None,
         search: WebSearch | None = None,
         documents: DocumentStore | None = None,
+        files: FileStore | None = None,
     ) -> None:
         self._settings = settings
         self._ai = ai_client
@@ -88,6 +99,7 @@ class ChatService:
         self._modes = modes
         self._search = search
         self._documents = documents
+        self._files = files
         self._background: set[asyncio.Task] = set()
         # Сообщения одного пользователя обрабатываются строго по очереди,
         # чтобы история диалога сохранялась в правильном порядке.
@@ -96,6 +108,15 @@ class ChatService:
     @property
     def search_enabled(self) -> bool:
         return self._search is not None
+
+    @property
+    def files(self) -> FileStore | None:
+        """Готовые файлы к ответам (DOCX, PPTX, ZIP, HTML); None — не сохраняются."""
+        return self._files
+
+    @property
+    def settings(self) -> Settings:
+        return self._settings
 
     @property
     def documents(self) -> DocumentStore | None:
@@ -129,7 +150,7 @@ class ChatService:
             if isinstance(event, CompletionResult):
                 result = event
         assert result is not None
-        return result
+        return result  # готовые файлы — в result.files
 
     async def ask_stream(
         self,
@@ -213,6 +234,11 @@ class ChatService:
                 names = [info.name for info in docs.documents if info.id in documents]
                 stored_text = document_history_text(names or ["документ"], user_text)
 
+            # Просят реферат или проект — модель пишет его целиком, а бот прикладывает файлы.
+            wants_doc = file is None and not images and wants_document(user_text)
+            wants_zip = file is None and not images and wants_project(user_text)
+            output_rules = (DOCUMENT_RULE if wants_doc else "") + (PROJECT_RULE if wants_zip else "")
+
             def context(rule: str = NO_INTERNET_RULE, results: str = "") -> list[ChatMessage]:
                 return build_context(
                     build_system_prompt(
@@ -222,7 +248,8 @@ class ChatService:
                         verbosity=prefs.verbosity,
                         memory=recall.prompt_block() if recall else "",
                         instructions=(custom.prompt_block() if custom else "")
-                        + (project.prompt_block() if project else ""),
+                        + (project.prompt_block() if project else "")
+                        + output_rules,
                         mode=chat_mode,
                         can_draw=settings.images_enabled,
                         internet_rule=rule,
@@ -251,6 +278,11 @@ class ChatService:
                 if coding
                 else {}
             )
+            if wants_doc or wants_zip:
+                # Реферат или проект длиннее обычного ответа.
+                options["max_tokens"] = max(
+                    options.get("max_tokens", 0), settings.study_max_output_tokens, settings.max_output_tokens
+                )
             result: CompletionResult | None = None
             if search_mode is None:
                 async for event in self._ai.stream(context(), prefer=prefer, **options):
@@ -307,7 +339,13 @@ class ChatService:
                     assert result is not None
                     result = dataclasses.replace(result, text=strip_markers(result.text) or result.text)
             assert result is not None
-            await self._memory.save_exchange(user_id, stored_text, result.text, chat_id=chat.id)
+            stored_files = await self._attach_files(user_id, user_text, result.text, coding)
+            if stored_files:
+                result = dataclasses.replace(result, files=tuple(stored_files))
+            await self._memory.save_exchange(
+                user_id, stored_text, result.text, chat_id=chat.id,
+                attachments=attachments_json([stored for _, stored in stored_files if stored is not None]),
+            )
 
         if user_text and recall and recall.enabled and self._long_memory.worth_extracting(user_text):
             self._spawn(
@@ -316,6 +354,21 @@ class ChatService:
                 )
             )
         yield result
+
+    async def _attach_files(
+        self, user_id: int, request: str, answer: str, coding: bool
+    ) -> list[tuple[OutputFile, object]]:
+        """Файлы из ответа (DOCX, ZIP, HTML) и их записи в хранилище (None — не сохранён)."""
+        try:
+            outputs = await asyncio.to_thread(build_outputs, request, answer, code_mode=coding)
+        except Exception:  # noqa: BLE001 — файл — дополнение, ответ важнее
+            logger.exception("Could not build files for the answer")
+            return []
+        result = []
+        for output in outputs:
+            stored = await self._files.save(user_id, output) if self._files is not None else None
+            result.append((output, stored))
+        return result
 
     def _search_mode(self, text: str, images: tuple[str, ...], search: bool | None) -> str | None:
         """None — без поиска, "auto" — модель решает сама, "force" — искать обязательно."""

@@ -217,6 +217,7 @@
     images: { enabled: false },
     drawerAnim: null,
     drawerClosing: false,
+    preview: null, // открытый предпросмотр HTML
     chat: null, // открытый чат
     chats: [],
     projects: [],
@@ -463,7 +464,9 @@
           return;
         }
         if (event.type === 'delta' && event.text) onDelta(event.text);
-        else if (event.type === 'search') {
+        else if (event.type === 'status') {
+          if (extra && extra.onStatus) extra.onStatus(String(event.text || ''));
+        } else if (event.type === 'search') {
           if (extra && extra.onSearch) extra.onSearch(String(event.query || ''));
         } else if (event.type === 'done') result = event;
         else if (event.type === 'error') {
@@ -541,6 +544,7 @@
     },
     drawAgain: (id) => request('api/draw/again', { id }),
     drawSelect: (id) => request('api/draw/select', { id }),
+    fileInfo: (token) => request('api/files/info', { token }),
   };
 
   /* Ошибка из ответа сервера (JSON с полем error) или по статусу. */
@@ -1000,6 +1004,14 @@
         }
         const data = await this.chat(text, model, searching);
         if (data.reply.provider === 'reminders' || data.reply.image) return data;
+        if (/реферат|доклад|в ворд/i.test(text)) {
+          data.reply.files = [{ token: 'demo', name: 'Реферат.docx', kind: 'docx', size: 38400, preview: false }];
+        } else if (/сайт|страниц|лендинг/i.test(text)) {
+          data.reply.files = [
+            { token: 'demo', name: 'sayt-vizitka.zip', kind: 'zip', size: 5200, preview: false },
+            { token: 'demo', name: 'index.html', kind: 'html', size: 4100, preview: true },
+          ];
+        }
         const words = data.reply.content.split(/(\s+)/);
         for (let i = 0; i < words.length; i += 4) {
           onDelta(words.slice(i, i + 4).join(''));
@@ -1385,6 +1397,7 @@
         meta.append(copyChip(message.content, 'Копировать'));
         if (!(options && options.reveal)) bubble.append(window.ElyaMarkdown.render(message.content));
       }
+      if (message.files && message.files.length) root.append(fileCards(message.files));
     } else if (options && options.file) {
       bubble.append(el('span', 'bubble__file', options.file.icon + ' ' + options.file.name));
       if (message.content) bubble.append(el('span', 'bubble__caption', message.content));
@@ -1537,6 +1550,127 @@
       meta.insertBefore(model, copy);
     }
     live.view.end(reply.content);
+    if (reply.files && reply.files.length) {
+      live.item.root.insertBefore(fileCards(reply.files), meta);
+      if (state.stick) scrollToBottom(true);
+    }
+  }
+
+  /* ---------- Готовые файлы: DOCX, PPTX, ZIP, HTML ---------- */
+
+  const FILE_ICONS = { docx: '📄', pptx: '🎞', zip: '🗂', html: '🌐' };
+  const FILE_KINDS = { docx: 'Документ Word', pptx: 'Презентация', zip: 'Архив проекта', html: 'Веб-страница' };
+
+  function fileUrl(file) {
+    return new URL('files/' + encodeURIComponent(file.token) + '/' + encodeURIComponent(file.name), window.location.href).href;
+  }
+
+  function fileCards(files) {
+    const box = el('div', 'file-cards');
+    files.forEach((file, index) => {
+      const card = el('div', 'file-card');
+      card.style.setProperty('--i', index);
+      card.append(el('span', 'file-card__icon', FILE_ICONS[file.kind] || '📎'));
+      const text = el('span', 'file-card__text');
+      text.append(
+        el('span', 'file-card__name', file.name),
+        el('span', 'file-card__meta', (FILE_KINDS[file.kind] || 'Файл') + (file.size ? ' · ' + formatSize(file.size) : ''))
+      );
+      card.append(text);
+      const actions = el('span', 'file-card__actions');
+      if (file.preview) {
+        const look = el('button', 'file-card__btn file-card__btn--main ripple', '👁 Открыть');
+        look.type = 'button';
+        look.addEventListener('click', () => openPreview(file));
+        actions.append(look);
+      }
+      const save = el('button', 'file-card__btn ripple' + (file.preview ? '' : ' file-card__btn--main'), 'Скачать');
+      save.type = 'button';
+      save.addEventListener('click', () => downloadFile(file));
+      actions.append(save);
+      card.append(actions);
+      box.append(card);
+    });
+    return box;
+  }
+
+  function downloadFile(file) {
+    if (DEMO) {
+      showToast('В демо-режиме файлы не скачиваются — в Telegram придёт настоящий ' + file.name);
+      return;
+    }
+    const url = fileUrl(file);
+    haptic('impact', 'light');
+    try {
+      if (supports('8.0') && typeof tg.downloadFile === 'function') {
+        tg.downloadFile({ url, file_name: file.name });
+        return;
+      }
+      if (IN_TELEGRAM && typeof tg.openLink === 'function') {
+        tg.openLink(url);
+        return;
+      }
+    } catch (error) { /* старый клиент — откроем ссылку как есть */ }
+    window.open(url, '_blank', 'noopener');
+  }
+
+  /* Предпросмотр HTML: страница в изолированной «песочнице» поверх чата. */
+  function openPreview(file) {
+    closePreview(true);
+    const layer = el('div', 'preview');
+    layer.setAttribute('role', 'dialog');
+    layer.setAttribute('aria-label', 'Предпросмотр: ' + file.name);
+    const head = el('div', 'preview__head');
+    const title = el('span', 'preview__title', '🌐 ' + file.name);
+    const save = el('button', 'preview__btn ripple', 'Скачать');
+    save.type = 'button';
+    save.addEventListener('click', () => downloadFile(file));
+    const close = el('button', 'icon-btn icon-btn--soft ripple preview__close');
+    close.type = 'button';
+    close.setAttribute('aria-label', 'Закрыть предпросмотр');
+    close.append(icon('i-close'));
+    close.addEventListener('click', () => closePreview());
+    head.append(title, save, close);
+    const frame = el('iframe', 'preview__frame');
+    frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-modals allow-popups allow-pointer-lock');
+    frame.setAttribute('referrerpolicy', 'no-referrer');
+    frame.title = file.name;
+    frame.src = DEMO ? 'about:blank' : new URL('preview/' + encodeURIComponent(file.token), window.location.href).href;
+    if (DEMO) frame.srcdoc = '<p style="font:16px sans-serif;padding:24px">Здесь откроется страница из ответа Эли.</p>';
+    layer.append(head, frame);
+    document.body.append(layer);
+    state.preview = layer;
+    motion(layer, [{ opacity: 0, transform: 'translateY(24px) scale(0.98)' }, { opacity: 1, transform: 'none' }],
+      { duration: 360, easing: 'cubic-bezier(0.2, 1, 0.3, 1)' });
+    if (supports('6.1')) tg.BackButton.show();
+    haptic('impact', 'light');
+  }
+
+  function closePreview(instant) {
+    const layer = state.preview;
+    if (!layer) return false;
+    state.preview = null;
+    if (supports('6.1') && dom.sheet.hidden && dom.drawer.hidden) tg.BackButton.hide();
+    if (instant || reducedMotion) {
+      layer.remove();
+    } else {
+      const out = motion(layer, [{ opacity: 1 }, { opacity: 0, transform: 'translateY(24px)' }], { duration: 200, fill: 'forwards' });
+      if (out) out.onfinish = () => layer.remove();
+      else layer.remove();
+    }
+    return true;
+  }
+
+  /* Кнопка «Посмотреть в приложении» под HTML в чате с ботом открывает приложение с ?preview=. */
+  async function openPreviewFromLink() {
+    const token = query.get('preview');
+    if (!token || DEMO) return;
+    try {
+      const data = await backend.fileInfo(token);
+      openPreview(data.file);
+    } catch (error) {
+      showToast(error.message);
+    }
   }
 
   function addContinueButton() {
@@ -1590,6 +1724,12 @@
       root.classList.add('typing--search');
       setHint(query ? 'ищу в интернете: «' + query + '»…' : 'ищу в интернете…');
       timers = TYPING_HINTS.slice(1).map(([delay, text]) => setTimeout(() => setHint(text), delay + 4000));
+    };
+    /* Долгая работа (презентация): что сейчас делается. */
+    root.status = (text) => {
+      timers.forEach(clearTimeout);
+      timers = [];
+      setHint(text);
     };
     /* Документ загружается и читается — до ответа может пройти пара секунд. */
     root.reading = () => {
@@ -1807,6 +1947,9 @@
       documents,
       onSearch: (query) => {
         if (!live) typing.searching(query);
+      },
+      onStatus: (text) => {
+        if (!live) typing.status(text);
       },
     });
 
@@ -4093,6 +4236,7 @@
     renderHistory(data.history || []);
     updateComposer();
     hideGate();
+    openPreviewFromLink();
     if (query.get('open') === 'instructions' && state.instructions) {
       setTimeout(() => {
         openSheet();
@@ -4260,6 +4404,7 @@
     dom.backdrop.addEventListener('click', closeSheet);
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') {
+        if (closePreview()) return;
         if (!dom.drawer.hidden) closeDrawer();
         else if (state.sheetPage === 'instructions') leaveInstructionsPage();
         else closeSheet();
@@ -4391,6 +4536,7 @@
       // Кнопка «Назад» Telegram: из инструкций — к настройкам, из настроек — закрыть.
       if (supports('6.1')) {
         tg.BackButton.onClick(() => {
+          if (closePreview()) return;
           if (!dom.drawer.hidden) closeDrawer();
           else if (state.sheetPage === 'instructions') leaveInstructionsPage();
           else closeSheet();

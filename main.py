@@ -37,6 +37,7 @@ from memory.chats import ChatStore
 from memory.manager import MemoryManager
 from memory.repository import MessageRepository
 from services.chat import ChatService
+from services.artifacts import FileStore
 from services.documents import DocumentStore
 from services.drawing import DrawingService
 from services.imagegen import ImageGenerator, build_image_backends
@@ -254,6 +255,7 @@ async def run(settings: Settings) -> None:
         modes=modes,
         search=search,
         documents=documents,
+        files=FileStore(session_factory),
     )
     limiter = SlidingWindowLimiter(settings.rate_limit_per_minute)
 

@@ -39,10 +39,17 @@ class MemoryManager:
         return await self._repository.get_recent(user_id, limit, chat_id=chat_id)
 
     async def save_exchange(
-        self, user_id: int, user_text: str, assistant_text: str, chat_id: int | None = None
+        self,
+        user_id: int,
+        user_text: str,
+        assistant_text: str,
+        chat_id: int | None = None,
+        attachments: str | None = None,
     ) -> None:
         chat_id = await self._chat_id(user_id, chat_id)
-        await self._repository.add_exchange(user_id, user_text, assistant_text, chat_id=chat_id)
+        await self._repository.add_exchange(
+            user_id, user_text, assistant_text, chat_id=chat_id, attachments=attachments
+        )
         await self.chats.touch(user_id, chat_id, user_text)
 
     async def start_new_chat(self, user_id: int, **kwargs) -> tuple[ChatInfo, bool]:
