@@ -11,4 +11,14 @@ def test_counts_source_lines_and_skips_environment(tmp_path):
         folder = tmp_path / skipped
         folder.mkdir(parents=True)
         (folder / "junk.py").write_text("1\n" * 50)
-    assert count_code_lines(tmp_path) == 6
+    assert count_code_lines(tmp_path, use_git=False) == 6
+
+
+def test_with_git_only_tracked_files_count(tmp_path):
+    import subprocess
+    (tmp_path / "main.py").write_text("a = 1\nb = 2\n")
+    (tmp_path / "stray").mkdir()
+    (tmp_path / "stray" / "copy.py").write_text("1\n" * 100)  # посторонний файл
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "main.py"], cwd=tmp_path, check=True)
+    assert count_code_lines(tmp_path) == 2
