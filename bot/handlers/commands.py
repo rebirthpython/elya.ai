@@ -81,6 +81,7 @@ async def cmd_start(
         "спланировать день или просто поболтать. Я помню контекст нашего разговора.\n\n"
         f"{app_note}"
         "🎨 Напиши «нарисуй …» или /draw — нарисую картинку.\n"
+        "📄 Пришли PDF, Word или таблицу — найду ответ и укажу страницы, а два файла сравню.\n"
         "📝 /notes — сделаю конспект или сокращу лекцию, 🎞 /slides — соберу презентацию, "
         "🎬 /video — смонтирую видео (или просто пришли его мне), "
         "👩‍💻 /code — режим кода: пишу программы и ищу ошибки.\n\n"
@@ -120,6 +121,7 @@ async def cmd_help(
         "🎞 Делать презентации с анимациями и заметками докладчика\n"
         "🎬 Монтировать видео: обрезать, склеить, ускорить, убрать паузы, субтитры, вертикальный формат\n"
         "👩‍💻 Программировать: писать и объяснять код, искать ошибки, разбирать файлы\n"
+        "📄 Читать документы (PDF, Word, Excel, CSV): находить ответ со ссылками на страницы и сравнивать файлы\n"
         "🎨 Рисовать картинки: просто напиши «нарисуй …»\n"
         f"{search_line}"
         "🗓 Помогать с планированием и организацией дел\n\n"
@@ -130,6 +132,7 @@ async def cmd_help(
         "/code — режим кода (выключить: /code off)\n"
         "/draw — нарисовать картинку по описанию\n"
         "/search — найти в интернете и ответить со ссылками на источники\n"
+        "/docs — документы в разговоре (пришли файл, чтобы добавить)\n"
         "/start — приветствие\n"
         "/help — эта справка\n"
         "/models — какие нейросети подключены\n"
@@ -406,10 +409,15 @@ async def cmd_clear(message: Message) -> None:
 
 
 async def on_clear_confirm(
-    callback: CallbackQuery, callback_data: ClearHistoryCallback, memory: MemoryManager
+    callback: CallbackQuery,
+    callback_data: ClearHistoryCallback,
+    memory: MemoryManager,
+    chat_service: ChatService | None = None,
 ) -> None:
     if callback_data.confirm:
         deleted = await memory.clear_history(callback.from_user.id)
+        if chat_service is not None and chat_service.documents is not None:
+            await chat_service.documents.clear(callback.from_user.id)
         text = f"🗑 История очищена (удалено сообщений: {deleted}). Начнём с чистого листа!"
     else:
         text = "Хорошо, история сохранена."

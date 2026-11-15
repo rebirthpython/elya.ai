@@ -36,6 +36,7 @@ from database.session import (
 from memory.manager import MemoryManager
 from memory.repository import MessageRepository
 from services.chat import ChatService
+from services.documents import DocumentStore
 from services.drawing import DrawingService
 from services.imagegen import ImageGenerator, build_image_backends
 from bot.handlers.reminders import make_sender
@@ -63,6 +64,7 @@ BOT_COMMANDS = [
     BotCommand(command="code", description="Режим кода: пишу и разбираю программы"),
     BotCommand(command="draw", description="Нарисовать картинку"),
     BotCommand(command="search", description="Найти в интернете со ссылками на источники"),
+    BotCommand(command="docs", description="Документы в разговоре: PDF, Word, таблицы"),
     BotCommand(command="help", description="Что я умею"),
     BotCommand(command="models", description="Подключённые нейросети"),
     BotCommand(command="reminders", description="Мои напоминания"),
@@ -233,6 +235,7 @@ async def run(settings: Settings) -> None:
         assistant_name=settings.assistant_name,
     )
     search = create_web_search(settings, http_client, session_factory)
+    documents = DocumentStore(session_factory, context_chars=settings.documents_context_chars)
     chat_service = ChatService(
         settings,
         ai_client,
@@ -243,6 +246,7 @@ async def run(settings: Settings) -> None:
         instructions=instructions,
         modes=modes,
         search=search,
+        documents=documents,
     )
     limiter = SlidingWindowLimiter(settings.rate_limit_per_minute)
 

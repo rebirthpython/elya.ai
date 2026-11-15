@@ -33,6 +33,7 @@ from memory.manager import MemoryManager
 from memory.repository import CHAT_BREAK
 from services.chat import ChatService
 from services.code_stats import project_code_lines
+from services.documents import MAX_DOCUMENT_BYTES, MAX_DOCUMENTS, DocumentError, parse_document
 from services.drawing import Drawing, DrawingService, history_text
 from services.imagegen import ImageGenerationError, ImageLimitError
 from services.instructions import MAX_INSTRUCTION_LENGTH, InstructionsStore
@@ -315,11 +316,83 @@ async def get_state(request: web.Request) -> web.Response:
             "instructions": await _instructions_payload(app[INSTRUCTIONS], user.id),
             "memory": await _memory_payload(app[LONG_MEMORY], user.id),
             "reminders": await _reminders_payload(app[REMINDERS], user.id),
+            "documents": await _documents_payload(app, user.id),
             "video": await video_api.state_payload(app, user.id),
             "preference_options": preference_options(),
             "about": {"code_lines": await asyncio.to_thread(project_code_lines)},
         }
     )
+
+
+async def _documents_payload(app: web.Application, user_id: int) -> list[dict[str, Any]] | None:
+    """Документы разговора; None — функция на сервере не подключена."""
+    store = app[CHAT].documents
+    if store is None:
+        return None
+    return [info.as_dict() for info in await store.list(user_id)]
+
+
+def _document_ids(payload: dict[str, Any] | None) -> tuple[int, ...]:
+    """Поле "documents": [id, …] — документы, присланные вместе с этим сообщением."""
+    raw = payload.get("documents") if payload else None
+    if not isinstance(raw, list):
+        return ()
+    ids = [item for item in raw if isinstance(item, int) and not isinstance(item, bool) and item > 0]
+    return tuple(dict.fromkeys(ids))[:MAX_DOCUMENTS]
+
+
+async def post_document(request: web.Request) -> web.Response:
+    """multipart: file — PDF, Word, Excel, CSV или текст. Документ добавляется в разговор;
+    вопрос по нему потом идёт обычным сообщением с полем "documents"."""
+    user: WebAppUser = request[_USER_KEY]
+    store = request.app[CHAT].documents
+    if store is None:
+        return _error(503, "documents_off", "Чтение документов на сервере выключено.")
+    if not request.content_type.startswith("multipart/"):
+        return _error(400, "bad_request", "Некорректный запрос.")
+    data: bytes | None = None
+    filename = ""
+    try:
+        reader = await request.multipart()
+        async for part in reader:
+            if part.name == "file":
+                filename = part.filename or ""
+                data = await _read_part(part, MAX_DOCUMENT_BYTES)
+                if data is None:
+                    return _error(413, "too_large", "Файл слишком большой: я читаю документы до 20 МБ.")
+    except (ValueError, AssertionError):  # битый multipart
+        return _error(400, "bad_request", "Некорректный запрос.")
+    if data is None:
+        return _error(400, "bad_request", "Нет файла.")
+    try:
+        parsed = await asyncio.to_thread(parse_document, filename, data)
+    except DocumentError as exc:
+        return _error(415, "bad_document", str(exc))
+    info = await store.add(user.id, parsed)
+    return web.json_response(
+        {
+            "document": info.as_dict(),
+            "truncated": parsed.truncated,
+            "documents": await _documents_payload(request.app, user.id),
+        }
+    )
+
+
+async def post_documents_delete(request: web.Request) -> web.Response:
+    """{"id": n} — убрать документ из разговора, {"all": true} — убрать все."""
+    user: WebAppUser = request[_USER_KEY]
+    store = request.app[CHAT].documents
+    if store is None:
+        return _error(503, "documents_off", "Чтение документов на сервере выключено.")
+    payload = await _read_json(request) or {}
+    if payload.get("all") is True:
+        await store.clear(user.id)
+    else:
+        document_id = payload.get("id")
+        if not isinstance(document_id, int) or isinstance(document_id, bool):
+            return _error(400, "bad_request", "Некорректный запрос.")
+        await store.delete(user.id, document_id)
+    return web.json_response({"documents": await _documents_payload(request.app, user.id)})
 
 
 async def _images_payload(drawing: DrawingService | None) -> dict[str, Any]:
@@ -553,16 +626,24 @@ async def post_chat_stream(request: web.Request) -> web.StreamResponse:
     """Как /api/chat, но ответ приходит по мере генерации — построчно (NDJSON):
     {"type": "search", "query": "..."} — Эля ищет в интернете (если понадобилось),
     {"type": "delta", "text": "..."} … и в конце {"type": "done", "reply": …, "usage": …}
-    или {"type": "error", "error": {...}}. Ошибки до начала ответа — обычный JSON со статусом."""
+    или {"type": "error", "error": {...}}. Ошибки до начала ответа — обычный JSON со статусом.
+
+    "documents": [id, …] — сообщение к только что загруженным документам (/api/document);
+    текст тогда можно не писать — Эля расскажет, о чём документ."""
     app = request.app
     user: WebAppUser = request[_USER_KEY]
     payload = await _read_json(request)
-    text = await _check_text(request, user, payload.get("text") if payload else None)
+    documents = _document_ids(payload)
+    raw_text = payload.get("text") if payload else None
+    if documents and (raw_text is None or (isinstance(raw_text, str) and not raw_text.strip())):
+        text = ""
+    else:
+        text = await _check_text(request, user, raw_text)
     if isinstance(text, web.Response):
         return text
     if (limited := _rate_limited(app, user)) is not None:
         return limited
-    drawn = await _try_draw(request, user, text)
+    drawn = await _try_draw(request, user, text) if not documents else None
     if isinstance(drawn, web.Response):
         return drawn
     if drawn is not None:
@@ -579,6 +660,7 @@ async def post_chat_stream(request: web.Request) -> web.StreamResponse:
         user_name=user.first_name,
         prefer=_resolve_model(app[AI_CLIENT], payload.get("model")),
         search=_search_flag(payload),
+        documents=documents,
     )
     try:
         # Ждём начала ответа: если модель недоступна, честнее вернуть обычную ошибку.
@@ -782,6 +864,8 @@ async def post_voice(request: web.Request) -> web.Response:
 async def post_clear(request: web.Request) -> web.Response:
     user: WebAppUser = request[_USER_KEY]
     deleted = await request.app[MEMORY].clear_history(user.id)
+    if (store := request.app[CHAT].documents) is not None:
+        await store.clear(user.id)
     return web.json_response({"deleted": deleted})
 
 
@@ -790,6 +874,8 @@ async def post_new_chat(request: web.Request) -> web.Response:
     user: WebAppUser = request[_USER_KEY]
     memory = request.app[MEMORY]
     started = await memory.start_new_chat(user.id) is not None
+    if (store := request.app[CHAT].documents) is not None:
+        await store.clear(user.id)  # документы принадлежат разговору
     timeline = await memory.get_timeline(user.id, TIMELINE_LIMIT)
     return web.json_response({"started": started, "history": [_serialize(m) for m in timeline]})
 
@@ -862,6 +948,8 @@ def create_web_app(
     app.router.add_post("/api/reminders/delete", post_reminder_delete)
     app.router.add_post("/api/voice", post_voice)
     app.router.add_post("/api/photo", post_photo)
+    app.router.add_post("/api/document", post_document)
+    app.router.add_post("/api/documents/delete", post_documents_delete)
     app.router.add_post("/api/draw/again", post_draw_again)
     video_api.add_routes(app)
     app.router.add_static("/assets/", WEBAPP_DIR / "assets")

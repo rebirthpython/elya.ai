@@ -149,3 +149,18 @@ class UserMode(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class UserDocument(Base):
+    """Документ, присланный в разговор (PDF, Word, таблица): фрагменты с пометками места."""
+
+    __tablename__ = "user_documents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(16))  # pdf | docx | xlsx | csv | text
+    info: Mapped[str] = mapped_column(String(200))  # «PDF, 230 стр.»
+    chars: Mapped[int] = mapped_column(Integer, default=0)
+    content: Mapped[str] = mapped_column(Text)  # JSON: [[пометка, текст], …]
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

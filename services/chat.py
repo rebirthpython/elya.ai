@@ -29,6 +29,13 @@ from ai.providers.base import ChatMessage, CompletionResult
 from config.settings import Settings
 from memory.manager import MemoryManager
 from services.code import CodeFile, file_message
+from services.documents import (
+    DEFAULT_DOCUMENT_QUESTION,
+    DEFAULT_DOCUMENTS_QUESTION,
+    DocumentContext,
+    DocumentStore,
+)
+from services.documents import history_text as document_history_text
 from services.instructions import InstructionsStore
 from services.longterm import LongTermMemory
 from services.modes import CODE, DEFAULT_MODE, ModeStore
@@ -69,6 +76,7 @@ class ChatService:
         instructions: InstructionsStore | None = None,
         modes: ModeStore | None = None,
         search: WebSearch | None = None,
+        documents: DocumentStore | None = None,
     ) -> None:
         self._settings = settings
         self._ai = ai_client
@@ -79,6 +87,7 @@ class ChatService:
         self._instructions = instructions
         self._modes = modes
         self._search = search
+        self._documents = documents
         self._background: set[asyncio.Task] = set()
         # Сообщения одного пользователя обрабатываются строго по очереди,
         # чтобы история диалога сохранялась в правильном порядке.
@@ -87,6 +96,11 @@ class ChatService:
     @property
     def search_enabled(self) -> bool:
         return self._search is not None
+
+    @property
+    def documents(self) -> DocumentStore | None:
+        """Документы разговора (PDF, Word, таблицы); None — функция выключена."""
+        return self._documents
 
     @property
     def search_auto(self) -> bool:
@@ -103,13 +117,14 @@ class ChatService:
         images: tuple[str, ...] = (),
         file: CodeFile | None = None,
         search: bool | None = None,
+        documents: tuple[int, ...] = (),
     ) -> CompletionResult:
         """Отвечает на сообщение и сохраняет обмен. Ошибки ИИ (AIError) пробрасываются,
         история при этом не меняется."""
         result: CompletionResult | None = None
         async for event in self.ask_stream(
             user_id, user_text, user_name=user_name, prefer=prefer, images=images, file=file,
-            search=search,
+            search=search, documents=documents,
         ):
             if isinstance(event, CompletionResult):
                 result = event
@@ -126,6 +141,7 @@ class ChatService:
         images: tuple[str, ...] = (),
         file: CodeFile | None = None,
         search: bool | None = None,
+        documents: tuple[int, ...] = (),
     ) -> AsyncIterator[str | SearchStarted | CompletionResult]:
         """Как ask(), но по частям: строки — новый текст ответа по мере генерации,
         SearchStarted — Эля ищет в интернете, последним — CompletionResult. Обмен
@@ -137,10 +153,19 @@ class ChatService:
 
         search: True — обязательно поискать (кнопка в Mini App, /search), False — не искать,
         None — по просьбе в тексте или по решению модели (если включён SEARCH_AUTO).
+
+        documents — id документов, присланных вместе с этим сообщением. Документы разговора
+        учитываются и без этого: к каждому сообщению подбираются подходящие фрагменты.
         """
         settings = self._settings
         if file is not None:
             question = stored_text = file_message(file, user_text)
+        elif documents:
+            # Файл без вопроса — Эля коротко рассказывает, о чём он.
+            question = user_text.strip() or (
+                DEFAULT_DOCUMENT_QUESTION if len(documents) == 1 else DEFAULT_DOCUMENTS_QUESTION
+            )
+            stored_text = ""  # имена файлов станут известны ниже, из хранилища
         else:
             # С фото: модель получает подпись (или вопрос по умолчанию), а в историю
             # попадает пометка «📷 Фото: подпись» — сама картинка не хранится.
@@ -152,7 +177,13 @@ class ChatService:
             looks_like_code = coding and (
                 len(user_text) > _CODE_REMINDER_MAX_CHARS or "```" in user_text
             )
-            if self._reminders is not None and not images and file is None and not looks_like_code:
+            if (
+                self._reminders is not None
+                and not images
+                and file is None
+                and not documents
+                and not looks_like_code
+            ):
                 # Просьба «напомни …» обрабатывается кодом, а не моделью: так Эля не может
                 # пообещать напоминание, которого нет. Ошибки ИИ (AIError) идут как обычно.
                 handled = await self._reminders.handle_chat_request(user_id, user_text)
@@ -169,6 +200,12 @@ class ChatService:
             )
             recall = await self._long_memory.recall(user_id) if self._long_memory else None
             custom = await self._instructions.get(user_id) if self._instructions else None
+            docs = DocumentContext()
+            if self._documents is not None and not images and file is None:
+                docs = await self._documents.context(user_id, question, fresh=documents)
+            if documents:
+                names = [info.name for info in docs.documents if info.id in documents]
+                stored_text = document_history_text(names or ["документ"], user_text)
 
             def context(rule: str = NO_INTERNET_RULE, results: str = "") -> list[ChatMessage]:
                 return build_context(
@@ -183,6 +220,7 @@ class ChatService:
                         can_draw=settings.images_enabled,
                         internet_rule=rule,
                         search_results=results,
+                        documents=docs.block,
                     ),
                     history,
                     question,
@@ -194,6 +232,9 @@ class ChatService:
 
             # Файл с кодом — это не поисковый вопрос: по нему не ищем.
             search_mode = self._search_mode(user_text, images, search) if file is None else None
+            if docs.relevant and search is not True and not wants_search(user_text):
+                # Вопрос по присланному документу: ответ в нём, а не в интернете.
+                search_mode = None
             # В режиме кода ответ длиннее и точнее: больше токенов, ниже температура.
             options = (
                 {

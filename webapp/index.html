@@ -131,6 +131,10 @@
         <span class="video-bar__text" id="video-bar-text">Монтаж</span>
         <button class="video-bar__done ripple" id="video-done" type="button">Готово</button>
       </div>
+      <div class="docs-bar" id="docs-bar" hidden>
+        <span class="docs-bar__label">Документы:</span>
+        <div class="docs-bar__list" id="docs-list" role="list" aria-label="Документы в разговоре"></div>
+      </div>
       <div class="attachment" id="attachment" hidden>
         <img class="attachment__img" id="attachment-img" alt="Выбранное фото">
         <div class="attachment__file" id="attachment-file" hidden>
@@ -141,7 +145,7 @@
       </div>
       <div class="composer__box" id="composer-box">
         <span class="composer__glow" aria-hidden="true"></span>
-        <button class="attach-btn ripple" id="attach" type="button" aria-label="Прикрепить фото или видео"><svg><use href="#i-clip"/></svg></button>
+        <button class="attach-btn ripple" id="attach" type="button" aria-label="Прикрепить фото, видео или документ"><svg><use href="#i-clip"/></svg></button>
         <button class="search-btn ripple" id="search-toggle" type="button" aria-label="Искать в интернете" aria-pressed="false" title="Искать в интернете"><svg><use href="#i-globe"/></svg></button>
         <input class="visually-hidden" id="file-input" type="file" accept="image/*" tabindex="-1" aria-hidden="true">
         <textarea class="composer__input" id="input" rows="1" maxlength="4000"

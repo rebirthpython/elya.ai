@@ -46,7 +46,11 @@ Llama и т. п.): какая именно модель отвечает сей�
 - С кодом ты помогаешь и здесь: код и команды пиши в блоках ``` с указанием языка. Для \
 серьёзной работы с кодом есть режим кода — команда /code в чате с ботом: в нём ты отвечаешь \
 как программист, читаешь присланные файлы с кодом и пишешь длинные ответы.
-{user_line}{memory_block}{instructions_block}{search_block}
+- Документы ты читаешь: PDF, Word (.docx), Excel (.xlsx), CSV и текст. Собеседник присылает \
+файл (в приложении — скрепкой 📎), спрашивает «найди ответ», «что на странице 40» или «сравни \
+эти два файла», а ты отвечаешь по нему со ссылками на страницы. Если документов в разговоре \
+нет, а о них спрашивают, предложи прислать файл.
+{user_line}{memory_block}{instructions_block}{search_block}{documents_block}
 Текущая дата и время (UTC): {now}.
 """
 
@@ -129,7 +133,7 @@ help(), --help).
 в настройках приложения. Напоминай об этом, только если спросят.
 - Напоминания ставит отдельный механизм по фразе вроде «напомни завтра в 9 позвонить маме». \
 Сама не обещай напомнить и не говори, что напоминание поставлено.
-{user_line}{memory_block}{instructions_block}{search_block}
+{user_line}{memory_block}{instructions_block}{search_block}{documents_block}
 Текущая дата и время (UTC): {now}.
 """
 
@@ -240,11 +244,13 @@ def build_system_prompt(
     can_draw: bool | None = None,
     internet_rule: str = NO_INTERNET_RULE,
     search_results: str = "",
+    documents: str = "",
 ) -> str:
     """mode="code" — промпт режима кода (команда /code), иначе обычный разговор.
     can_draw: True/False — умеет ли Эля сейчас рисовать; None — не упоминать.
     internet_rule — одно из правил *_RULE выше; search_results — блок результатов
-    поиска (services.search.results_block), который добавляется в конец промпта."""
+    поиска (services.search.results_block), который добавляется в конец промпта;
+    documents — блок с фрагментами присланных документов (services.documents)."""
     now = now or datetime.now(timezone.utc)
     name = _clean_user_name(user_name)
     user_line = (
@@ -263,6 +269,7 @@ def build_system_prompt(
         drawing_rule=DRAWING_RULES.get(can_draw, ""),
         internet_rule=internet_rule,
         search_block=_SEARCH_BLOCK.format(results=search_results) if search_results else "",
+        documents_block=f"\n{documents}\n" if documents else "",
         style_rule=STYLE_RULES.get(style, STYLE_RULES["friendly"]),
         length_rule=LENGTH_RULES.get(verbosity, LENGTH_RULES["normal"]),
     )

@@ -4069,3 +4069,78 @@ audio.video-player {
   font-size: 16px;
   font-weight: 700;
 }
+
+/* ---------- Документы разговора ---------- */
+
+/* Плашка над полем ввода: какие документы Эля сейчас учитывает */
+.docs-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 2px 8px;
+  animation: attach-in 0.5s var(--spring) both;
+}
+
+.docs-bar__label {
+  flex: none;
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.docs-bar__list {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent);
+  mask-image: linear-gradient(90deg, #000 85%, transparent);
+  padding-right: 18px;
+}
+
+.docs-bar__list::-webkit-scrollbar {
+  display: none;
+}
+
+.docs-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 190px;
+  padding: 4px 4px 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  box-shadow: var(--shadow-bubble);
+  font-size: 13px;
+  animation: pop-in 0.35s var(--spring) both;
+}
+
+.docs-chip__icon {
+  font-size: 13px;
+}
+
+.docs-chip__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.docs-chip__remove {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: var(--text-2);
+  font-size: 12px;
+  background: var(--surface-2);
+}
+
+.docs-chip__remove:active {
+  transform: scale(0.9);
+}

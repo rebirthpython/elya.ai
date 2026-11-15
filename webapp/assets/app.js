@@ -44,6 +44,8 @@
     attachmentIcon: $('attachment-icon'),
     attachmentName: $('attachment-name'),
     attachmentSize: $('attachment-size'),
+    docsBar: $('docs-bar'),
+    docsList: $('docs-list'),
     videoBar: $('video-bar'),
     videoBarText: $('video-bar-text'),
     videoDone: $('video-done'),
@@ -178,6 +180,7 @@
     search: false, // на сервере подключён поиск в интернете
     searchNext: false, // кнопка 🌐: следующее сообщение — с поиском
     attachment: null,
+    documents: null, // документы разговора; null — сервер их не читает
     // Монтаж видео: available — есть ffmpeg на сервере; session — идёт монтаж (общий с чатом бота).
     video: { available: false, uploadLimitMb: 100, session: null, working: false },
     recording: null,
@@ -381,10 +384,11 @@
     return data;
   }
 
-  function chatBody(text, model, search) {
+  function chatBody(text, model, search, documents) {
     const body = { text };
     if (model !== AUTO) body.model = model;
     if (search) body.search = true;
+    if (documents && documents.length) body.documents = documents;
     return body;
   }
 
@@ -402,7 +406,7 @@
         response = await fetch('api/chat/stream', {
           method: 'POST',
           headers: { Authorization: 'tma ' + tg.initData, 'Content-Type': 'application/json' },
-          body: JSON.stringify(chatBody(text, model, search)),
+          body: JSON.stringify(chatBody(text, model, search, extra && extra.documents)),
         });
       } catch (error) {
         throw new ApiError('network', 'Нет связи с сервером. Проверь интернет и попробуй ещё раз.');
@@ -467,6 +471,8 @@
     memoryClear: () => request('api/memory/delete', { all: true }),
     setTimezone: (tz) => request('api/timezone', { tz }),
     voice: (blob, type) => request('api/voice', blob, type),
+    documentUpload: (file, onProgress) => uploadFile('api/document', file, onProgress),
+    documentsDelete: (id) => request('api/documents/delete', id === 'all' ? { all: true } : { id }),
     photo: (text, blob, model) => {
       const form = new FormData();
       if (text) form.append('text', text);
@@ -606,6 +612,8 @@
     let used = 12;
     let turn = 0;
     let drawingId = 0;
+    let docs = [];
+    let docId = 0;
 
     /* В демо «рисунок» — случайный градиент с кругами: так видно, как выглядит ответ с картинкой. */
     function demoDrawing(request, id) {
@@ -713,6 +721,7 @@
           vision: true,
           video: { available: true, upload_limit_mb: 100, session: videoView() },
           images: { enabled: true, used: 0, limit: 50 },
+          documents: docs.slice(),
           search: true,
           about: { code_lines: 31836 },
           preference_options: {
@@ -857,7 +866,32 @@
         await sleep(1500);
         return demoDrawing('🔄 Ещё вариант', id);
       },
+      async documentUpload(file) {
+        await sleep(900);
+        docId += 1;
+        const document = { id: docId, name: file.name, kind: 'pdf', info: 'PDF, 12 стр.' };
+        docs.push(document);
+        return { document, truncated: false, documents: docs.slice() };
+      },
+      async documentsDelete(id) {
+        await sleep(200);
+        docs = id === 'all' ? [] : docs.filter((doc) => doc.id !== id);
+        return { documents: docs.slice() };
+      },
       async chatStream(text, model, onDelta, extra) {
+        if (extra && extra.documents && extra.documents.length) {
+          await sleep(1200);
+          const name = (docs.find((doc) => doc.id === extra.documents[0]) || { name: 'документ' }).name;
+          const content = (text ? 'Нашла в «' + name + '» (стр. 4): ' : 'Это демо-режим: файл «' + name + '» я по-настоящему не читаю. ') +
+            'В Telegram я ищу ответ в тексте документа и ставлю ссылки на страницы — вот так: (стр. 4), (стр. 7).\n\nМожно спросить «что на стр. 5?» или прислать второй файл и написать «сравни их».';
+          history.push({ role: 'user', content: '📄 «' + name + '»' + (text ? '\n' + text : ''), ts: nowTs() }, { role: 'assistant', content, ts: nowTs() });
+          used += 1;
+          for (const piece of content.split(/(\s+)/)) {
+            onDelta(piece);
+            await sleep(15);
+          }
+          return { reply: { role: 'assistant', content, ts: nowTs(), provider: 'demo', model: 'gemini-flash-latest', truncated: false }, usage: { used, limit: 300 } };
+        }
         const searching = Boolean(extra && extra.search) || /гугл|в интернете|источник/i.test(text);
         if (searching && extra && extra.onSearch) {
           await sleep(600);
@@ -919,6 +953,7 @@
         await sleep(300);
         const deleted = history.filter((m) => m.role !== 'break').length;
         history = [];
+        docs = [];
         return { deleted };
       },
       async newChat() {
@@ -926,6 +961,7 @@
         const last = history[history.length - 1];
         const started = Boolean(last) && last.role !== 'break';
         if (started) history.push({ role: 'break', content: '', ts: nowTs() });
+        docs = [];
         return { started, history: history.slice() };
       },
     };
@@ -1366,6 +1402,12 @@
       setHint(query ? 'ищу в интернете: «' + query + '»…' : 'ищу в интернете…');
       timers = TYPING_HINTS.slice(1).map(([delay, text]) => setTimeout(() => setHint(text), delay + 4000));
     };
+    /* Документ загружается и читается — до ответа может пройти пара секунд. */
+    root.reading = () => {
+      timers.forEach(clearTimeout);
+      setHint('читаю документ…');
+      timers = TYPING_HINTS.slice(1).map(([delay, text]) => setTimeout(() => setHint(text), delay + 3000));
+    };
     root.dismiss = () => {
       timers.forEach(clearTimeout);
       root.remove();
@@ -1434,7 +1476,7 @@
     const length = dom.input.value.length;
     const empty = !dom.input.value.trim() && !state.attachment;
     dom.send.disabled = state.recording ? false : state.busy || state.transcribing || empty;
-    dom.composerBox.classList.toggle('can-attach', state.vision || state.video.available);
+    dom.composerBox.classList.toggle('can-attach', state.vision || state.video.available || state.documents !== null);
     dom.attach.disabled = state.busy;
     dom.composerBox.classList.toggle('can-search', state.search && !state.attachment);
     dom.searchToggle.disabled = state.busy;
@@ -1541,9 +1583,15 @@
     if (item) {
       item.root.classList.remove('msg--failed');
     } else {
+      const doc = attachment && attachment.kind === 'document';
       item = addMessage(
         { role: 'user', content: text, ts: nowTs() },
-        { fresh: true, flight: fly, image: attachment ? attachment.url : null }
+        {
+          fresh: true,
+          flight: fly,
+          image: attachment && !doc ? attachment.url : null,
+          file: doc ? { icon: '📄', name: attachment.name } : null,
+        }
       );
     }
     updateWelcome();
@@ -1557,25 +1605,39 @@
       scrollToBottom(true);
     }
 
+    const stream = (documents) => backend.chatStream(text, state.model, (piece) => {
+      // Первый кусок ответа — убираем «печатает» и открываем пузырь.
+      if (!live) {
+        typing.dismiss();
+        live = startStreamingReply();
+      }
+      live.text += piece;
+      live.view.push(live.text);
+    }, {
+      search: searchOn,
+      documents,
+      onSearch: (query) => {
+        if (!live) typing.searching(query);
+      },
+    });
+
     try {
       let data;
-      if (attachment) {
+      if (attachment && attachment.kind === 'document') {
+        // Сначала файл уходит на сервер (один раз, даже если потом ответ повторяют),
+        // затем вопрос к нему — обычным сообщением.
+        if (!attachment.docId) {
+          typing.reading();
+          const uploaded = await backend.documentUpload(attachment.file, () => {});
+          attachment.docId = uploaded.document.id;
+          setDocuments(uploaded.documents);
+          if (uploaded.truncated) showToast('Документ очень большой: я прочитала только его начало.');
+        }
+        data = await stream([attachment.docId]);
+      } else if (attachment) {
         data = await backend.photo(text, attachment.blob, state.model);
       } else {
-        data = await backend.chatStream(text, state.model, (piece) => {
-          // Первый кусок ответа — убираем «печатает» и открываем пузырь.
-          if (!live) {
-            typing.dismiss();
-            live = startStreamingReply();
-          }
-          live.text += piece;
-          live.view.push(live.text);
-        }, {
-          search: searchOn,
-          onSearch: (query) => {
-            if (!live) typing.searching(query);
-          },
-        });
+        data = await stream();
       }
       typing.dismiss();
       if (live) finishStreamingReply(live, data.reply);
@@ -1752,6 +1814,7 @@
     const accept = [];
     if (state.vision) accept.push('image/*');
     if (state.video.available) accept.push('video/*', 'audio/*');
+    if (state.documents !== null) accept.push(DOCUMENT_ACCEPT);
     dom.fileInput.accept = accept.join(',') || 'image/*';
     if (!state.attachment) dom.input.placeholder = inputPlaceholder();
     updateComposer();
@@ -1759,8 +1822,79 @@
 
   function pickFile(file) {
     if (!file) return;
-    if (/^(video|audio)\//.test(file.type)) pickMedia(file);
+    const name = file.name || '';
+    if (DOCUMENT_RE.test(name)) pickDocument(file);
+    else if (/\.(doc|xls|rtf|odt|pptx?)$/i.test(name)) {
+      showToast('Такой формат я не читаю: сохрани файл как PDF, .docx или .xlsx.');
+    } else if (/^(video|audio)\//.test(file.type)) pickMedia(file);
     else pickPhoto(file);
+  }
+
+  /* ---------- Документы ---------- */
+
+  const DOCUMENT_RE = /\.(pdf|docx|xlsx|xlsm|csv|txt|md)$/i;
+  const DOCUMENT_ACCEPT = '.pdf,.docx,.xlsx,.xlsm,.csv,.txt,.md,application/pdf';
+  const MAX_DOCUMENT_MB = 20;
+
+  function pickDocument(file) {
+    if (state.documents === null) {
+      showToast('Документы сейчас недоступны: сервер их не читает.');
+      return;
+    }
+    if (file.size > MAX_DOCUMENT_MB * 1024 * 1024) {
+      showToast('Файл больше ' + MAX_DOCUMENT_MB + ' МБ — пришли часть документа или сожми PDF.');
+      return;
+    }
+    clearAttachment(true);
+    state.attachment = { kind: 'document', file, name: file.name || 'Документ' };
+    dom.attachmentImg.hidden = true;
+    dom.attachmentFile.hidden = false;
+    dom.attachmentIcon.textContent = '📄';
+    dom.attachmentName.textContent = state.attachment.name;
+    dom.attachmentSize.textContent = formatSize(file.size);
+    dom.attachment.classList.remove('is-leaving');
+    dom.attachment.hidden = false;
+    if (state.searchNext) setSearchNext(false);
+    dom.input.placeholder = 'Что найти в документе?';
+    haptic('impact', 'light');
+    updateComposer();
+    if (finePointer) dom.input.focus();
+  }
+
+  /* Плашка над полем ввода: документы разговора, лишний можно убрать. */
+  function setDocuments(list) {
+    if (state.documents === null && list == null) return;
+    state.documents = Array.isArray(list) ? list : null;
+    renderDocuments();
+  }
+
+  function renderDocuments() {
+    const docs = state.documents || [];
+    dom.docsList.textContent = '';
+    docs.forEach((doc) => {
+      const chip = el('span', 'docs-chip');
+      chip.title = doc.name + ' — ' + doc.info;
+      chip.append(el('span', 'docs-chip__icon', '📄'), el('span', 'docs-chip__name', doc.name));
+      const remove = el('button', 'docs-chip__remove ripple');
+      remove.type = 'button';
+      remove.setAttribute('aria-label', 'Убрать документ «' + doc.name + '»');
+      remove.append(icon('i-close'));
+      remove.addEventListener('click', () => removeDocument(doc.id));
+      chip.append(remove);
+      dom.docsList.append(chip);
+    });
+    dom.docsBar.hidden = !docs.length;
+    renderVideoBar();
+  }
+
+  async function removeDocument(id) {
+    try {
+      const data = await backend.documentsDelete(id);
+      setDocuments(data.documents);
+      haptic('selection');
+    } catch (error) {
+      showToast(error.message);
+    }
   }
 
   function pickMedia(file) {
@@ -2090,7 +2224,7 @@
       dom.input.value = '';
       autosize();
       clearAttachment(false, true);
-      if (attachment.kind === 'photo') send(text, null, null, attachment);
+      if (attachment.kind === 'photo' || attachment.kind === 'document') send(text, null, null, attachment);
       else sendVideo(text.trim(), attachment);
       return;
     }
@@ -2932,6 +3066,7 @@
     dom.clearYes.disabled = true;
     try {
       await backend.clear();
+      if (state.documents) setDocuments([]);
     } catch (error) {
       dom.clearYes.disabled = false;
       showToast(error.message);
@@ -3118,6 +3253,7 @@
     let data;
     try {
       data = await backend.newChat();
+      if (state.documents) setDocuments([]); // документы принадлежат разговору
     } catch (error) {
       showToast(error.message);
       haptic('notify', 'error');
@@ -3257,6 +3393,7 @@
     state.instructions = data.instructions || null;
     state.mode = data.mode === undefined ? null : data.mode;
     applyVideo(data.video);
+    setDocuments(data.documents === undefined ? null : data.documents);
     renderInstructionsSummary();
     if (data.preference_options) state.preferenceOptions = data.preference_options;
     state.syncedAt = Date.now();
@@ -3326,6 +3463,8 @@
     if (data.memory && dom.sheet.hidden) state.memory = Object.assign({}, state.memory, data.memory);
     // Монтаж могли начать или закончить в чате с ботом.
     if (data.video) applyVideo(data.video);
+    // Документы могли прислать или убрать в чате с ботом.
+    if (data.documents !== undefined) setDocuments(data.documents);
     if (data.reminders && dom.sheet.hidden) {
       state.reminders = Object.assign({}, state.reminders, data.reminders);
       updateBell();

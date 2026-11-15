@@ -1,9 +1,10 @@
-"""Диалог с ИИ: текст, голосовые, фото и поиск в интернете (/search)."""
+"""Диалог с ИИ: текст, голосовые, фото, документы и поиск в интернете (/search)."""
 
 from __future__ import annotations
 
 import logging
 from html import escape
+from pathlib import PurePath
 
 from aiogram import Bot, F, Router
 from aiogram.enums import ParseMode
@@ -15,6 +16,7 @@ from aiogram.utils.chat_action import ChatActionSender
 
 from ai.client import AllProvidersFailedError, DailyLimitExceededError, NoVisionModelError
 from ai.providers.base import CompletionResult
+from bot.handlers.documents import receive_document
 from bot.handlers.draw import DrawStates, draw_and_send, maybe_draw
 from bot.utils.live import LiveMessage
 from bot.utils.text import close_open_fence
@@ -28,6 +30,7 @@ from services.code import (
     looks_like_code,
     read_code_file,
 )
+from services.documents import PLAIN_TEXT_EXTENSIONS, is_document, unsupported_hint
 from services.modes import CODE, ModeStore
 from services.drawing import DrawingService
 from services.search import SearchStarted
@@ -150,12 +153,21 @@ async def handle_document(
     settings: Settings,
     modes: ModeStore | None = None,
 ) -> None:
-    """Файл с кодом: в режиме кода Эля читает его и отвечает на подпись."""
+    """Документ (PDF, Word, таблица) — в разговор, чтобы искать в нём ответы;
+    файл с кодом — в режиме кода Эля читает его и отвечает на подпись."""
     if message.from_user is None or message.document is None:
         return
     document = message.document
-    if modes is None or await modes.get(message.from_user.id) != CODE:
-        if looks_like_code(document.file_name):
+    coding = modes is not None and await modes.get(message.from_user.id) == CODE
+    extension = PurePath((document.file_name or "").lower()).suffix
+    as_code = coding and (looks_like_code(document.file_name) or extension in PLAIN_TEXT_EXTENSIONS)
+    if chat_service.documents is not None and is_document(document.file_name) and not as_code:
+        await receive_document(message, bot, chat_service)
+        return
+    if not coding:
+        if hint := unsupported_hint(document.file_name):
+            await message.answer(f"📄 {hint}")
+        elif looks_like_code(document.file_name):
             await message.answer(
                 "Похоже, это файл с кодом. Включи режим кода командой /code и пришли файл "
                 "ещё раз — я его прочитаю и разберу 👩‍💻"
@@ -232,6 +244,7 @@ async def send_reply(
     file: CodeFile | None = None,
     *,
     search: bool | None = None,
+    documents: tuple[int, ...] = (),
 ) -> None:
     """Ответ Эли, который появляется в чате по мере генерации."""
     live = LiveMessage(bot, message)
@@ -246,6 +259,7 @@ async def send_reply(
                 images=images,
                 file=file,
                 search=search,
+                documents=documents,
             ):
                 if isinstance(event, CompletionResult):
                     result = event
@@ -283,10 +297,9 @@ async def send_reply(
 
 async def handle_unsupported(message: Message) -> None:
     await message.answer(
-        "Я понимаю текст, голосовые и фото, а видео умею монтировать (/video). "
-        "Стикеры и другие файлы пока не разбираю 🙂\n"
-        "Файл с лекцией (.txt, .docx, .pdf) можно прислать после команды /notes или /slides, "
-        "а файл с кодом — в режиме кода: /code."
+        "Я понимаю текст, голосовые, фото и документы (PDF, Word, Excel, CSV, .txt), "
+        "а видео умею монтировать (/video). Стикеры и другие файлы пока не разбираю 🙂\n"
+        "Конспект лекции — команда /notes или /slides, файл с кодом — в режиме кода: /code."
     )
 
 
