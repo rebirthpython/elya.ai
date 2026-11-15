@@ -4144,3 +4144,259 @@ audio.video-player {
 .docs-chip__remove:active {
   transform: scale(0.9);
 }
+
+/* ---------- Чаты и проекты ---------- */
+
+.topbar__name-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.topbar__project {
+  flex: none;
+  max-width: 45vw;
+  overflow: hidden;
+  padding: 1px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  animation: pop-in 0.35s var(--spring) both;
+}
+
+.drawer__head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 8px;
+}
+
+.drawer__link {
+  padding: 4px 10px;
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.drawer__link:active {
+  background: var(--surface-2);
+}
+
+/* Проекты — фильтр-«таблетки» над списком чатов */
+.project-chips {
+  display: flex;
+  gap: 6px;
+  margin: 2px 0 14px;
+  padding: 2px 12px 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.project-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.project-chip {
+  flex: none;
+  padding: 7px 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 550;
+  white-space: nowrap;
+  transition: transform 0.35s var(--spring), background 0.25s, color 0.25s, border-color 0.25s;
+}
+
+.project-chip:active {
+  transform: scale(0.95);
+}
+
+.project-chip[aria-selected="true"] {
+  border-color: transparent;
+  background: var(--grad-ink);
+  color: #fff;
+  box-shadow: 0 6px 18px -8px var(--rose);
+}
+
+.project-chip--add {
+  border-style: dashed;
+  background: transparent;
+  color: var(--text-2);
+}
+
+.chat-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chat-row {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  border-radius: 14px;
+  transition: background 0.2s;
+}
+
+.chat-row.is-active {
+  background: color-mix(in srgb, var(--violet) 14%, transparent);
+}
+
+.chat-row.is-active::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--grad);
+}
+
+.chat-row__main {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 11px 4px 11px 12px;
+  border-radius: 14px;
+  color: var(--text);
+  text-align: left;
+  transition: transform 0.35s var(--spring);
+}
+
+.chat-row__main:active {
+  transform: scale(0.98);
+}
+
+.chat-row__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 15.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-row.is-active .chat-row__title {
+  font-weight: 650;
+}
+
+.chat-row__meta {
+  flex: none;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+.chat-row__more {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  color: var(--text-3);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.chat-row__more:active,
+.chat-row.is-open .chat-row__more {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.chat-row__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 0 10px 10px;
+  animation: rise-3d 0.35s var(--spring-soft) both;
+}
+
+.chat-row__ask {
+  flex: 1 1 100%;
+  color: var(--text-2);
+  font-size: 13.5px;
+}
+
+.chat-action {
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 550;
+}
+
+.chat-action--danger {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.chat-row__input {
+  flex: 1;
+  margin: 4px;
+  padding: 9px 12px;
+  border: 1px solid var(--focus);
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 15.5px;
+}
+
+/* Страница проекта */
+.emoji-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.emoji-pick {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-2);
+  font-size: 20px;
+  transition: transform 0.35s var(--spring), border-color 0.2s, box-shadow 0.2s;
+}
+
+.emoji-pick:active {
+  transform: scale(0.9);
+}
+
+.emoji-pick[aria-checked="true"] {
+  border-color: var(--rose);
+  box-shadow: 0 0 0 2px var(--focus);
+  transform: scale(1.06);
+}
+
+.field__input--line {
+  min-height: 0;
+  padding: 12px 14px;
+  resize: none;
+}
+
+.project-page .row-btn.is-loading {
+  opacity: 0.6;
+  pointer-events: none;
+}

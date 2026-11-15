@@ -6,14 +6,16 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from database.models import Message, User
-
-# Отметка «Новый чат» в истории: Эля не видит сообщений до неё, но они хранятся и видны в ленте.
-CHAT_BREAK = "break"
+from memory.chats import CHAT_BREAK  # noqa: F401 — отметка «Новый чат» из старой истории
 
 
 class MessageRepository:
     def __init__(self, session_factory: async_sessionmaker) -> None:
         self._session_factory = session_factory
+
+    @property
+    def session_factory(self) -> async_sessionmaker:
+        return self._session_factory
 
     @staticmethod
     async def _ensure_user(session: AsyncSession, user_id: int) -> None:
@@ -21,52 +23,36 @@ class MessageRepository:
             session.add(User(id=user_id))
             await session.flush()
 
-    async def add_exchange(self, user_id: int, user_text: str, assistant_text: str) -> None:
-        """Сохраняет пару «вопрос — ответ». Старая история не удаляется: только через /clear."""
+    async def add_exchange(
+        self, user_id: int, user_text: str, assistant_text: str, chat_id: int | None = None
+    ) -> None:
+        """Сохраняет пару «вопрос — ответ» в чат."""
         async with self._session_factory.begin() as session:
             await self._ensure_user(session, user_id)
             session.add_all(
                 [
-                    Message(user_id=user_id, role="user", content=user_text),
-                    Message(user_id=user_id, role="assistant", content=assistant_text),
+                    Message(user_id=user_id, role="user", content=user_text, chat_id=chat_id),
+                    Message(user_id=user_id, role="assistant", content=assistant_text, chat_id=chat_id),
                 ]
             )
 
-    async def add_break(self, user_id: int) -> Message | None:
-        """Ставит отметку «Новый чат». Если история пуста или чат только что начат, ничего не делает."""
-        async with self._session_factory.begin() as session:
-            last_role = await session.scalar(
-                select(Message.role)
-                .where(Message.user_id == user_id)
-                .order_by(Message.id.desc())
-                .limit(1)
-            )
-            if last_role is None or last_role == CHAT_BREAK:
-                return None
-            mark = Message(user_id=user_id, role=CHAT_BREAK, content="")
-            session.add(mark)
-            await session.flush()
-            return mark
-
-    async def get_recent(self, user_id: int, limit: int) -> list[Message]:
-        """Последние limit записей (вместе с отметками «Новый чат») в хронологическом порядке."""
+    async def get_recent(self, user_id: int, limit: int, chat_id: int | None = None) -> list[Message]:
+        """Последние limit сообщений чата (без chat_id — всех) в хронологическом порядке."""
+        query = select(Message).where(Message.user_id == user_id)
+        if chat_id is not None:
+            query = query.where(Message.chat_id == chat_id)
         async with self._session_factory() as session:
-            rows = await session.scalars(
-                select(Message)
-                .where(Message.user_id == user_id)
-                .order_by(Message.id.desc())
-                .limit(limit)
-            )
+            rows = await session.scalars(query.order_by(Message.id.desc()).limit(limit))
             return list(reversed(rows.all()))
 
-    async def count(self, user_id: int) -> int:
+    async def count(self, user_id: int, chat_id: int | None = None) -> int:
+        query = select(func.count()).select_from(Message).where(
+            Message.user_id == user_id, Message.role != CHAT_BREAK
+        )
+        if chat_id is not None:
+            query = query.where(Message.chat_id == chat_id)
         async with self._session_factory() as session:
-            total = await session.scalar(
-                select(func.count())
-                .select_from(Message)
-                .where(Message.user_id == user_id, Message.role != CHAT_BREAK)
-            )
-            return int(total or 0)
+            return int(await session.scalar(query) or 0)
 
     async def clear(self, user_id: int) -> int:
         """Удаляет всю историю пользователя, возвращает число удалённых сообщений."""

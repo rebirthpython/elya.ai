@@ -45,7 +45,30 @@ def create_session_factory(engine: AsyncEngine) -> async_sessionmaker:
     return async_sessionmaker(engine, expire_on_commit=False)
 
 
+# Столбцы, добавленные после первых версий: в старой базе их нет, create_all их не добавит.
+_ADDED_COLUMNS = {
+    "messages": {"chat_id": "INTEGER"},
+    "user_documents": {"chat_id": "INTEGER", "project_id": "INTEGER"},
+}
+
+
+def _add_missing_columns(connection) -> None:
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(connection)
+    tables = set(inspector.get_table_names())
+    for table, columns in _ADDED_COLUMNS.items():
+        if table not in tables:
+            continue
+        existing = {column["name"] for column in inspector.get_columns(table)}
+        for name, kind in columns.items():
+            if name not in existing:
+                connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {kind}"))
+                connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table}_{name} ON {table} ({name})"))
+
+
 async def init_db(engine: AsyncEngine) -> None:
-    """Создаёт отсутствующие таблицы (существующие не изменяются)."""
+    """Создаёт отсутствующие таблицы и добавляет новые столбцы в старые (данные не меняются)."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_add_missing_columns)

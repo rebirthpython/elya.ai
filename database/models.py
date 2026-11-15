@@ -35,6 +35,8 @@ class Message(Base):
     )
     role: Mapped[str] = mapped_column(String(16))  # "user" | "assistant"
     content: Mapped[str] = mapped_column(Text)
+    # Чат, к которому относится сообщение (None — старая история до появления чатов).
+    chat_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -163,4 +165,45 @@ class UserDocument(Base):
     info: Mapped[str] = mapped_column(String(200))  # «PDF, 230 стр.»
     chars: Mapped[int] = mapped_column(Integer, default=0)
     content: Mapped[str] = mapped_column(Text)  # JSON: [[пометка, текст], …]
+    # Где документ лежит: в одном чате или в проекте (тогда он виден во всех его чатах).
+    chat_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
+    project_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Project(Base):
+    """Проект (папка чатов): «Учёба», «Код», «Личное». У каждого свои инструкции и файлы."""
+
+    __tablename__ = "projects"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    name: Mapped[str] = mapped_column(String(60))
+    emoji: Mapped[str] = mapped_column(String(16), default="📁")
+    instructions: Mapped[str] = mapped_column(Text, default="")
+    mode: Mapped[str] = mapped_column(String(16), default="")  # "code" — чаты проекта в режиме кода
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Chat(Base):
+    """Отдельный чат со своей перепиской; может лежать в проекте."""
+
+    __tablename__ = "chats"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    project_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
+    title: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ChatState(Base):
+    """Открытый сейчас чат пользователя — общий для бота и приложения."""
+
+    __tablename__ = "chat_state"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    chat_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Проекты по умолчанию уже созданы (если пользователь их удалит, они не вернутся).
+    projects_seeded: Mapped[bool] = mapped_column(Boolean, default=False)

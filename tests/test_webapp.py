@@ -389,15 +389,16 @@ async def test_daily_limit_is_reported(env):
     assert len(providers[0].calls) == 1
 
 
-async def test_new_chat_keeps_history_and_starts_a_fresh_context(env):
+async def test_new_chat_opens_an_empty_chat_and_the_old_one_stays_in_the_list(env):
     await env["memory"].save_exchange(OWNER_ID, "старое", "ответ")
     client, providers = await env["make"]()
+    old_chat = (await (await client.get("/api/state", headers=auth())).json())["chat"]
 
     data = await (await client.post("/api/chat/new", json={}, headers=auth())).json()
-    assert data["started"] is True
-    assert [m["role"] for m in data["history"]] == ["user", "assistant", "break"]
+    assert data["started"] is True and data["history"] == []
+    assert data["chat"]["id"] != old_chat["id"]
     again = await (await client.post("/api/chat/new", json={}, headers=auth())).json()
-    assert again["started"] is False and again["history"] == data["history"]
+    assert again["started"] is False and again["chat"]["id"] == data["chat"]["id"]
 
     assert (await client.post("/api/chat", json={"text": "новое"}, headers=auth())).status == 200
     _, messages = providers[0].calls[-1]
@@ -405,8 +406,11 @@ async def test_new_chat_keeps_history_and_starts_a_fresh_context(env):
     assert "старое" not in sent and "новое" in sent
 
     state = await (await client.get("/api/state", headers=auth())).json()
-    assert [m["role"] for m in state["history"]] == ["user", "assistant", "break", "user", "assistant"]
-    assert state["history"][0]["content"] == "старое"
+    assert [m["content"] for m in state["history"]] == ["новое", state["history"][1]["content"]]
+    assert [c["title"] for c in state["chats"]] == ["новое", "старое"]
+
+    opened = await (await client.post("/api/chat/open", json={"id": old_chat["id"]}, headers=auth())).json()
+    assert [m["content"] for m in opened["history"]] == ["старое", "ответ"]
 
 
 async def test_clear_removes_only_own_history(env):
@@ -415,7 +419,7 @@ async def test_clear_removes_only_own_history(env):
     client, _ = await env["make"](allowed_user_ids=frozenset({OWNER_ID, 222}))
 
     response = await client.post("/api/clear", json={}, headers=auth())
-    assert response.status == 200 and await response.json() == {"deleted": 2}
+    assert response.status == 200 and (await response.json())["deleted"] == 2
     assert await env["memory"].get_history(OWNER_ID) == []
     assert len(await env["memory"].get_history(222)) == 2
 

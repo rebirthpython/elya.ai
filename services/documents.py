@@ -12,7 +12,7 @@
 Для сравнения двух файлов строки сопоставляются difflib: в первую очередь модель
 видит фрагменты, где файлы расходятся, и долю совпадающего текста.
 
-Документы принадлежат текущему разговору: «Новый чат» и /clear их убирают.
+Документ лежит в чате (виден только в нём) или в проекте (виден во всех его чатах).
 """
 
 from __future__ import annotations
@@ -30,10 +30,11 @@ from difflib import SequenceMatcher
 from pathlib import PurePath
 from typing import Iterable, Sequence
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from database.models import UserDocument
+from memory.chats import ChatStore
 
 # Расширение → вид документа.
 DOCUMENT_KINDS = {
@@ -51,7 +52,8 @@ MAX_DOCUMENT_BYTES = 20 * 1024 * 1024  # больше бот всё равно �
 MAX_DOCUMENT_CHARS = 3_000_000  # ~1500 страниц текста
 MAX_PDF_PAGES = 2000
 MAX_TABLE_ROWS = 50_000
-MAX_DOCUMENTS = 5  # сколько документов держать в разговоре; старые уходят
+MAX_DOCUMENTS = 5  # сколько документов держать в чате; старые уходят
+MAX_PROJECT_DOCUMENTS = 20  # и в проекте
 CHUNK_CHARS = 1500
 DEFAULT_CONTEXT_CHARS = 10_000
 
@@ -100,9 +102,13 @@ class DocumentInfo:
     name: str
     kind: str
     info: str
+    project_id: int | None = None  # файл проекта (иначе — файл чата)
 
     def as_dict(self) -> dict:
-        return {"id": self.id, "name": self.name, "kind": self.kind, "info": self.info}
+        return {
+            "id": self.id, "name": self.name, "kind": self.kind, "info": self.info,
+            "project_id": self.project_id,
+        }
 
     def title(self) -> str:
         return f"«{self.name}» — {self.info}"
@@ -799,22 +805,49 @@ def _index(info: DocumentInfo, chunks: tuple[Chunk, ...]) -> _Indexed:
     return _Indexed(info=info, chunks=chunks, terms=[Counter(terms(chunk.text)) for chunk in chunks])
 
 
+def _info(row) -> DocumentInfo:
+    return DocumentInfo(id=row.id, name=row.name, kind=row.kind, info=row.info, project_id=row.project_id)
+
+
+_COLUMNS = (UserDocument.id, UserDocument.name, UserDocument.kind, UserDocument.info, UserDocument.project_id)
+
+
 class DocumentStore:
-    """Документы пользователя в базе плюс кэш разобранных для поиска."""
+    """Документы пользователя в базе плюс кэш разобранных для поиска.
+
+    Без явного chat_id методы работают с открытым сейчас чатом (memory.chats)."""
 
     def __init__(
         self,
         session_factory: async_sessionmaker,
         *,
+        chats: ChatStore | None = None,
         max_documents: int = MAX_DOCUMENTS,
+        max_project_documents: int = MAX_PROJECT_DOCUMENTS,
         context_chars: int = DEFAULT_CONTEXT_CHARS,
     ) -> None:
         self._session_factory = session_factory
+        self._chats = chats or ChatStore(session_factory)
         self._max_documents = max_documents
+        self._max_project_documents = max_project_documents
         self._context_chars = context_chars
         self._cache: dict[int, _Indexed] = {}
 
-    async def add(self, user_id: int, document: ParsedDocument) -> DocumentInfo:
+    async def _scope(self, user_id: int, chat_id: int | None) -> tuple[int, int | None]:
+        """(чат, его проект) — открытый, если chat_id не указан."""
+        chat = await self._chats.get(user_id, chat_id) if chat_id is not None else None
+        if chat is None:
+            chat = await self._chats.active(user_id)
+        return chat.id, chat.project_id
+
+    async def add(
+        self, user_id: int, document: ParsedDocument, *, project_id: int | None = None, chat_id: int | None = None
+    ) -> DocumentInfo:
+        """В проект (project_id) или в чат (chat_id; по умолчанию — открытый)."""
+        if project_id is None:
+            chat_id, _ = await self._scope(user_id, chat_id)
+        else:
+            chat_id = None
         content = json.dumps([[chunk.label, chunk.text] for chunk in document.chunks], ensure_ascii=False)
         async with self._session_factory.begin() as session:
             row = UserDocument(
@@ -824,17 +857,23 @@ class DocumentStore:
                 info=document.info[:200],
                 chars=document.chars,
                 content=content,
+                chat_id=chat_id,
+                project_id=project_id,
             )
             session.add(row)
             await session.flush()
-            info = DocumentInfo(id=row.id, name=row.name, kind=row.kind, info=row.info)
-            # Старые документы уходят, чтобы в разговоре оставалось не больше max_documents.
+            info = _info(row)
+            # Старые документы уходят, чтобы в чате (проекте) не копилось больше лимита.
+            if project_id is None:
+                where, keep = UserDocument.chat_id == chat_id, self._max_documents
+            else:
+                where, keep = UserDocument.project_id == project_id, self._max_project_documents
             ids = (
                 await session.scalars(
                     select(UserDocument.id)
-                    .where(UserDocument.user_id == user_id)
+                    .where(UserDocument.user_id == user_id, where)
                     .order_by(UserDocument.id.desc())
-                    .offset(self._max_documents)
+                    .offset(keep)
                 )
             ).all()
             if ids:
@@ -844,23 +883,31 @@ class DocumentStore:
         self._cache[info.id] = await asyncio.to_thread(_index, info, document.chunks)
         return info
 
-    async def list(self, user_id: int) -> list[DocumentInfo]:
+    async def list(self, user_id: int, *, chat_id: int | None = None) -> list[DocumentInfo]:
+        """Документы, которые Эля учитывает в чате: файлы проекта, затем файлы чата."""
+        chat_id, project_id = await self._scope(user_id, chat_id)
+        condition = UserDocument.chat_id == chat_id
+        if project_id is not None:
+            condition = or_(condition, UserDocument.project_id == project_id)
         async with self._session_factory() as session:
             rows = await session.execute(
-                select(UserDocument.id, UserDocument.name, UserDocument.kind, UserDocument.info)
-                .where(UserDocument.user_id == user_id)
+                select(*_COLUMNS)
+                .where(UserDocument.user_id == user_id, condition)
+                .order_by(UserDocument.project_id.is_(None), UserDocument.id)
+            )
+            return [_info(row) for row in rows]
+
+    async def list_project(self, user_id: int, project_id: int) -> list[DocumentInfo]:
+        async with self._session_factory() as session:
+            rows = await session.execute(
+                select(*_COLUMNS)
+                .where(UserDocument.user_id == user_id, UserDocument.project_id == project_id)
                 .order_by(UserDocument.id)
             )
-            return [DocumentInfo(id=r.id, name=r.name, kind=r.kind, info=r.info) for r in rows]
+            return [_info(row) for row in rows]
 
     async def count(self, user_id: int) -> int:
-        async with self._session_factory() as session:
-            return int(
-                await session.scalar(
-                    select(func.count()).select_from(UserDocument).where(UserDocument.user_id == user_id)
-                )
-                or 0
-            )
+        return len(await self.list(user_id))
 
     async def delete(self, user_id: int, document_id: int) -> bool:
         async with self._session_factory.begin() as session:
@@ -870,18 +917,23 @@ class DocumentStore:
         self._cache.pop(document_id, None)
         return bool(result.rowcount)
 
-    async def clear(self, user_id: int) -> int:
-        ids = [info.id for info in await self.list(user_id)]
-        if not ids:
-            return 0
+    async def clear(self, user_id: int, *, chat_id: int | None = None) -> int:
+        """Убирает файлы чата (файлы проекта остаются)."""
+        chat_id, _ = await self._scope(user_id, chat_id)
         async with self._session_factory.begin() as session:
-            await session.execute(delete(UserDocument).where(UserDocument.user_id == user_id))
+            ids = (
+                await session.scalars(
+                    select(UserDocument.id).where(UserDocument.user_id == user_id, UserDocument.chat_id == chat_id)
+                )
+            ).all()
+            if ids:
+                await session.execute(delete(UserDocument).where(UserDocument.id.in_(ids)))
         for document_id in ids:
             self._cache.pop(document_id, None)
         return len(ids)
 
-    async def _load(self, user_id: int) -> list[_Indexed]:
-        infos = await self.list(user_id)
+    async def _load(self, user_id: int, chat_id: int | None) -> list[_Indexed]:
+        infos = await self.list(user_id, chat_id=chat_id)
         missing = [info for info in infos if info.id not in self._cache]
         if missing:
             async with self._session_factory() as session:
@@ -899,12 +951,14 @@ class DocumentStore:
                 self._cache[info.id] = await asyncio.to_thread(_index, info, chunks)
         docs = [self._cache[info.id] for info in infos]
         # Кэш не растёт бесконечно: лишнее (самое старое) выбрасывается, при нужде прочитается снова.
-        while len(self._cache) > 4 * self._max_documents:
+        while len(self._cache) > 4 * (self._max_documents + self._max_project_documents):
             self._cache.pop(next(iter(self._cache)))
         return docs
 
-    async def context(self, user_id: int, question: str, *, fresh: Iterable[int] = ()) -> DocumentContext:
-        docs = await self._load(user_id)
+    async def context(
+        self, user_id: int, question: str, *, fresh: Iterable[int] = (), chat_id: int | None = None
+    ) -> DocumentContext:
+        docs = await self._load(user_id, chat_id)
         if not docs:
             return DocumentContext()
         return await asyncio.to_thread(

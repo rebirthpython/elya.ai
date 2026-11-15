@@ -30,6 +30,7 @@ from bot.handlers.draw import deliver_drawing
 from config.settings import Settings
 from database.models import Message
 from memory.manager import MemoryManager
+from memory.chats import MAX_PROJECT_INSTRUCTIONS, MAX_PROJECTS, ProjectError
 from memory.repository import CHAT_BREAK
 from services.chat import ChatService
 from services.code_stats import project_code_lines
@@ -254,8 +255,12 @@ async def post_instructions(request: web.Request) -> web.Response:
 
 
 async def _mode(app: web.Application, user_id: int) -> str:
+    """Режим открытого чата: проект «в режиме кода» включает его для всех своих чатов."""
     store: ModeStore | None = app[MODES_STORE]
-    return await store.get(user_id) if store is not None else DEFAULT_MODE
+    mode = await store.get(user_id) if store is not None else DEFAULT_MODE
+    chats = app[MEMORY].chats
+    project = await chats.project(user_id, (await chats.active(user_id)).project_id)
+    return CODE if project is not None and project.mode == CODE else mode
 
 
 def _text_limit(mode: str) -> int:
@@ -284,7 +289,11 @@ async def post_mode(request: web.Request) -> web.Response:
     if not isinstance(mode, str) or mode not in MODES:
         return _error(400, "bad_request", "Такого режима нет.")
     await store.set(user.id, mode)
-    return web.json_response({"mode": mode, "limits": {"max_text_length": _text_limit(mode)}})
+    effective = await _mode(request.app, user.id)
+    payload: dict[str, Any] = {"mode": effective, "limits": {"max_text_length": _text_limit(effective)}}
+    if effective != mode:
+        payload["locked"] = True  # открытый чат в проекте, где всегда включён режим кода
+    return web.json_response(payload)
 
 
 async def get_state(request: web.Request) -> web.Response:
@@ -317,6 +326,9 @@ async def get_state(request: web.Request) -> web.Response:
             "memory": await _memory_payload(app[LONG_MEMORY], user.id),
             "reminders": await _reminders_payload(app[REMINDERS], user.id),
             "documents": await _documents_payload(app, user.id),
+            "chat": (await app[MEMORY].chats.active(user.id)).as_dict(),
+            "chats": [chat.as_dict() for chat in await app[MEMORY].chats.list(user.id)],
+            "projects": [project.as_dict() for project in await app[MEMORY].chats.projects(user.id)],
             "video": await video_api.state_payload(app, user.id),
             "preference_options": preference_options(),
             "about": {"code_lines": await asyncio.to_thread(project_code_lines)},
@@ -352,6 +364,7 @@ async def post_document(request: web.Request) -> web.Response:
         return _error(400, "bad_request", "Некорректный запрос.")
     data: bytes | None = None
     filename = ""
+    project_field = ""
     try:
         reader = await request.multipart()
         async for part in reader:
@@ -360,6 +373,8 @@ async def post_document(request: web.Request) -> web.Response:
                 data = await _read_part(part, MAX_DOCUMENT_BYTES)
                 if data is None:
                     return _error(413, "too_large", "Файл слишком большой: я читаю документы до 20 МБ.")
+            elif part.name == "project_id":
+                project_field = ((await _read_part(part, 32)) or b"").decode("ascii", errors="ignore").strip()
     except (ValueError, AssertionError):  # битый multipart
         return _error(400, "bad_request", "Некорректный запрос.")
     if data is None:
@@ -368,18 +383,26 @@ async def post_document(request: web.Request) -> web.Response:
         parsed = await asyncio.to_thread(parse_document, filename, data)
     except DocumentError as exc:
         return _error(415, "bad_document", str(exc))
-    info = await store.add(user.id, parsed)
-    return web.json_response(
-        {
-            "document": info.as_dict(),
-            "truncated": parsed.truncated,
-            "documents": await _documents_payload(request.app, user.id),
-        }
-    )
+    project_id = None
+    if project_field:
+        # Файл проекта: виден во всех чатах проекта.
+        project = await request.app[MEMORY].chats.project(user.id, int(project_field)) if project_field.isdigit() else None
+        if project is None:
+            return _error(404, "not_found", "Этого проекта больше нет.")
+        project_id = project.id
+    info = await store.add(user.id, parsed, project_id=project_id)
+    payload = {
+        "document": info.as_dict(),
+        "truncated": parsed.truncated,
+        "documents": await _documents_payload(request.app, user.id),
+    }
+    if project_id is not None:
+        payload["files"] = [doc.as_dict() for doc in await store.list_project(user.id, project_id)]
+    return web.json_response(payload)
 
 
 async def post_documents_delete(request: web.Request) -> web.Response:
-    """{"id": n} — убрать документ из разговора, {"all": true} — убрать все."""
+    """{"id": n} — убрать документ (из чата или проекта), {"all": true} — все файлы открытого чата."""
     user: WebAppUser = request[_USER_KEY]
     store = request.app[CHAT].documents
     if store is None:
@@ -862,22 +885,152 @@ async def post_voice(request: web.Request) -> web.Response:
 
 
 async def post_clear(request: web.Request) -> web.Response:
+    """Очистить открытый чат (переписку и его файлы)."""
     user: WebAppUser = request[_USER_KEY]
     deleted = await request.app[MEMORY].clear_history(user.id)
-    if (store := request.app[CHAT].documents) is not None:
-        await store.clear(user.id)
-    return web.json_response({"deleted": deleted})
+    return web.json_response({"deleted": deleted, **await _chats_payload(request.app, user.id)})
+
+
+async def _chats_payload(app: web.Application, user_id: int, *, history: bool = False) -> dict[str, Any]:
+    """Открытый чат, список чатов, проекты и документы — всё, что меняется при переключении чата."""
+    memory: MemoryManager = app[MEMORY]
+    chats = memory.chats
+    active = await chats.active(user_id)
+    payload: dict[str, Any] = {
+        "chat": active.as_dict(),
+        "chats": [chat.as_dict() for chat in await chats.list(user_id)],
+        "projects": [project.as_dict() for project in await chats.projects(user_id)],
+        "documents": await _documents_payload(app, user_id),
+        "mode": await _mode(app, user_id) if app[MODES_STORE] is not None else None,
+    }
+    payload["limits"] = {"max_text_length": _text_limit(await _mode(app, user_id))}
+    if history:
+        timeline = await memory.get_timeline(user_id, TIMELINE_LIMIT, chat_id=active.id)
+        payload["history"] = [_serialize(m) for m in timeline]
+    return payload
+
+
+def _int_field(payload: dict[str, Any] | None, name: str) -> int | None:
+    value = (payload or {}).get(name)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
 async def post_new_chat(request: web.Request) -> web.Response:
-    """«Новый чат»: Эля начинает с чистого листа, прошлая переписка остаётся в ленте."""
+    """Новый чат без старой переписки. {"project_id": N} — в проекте, null — без проекта,
+    без поля — в том же проекте, что открытый чат."""
     user: WebAppUser = request[_USER_KEY]
-    memory = request.app[MEMORY]
-    started = await memory.start_new_chat(user.id) is not None
-    if (store := request.app[CHAT].documents) is not None:
-        await store.clear(user.id)  # документы принадлежат разговору
-    timeline = await memory.get_timeline(user.id, TIMELINE_LIMIT)
-    return web.json_response({"started": started, "history": [_serialize(m) for m in timeline]})
+    payload = await _read_json(request) or {}
+    memory: MemoryManager = request.app[MEMORY]
+    if "project_id" in payload:
+        chat, created = await memory.start_new_chat(user.id, project_id=_int_field(payload, "project_id"))
+    else:
+        chat, created = await memory.start_new_chat(user.id)
+    return web.json_response({"started": created, **await _chats_payload(request.app, user.id, history=True)})
+
+
+async def post_chat_open(request: web.Request) -> web.Response:
+    """{"id": N} — открыть чат: дальше Эля отвечает в нём (и в боте тоже)."""
+    user: WebAppUser = request[_USER_KEY]
+    chat_id = _int_field(await _read_json(request), "id")
+    if chat_id is None or await request.app[MEMORY].chats.open(user.id, chat_id) is None:
+        return _error(404, "not_found", "Этого чата больше нет.")
+    return web.json_response(await _chats_payload(request.app, user.id, history=True))
+
+
+async def post_chat_rename(request: web.Request) -> web.Response:
+    """{"id": N, "title": "..."} — переименовать чат."""
+    user: WebAppUser = request[_USER_KEY]
+    payload = await _read_json(request) or {}
+    chat_id, title = _int_field(payload, "id"), payload.get("title")
+    if chat_id is None or not isinstance(title, str) or not title.strip():
+        return _error(400, "bad_request", "Напиши название чата.")
+    if await request.app[MEMORY].chats.rename(user.id, chat_id, title) is None:
+        return _error(404, "not_found", "Этого чата больше нет.")
+    return web.json_response(await _chats_payload(request.app, user.id))
+
+
+async def post_chat_move(request: web.Request) -> web.Response:
+    """{"id": N, "project_id": M | null} — перенести чат в проект или из него."""
+    user: WebAppUser = request[_USER_KEY]
+    payload = await _read_json(request) or {}
+    chat_id = _int_field(payload, "id")
+    if chat_id is None or "project_id" not in payload:
+        return _error(400, "bad_request", "Некорректный запрос.")
+    if await request.app[MEMORY].chats.move(user.id, chat_id, _int_field(payload, "project_id")) is None:
+        return _error(404, "not_found", "Чат или проект не найден.")
+    return web.json_response(await _chats_payload(request.app, user.id))
+
+
+async def post_chat_delete(request: web.Request) -> web.Response:
+    """{"id": N} — удалить чат с перепиской и файлами. Если он был открыт, открывается другой."""
+    user: WebAppUser = request[_USER_KEY]
+    chat_id = _int_field(await _read_json(request), "id")
+    if chat_id is None or not await request.app[MEMORY].chats.delete(user.id, chat_id):
+        return _error(404, "not_found", "Этого чата больше нет.")
+    return web.json_response(await _chats_payload(request.app, user.id, history=True))
+
+
+_PROJECT_ERRORS = {
+    "empty_name": (400, "Напиши название проекта."),
+    "too_long": (400, f"Инструкции проекта — до {MAX_PROJECT_INSTRUCTIONS} символов."),
+    "too_many": (400, f"Проектов не может быть больше {MAX_PROJECTS}."),
+    "bad_mode": (400, "Некорректный режим проекта."),
+    "not_found": (404, "Этого проекта больше нет."),
+}
+
+
+async def post_project_save(request: web.Request) -> web.Response:
+    """Создать проект или изменить: {"id"?, "name", "emoji", "instructions", "mode": "" | "code"}.
+    Без id — новый проект (и, если "open": true, новый чат в нём)."""
+    user: WebAppUser = request[_USER_KEY]
+    payload = await _read_json(request) or {}
+    chats = request.app[MEMORY].chats
+    fields = {}
+    for name in ("name", "emoji", "instructions", "mode"):
+        value = payload.get(name)
+        if value is not None and not isinstance(value, str):
+            return _error(400, "bad_request", "Некорректный запрос.")
+        fields[name] = value
+    project_id = _int_field(payload, "id")
+    try:
+        if project_id is None:
+            project = await chats.create_project(
+                user.id,
+                fields["name"] or "",
+                emoji=fields["emoji"] or "📁",
+                instructions=fields["instructions"] or "",
+                mode=fields["mode"] or "",
+            )
+            if payload.get("open") is True:
+                await request.app[MEMORY].start_new_chat(user.id, project_id=project.id)
+        else:
+            project = await chats.update_project(user.id, project_id, **fields)
+    except ProjectError as exc:
+        status, message = _PROJECT_ERRORS.get(str(exc), (400, "Некорректный запрос."))
+        return _error(status, str(exc), message)
+    return web.json_response(
+        {"project": project.as_dict(), **await _chats_payload(request.app, user.id, history=payload.get("open") is True)}
+    )
+
+
+async def post_project_delete(request: web.Request) -> web.Response:
+    """{"id": N} — удалить проект и его файлы; чаты переходят в «Без проекта»."""
+    user: WebAppUser = request[_USER_KEY]
+    project_id = _int_field(await _read_json(request), "id")
+    if project_id is None or not await request.app[MEMORY].chats.delete_project(user.id, project_id):
+        return _error(404, "not_found", "Этого проекта больше нет.")
+    return web.json_response(await _chats_payload(request.app, user.id))
+
+
+async def post_project_files(request: web.Request) -> web.Response:
+    """{"id": N} — файлы проекта (видны во всех его чатах)."""
+    user: WebAppUser = request[_USER_KEY]
+    project_id = _int_field(await _read_json(request), "id")
+    store = request.app[CHAT].documents
+    if project_id is None or await request.app[MEMORY].chats.project(user.id, project_id) is None:
+        return _error(404, "not_found", "Этого проекта больше нет.")
+    files = [] if store is None else [info.as_dict() for info in await store.list_project(user.id, project_id)]
+    return web.json_response({"files": files})
 
 
 async def index(request: web.Request) -> web.FileResponse:
@@ -937,6 +1090,13 @@ def create_web_app(
     app.router.add_post("/api/chat/stream", post_chat_stream)
     app.router.add_post("/api/clear", post_clear)
     app.router.add_post("/api/chat/new", post_new_chat)
+    app.router.add_post("/api/chat/open", post_chat_open)
+    app.router.add_post("/api/chat/rename", post_chat_rename)
+    app.router.add_post("/api/chat/move", post_chat_move)
+    app.router.add_post("/api/chat/delete", post_chat_delete)
+    app.router.add_post("/api/projects/save", post_project_save)
+    app.router.add_post("/api/projects/delete", post_project_delete)
+    app.router.add_post("/api/projects/files", post_project_files)
     app.router.add_post("/api/preferences", post_preferences)
     app.router.add_post("/api/instructions", post_instructions)
     app.router.add_post("/api/mode", post_mode)

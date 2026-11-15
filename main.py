@@ -33,6 +33,7 @@ from database.session import (
     describe_database,
     init_db,
 )
+from memory.chats import ChatStore
 from memory.manager import MemoryManager
 from memory.repository import MessageRepository
 from services.chat import ChatService
@@ -64,7 +65,10 @@ BOT_COMMANDS = [
     BotCommand(command="code", description="Режим кода: пишу и разбираю программы"),
     BotCommand(command="draw", description="Нарисовать картинку"),
     BotCommand(command="search", description="Найти в интернете со ссылками на источники"),
-    BotCommand(command="docs", description="Документы в разговоре: PDF, Word, таблицы"),
+    BotCommand(command="new", description="Новый чат без старой переписки"),
+    BotCommand(command="chats", description="Мои чаты: вернуться к прошлому"),
+    BotCommand(command="projects", description="Проекты: Учёба, Код, Личное…"),
+    BotCommand(command="docs", description="Документы в чате: PDF, Word, таблицы"),
     BotCommand(command="help", description="Что я умею"),
     BotCommand(command="models", description="Подключённые нейросети"),
     BotCommand(command="reminders", description="Мои напоминания"),
@@ -193,9 +197,11 @@ async def run(settings: Settings) -> None:
         temperature=settings.temperature,
         usage=usage,
     )
+    chats = ChatStore(session_factory)
     memory = MemoryManager(
         MessageRepository(session_factory),
         history_limit=settings.history_max_messages,
+        chats=chats,
     )
 
     preferences = PreferencesStore(session_factory)
@@ -235,7 +241,7 @@ async def run(settings: Settings) -> None:
         assistant_name=settings.assistant_name,
     )
     search = create_web_search(settings, http_client, session_factory)
-    documents = DocumentStore(session_factory, context_chars=settings.documents_context_chars)
+    documents = DocumentStore(session_factory, chats=chats, context_chars=settings.documents_context_chars)
     chat_service = ChatService(
         settings,
         ai_client,

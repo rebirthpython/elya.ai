@@ -81,19 +81,21 @@ def test_describe_database_resolves_sqlite_path_and_hides_passwords(tmp_path, mo
     assert "secret" not in described and "db:5432/elya" in described
 
 
-async def test_new_chat_keeps_old_messages_but_hides_them_from_the_model(session_factory):
+async def test_new_chat_starts_empty_and_keeps_the_old_chat(session_factory):
     memory = MemoryManager(MessageRepository(session_factory), history_limit=10)
-    assert await memory.start_new_chat(1) is None  # пустая история — начинать нечего
+    first, created = await memory.start_new_chat(1)
+    assert created is False  # пустой чат и так новый
     await memory.save_exchange(1, "старый вопрос", "старый ответ")
 
-    assert await memory.start_new_chat(1) is not None
-    assert await memory.start_new_chat(1) is None  # два раза подряд — одна отметка
+    second, created = await memory.start_new_chat(1)
+    assert created is True and second.id != first.id
+    assert (await memory.start_new_chat(1))[1] is False  # два раза подряд — один чат
     assert await memory.get_history(1) == []
     await memory.save_exchange(1, "новый вопрос", "новый ответ")
 
     assert [m.content for m in await memory.get_history(1)] == ["новый вопрос", "новый ответ"]
-    timeline = await memory.get_timeline(1, 100)
-    assert [m.role for m in timeline] == ["user", "assistant", "break", "user", "assistant"]
-    assert await memory.history_size(1) == 4  # отметка — не сообщение
-    assert await memory.clear_history(1) == 4
+    assert [m.content for m in await memory.get_history(1, chat_id=first.id)] == ["старый вопрос", "старый ответ"]
+    assert await memory.history_size(1) == 2
+    assert await memory.clear_history(1) == 2
     assert await memory.get_timeline(1, 100) == []
+    assert len(await memory.get_history(1, chat_id=first.id)) == 2

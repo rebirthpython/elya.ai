@@ -206,7 +206,7 @@ async def test_clear_with_confirmation(env):
     assert confirm.reply_markup is not None
 
     await dp.feed_update(env["bot"], _callback_update(ClearHistoryCallback(confirm=True).pack()))
-    assert "История очищена" in env["session"].sent_texts()[-1]
+    assert "Чат очищен" in env["session"].sent_texts()[-1]
     assert await env["memory"].get_history(OWNER_ID) == []
 
 

@@ -172,7 +172,13 @@ class ChatService:
             question = user_text.strip() or (DEFAULT_QUESTION if images else "")
             stored_text = history_text(user_text) if images else user_text
         async with self._locks[user_id]:
+            # Чат, в котором задан вопрос: ответ сохранится в него, даже если тем временем
+            # откроют другой. У проекта чата — свои инструкции, файлы и режим.
+            chat = await self._memory.chats.active(user_id)
+            project = await self._memory.chats.project(user_id, chat.project_id)
             chat_mode = await self._modes.get(user_id) if self._modes else DEFAULT_MODE
+            if project is not None and project.mode == CODE:
+                chat_mode = CODE
             coding = chat_mode == CODE
             looks_like_code = coding and (
                 len(user_text) > _CODE_REMINDER_MAX_CHARS or "```" in user_text
@@ -188,12 +194,12 @@ class ChatService:
                 # пообещать напоминание, которого нет. Ошибки ИИ (AIError) идут как обычно.
                 handled = await self._reminders.handle_chat_request(user_id, user_text)
                 if handled is not None:
-                    await self._memory.save_exchange(user_id, user_text, handled)
+                    await self._memory.save_exchange(user_id, user_text, handled, chat_id=chat.id)
                     yield CompletionResult(text=handled, provider="reminders", model="")
                     return
             history = [
                 ChatMessage(m.role, strip_sources(m.content)) if m.role == "assistant" else m
-                for m in await self._memory.get_history(user_id)
+                for m in await self._memory.get_history(user_id, chat_id=chat.id)
             ]
             prefs = (
                 await self._preferences.get(user_id) if self._preferences else Preferences()
@@ -202,7 +208,7 @@ class ChatService:
             custom = await self._instructions.get(user_id) if self._instructions else None
             docs = DocumentContext()
             if self._documents is not None and not images and file is None:
-                docs = await self._documents.context(user_id, question, fresh=documents)
+                docs = await self._documents.context(user_id, question, fresh=documents, chat_id=chat.id)
             if documents:
                 names = [info.name for info in docs.documents if info.id in documents]
                 stored_text = document_history_text(names or ["документ"], user_text)
@@ -215,7 +221,8 @@ class ChatService:
                         style=prefs.style,
                         verbosity=prefs.verbosity,
                         memory=recall.prompt_block() if recall else "",
-                        instructions=custom.prompt_block() if custom else "",
+                        instructions=(custom.prompt_block() if custom else "")
+                        + (project.prompt_block() if project else ""),
                         mode=chat_mode,
                         can_draw=settings.images_enabled,
                         internet_rule=rule,
@@ -300,7 +307,7 @@ class ChatService:
                     assert result is not None
                     result = dataclasses.replace(result, text=strip_markers(result.text) or result.text)
             assert result is not None
-            await self._memory.save_exchange(user_id, stored_text, result.text)
+            await self._memory.save_exchange(user_id, stored_text, result.text, chat_id=chat.id)
 
         if user_text and recall and recall.enabled and self._long_memory.worth_extracting(user_text):
             self._spawn(

@@ -120,8 +120,31 @@
     drawerMemory: $('drawer-memory'),
     drawerInstructions: $('drawer-instructions'),
     drawerInstructionsMeta: $('drawer-instructions-meta'),
-    drawerRecent: $('drawer-recent'),
     drawerEmpty: $('drawer-empty'),
+    projectChips: $('project-chips'),
+    projectSettings: $('project-settings'),
+    chatList: $('chat-list'),
+    chatsLabel: $('chats-label'),
+    newChatBtn: $('new-chat-btn'),
+    topbarProject: $('topbar-project'),
+    projectPage: $('project-page'),
+    projectEmojis: $('project-emojis'),
+    projectName: $('project-name'),
+    projectInstructions: $('project-instructions'),
+    projectInstructionsCount: $('project-instructions-count'),
+    projectCode: $('project-code'),
+    projectCodeBlock: $('project-code-block'),
+    projectFilesBlock: $('project-files-block'),
+    projectFiles: $('project-files'),
+    projectFilesEmpty: $('project-files-empty'),
+    projectFileAdd: $('project-file-add'),
+    projectFileInput: $('project-file-input'),
+    projectDeleteBlock: $('project-delete-block'),
+    projectDelete: $('project-delete'),
+    projectDeleteConfirm: $('project-delete-confirm'),
+    projectDeleteCancel: $('project-delete-cancel'),
+    projectDeleteYes: $('project-delete-yes'),
+    projectSave: $('project-save'),
     drawerNew: $('drawer-new'),
     drawerMe: $('drawer-me'),
     drawerInitials: $('drawer-initials'),
@@ -194,7 +217,14 @@
     images: { enabled: false },
     drawerAnim: null,
     drawerClosing: false,
-    drawerTargets: [],
+    chat: null, // открытый чат
+    chats: [],
+    projects: [],
+    chatFilter: 'all', // какие чаты показывать в шторке: 'all' или id проекта
+    chatMenu: null, // у какого чата открыты действия
+    chatRename: null,
+    chatDeleteAsk: null,
+    projectEdit: null, // проект на странице настройки ({ id: null } — новый)
     drawerDragged: false,
   };
 
@@ -461,7 +491,15 @@
       return result;
     },
     clear: () => request('api/clear', {}),
-    newChat: () => request('api/chat/new', {}),
+    /* projectId: undefined — в том же проекте, null — без проекта, число — в проекте. */
+    newChat: (projectId) => request('api/chat/new', projectId === undefined ? {} : { project_id: projectId }),
+    chatOpen: (id) => request('api/chat/open', { id }),
+    chatRename: (id, title) => request('api/chat/rename', { id, title }),
+    chatDelete: (id) => request('api/chat/delete', { id }),
+    projectSave: (data) => request('api/projects/save', data),
+    projectDelete: (id) => request('api/projects/delete', { id }),
+    projectFiles: (id) => request('api/projects/files', { id }),
+    projectFileUpload: (id, file) => uploadFile('api/document', file, () => {}, { project_id: String(id) }),
     savePreferences: (patch) => request('api/preferences', patch),
     saveInstructions: (patch) => request('api/instructions', patch),
     setMode: (mode) => request('api/mode', { mode }),
@@ -564,10 +602,11 @@
   }
 
   /* Загрузка файла с процентами (у fetch их нет). */
-  function uploadFile(path, file, onProgress) {
+  function uploadFile(path, file, onProgress, fields) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const form = new FormData();
+      Object.entries(fields || {}).forEach(([key, value]) => form.append(key, value));
       form.append('file', file, file.name || 'video.mp4');
       xhr.open('POST', path);
       xhr.setRequestHeader('Authorization', 'tma ' + tg.initData);
@@ -614,6 +653,46 @@
     let drawingId = 0;
     let docs = [];
     let docId = 0;
+    // Чаты и проекты в демо: всё в памяти страницы.
+    let projects = [
+      { id: 1, name: 'Учёба', emoji: '📚', instructions: 'Объясняй понятно и по шагам, с примерами.', mode: '' },
+      { id: 2, name: 'Код', emoji: '💻', instructions: '', mode: 'code' },
+      { id: 3, name: 'Личное', emoji: '🌿', instructions: '', mode: '' },
+    ];
+    let projectId = 3;
+    const projectFiles = {};
+    let chatId = 1;
+    let chats = [{ id: 1, project_id: null, title: history.length ? 'Привет! Что ты умеешь?' : '', updated: nowTs(), history }];
+    let activeChat = chats[0];
+    const effectiveMode = () => {
+      const project = projects.find((p) => p.id === activeChat.project_id);
+      return project && project.mode === 'code' ? 'code' : mode;
+    };
+    const chatView = (chat) => ({ id: chat.id, project_id: chat.project_id, title: chat.title, updated: chat.updated });
+    function chatsView(withHistory) {
+      activeChat.history = history;
+      const list = chats
+        .filter((chat) => chat === activeChat || chat.history.length)
+        .sort((a, b) => b.updated - a.updated)
+        .map(chatView);
+      const view = {
+        chat: chatView(activeChat), chats: list, projects: projects.map((p) => Object.assign({}, p)),
+        documents: docs.slice(), mode: effectiveMode(),
+        limits: { max_text_length: effectiveMode() === 'code' ? 16000 : 4000 },
+      };
+      if (withHistory) view.history = history.slice();
+      return view;
+    }
+    function touchChat(text) {
+      activeChat.updated = nowTs();
+      if (!activeChat.title && text) activeChat.title = text.split('\n')[0].slice(0, 50);
+    }
+    function openDemoChat(chat) {
+      activeChat.history = history;
+      activeChat = chat;
+      history = chat.history;
+      docs = chat.docs || (chat.docs = []);
+    }
 
     /* В демо «рисунок» — случайный градиент с кругами: так видно, как выглядит ответ с картинкой. */
     function demoDrawing(request, id) {
@@ -722,6 +801,9 @@
           video: { available: true, upload_limit_mb: 100, session: videoView() },
           images: { enabled: true, used: 0, limit: 50 },
           documents: docs.slice(),
+          chat: chatsView().chat,
+          chats: chatsView().chats,
+          projects: chatsView().projects,
           search: true,
           about: { code_lines: 31836 },
           preference_options: {
@@ -752,7 +834,10 @@
       async setMode(next) {
         await sleep(200);
         mode = next;
-        return { mode, limits: { max_text_length: mode === 'code' ? 16000 : 4000 } };
+        const effective = effectiveMode();
+        const data = { mode: effective, limits: { max_text_length: effective === 'code' ? 16000 : 4000 } };
+        if (effective !== next) data.locked = true;
+        return data;
       },
       async memorySet(enabled) {
         await sleep(200);
@@ -871,14 +956,20 @@
         docId += 1;
         const document = { id: docId, name: file.name, kind: 'pdf', info: 'PDF, 12 стр.' };
         docs.push(document);
+        activeChat.docs = docs;
         return { document, truncated: false, documents: docs.slice() };
       },
       async documentsDelete(id) {
         await sleep(200);
         docs = id === 'all' ? [] : docs.filter((doc) => doc.id !== id);
+        activeChat.docs = docs;
+        Object.keys(projectFiles).forEach((key) => {
+          projectFiles[key] = projectFiles[key].filter((doc) => doc.id !== id);
+        });
         return { documents: docs.slice() };
       },
       async chatStream(text, model, onDelta, extra) {
+        touchChat(text || ((extra && extra.documents && extra.documents.length) ? '📄 Документ' : ''));
         if (extra && extra.documents && extra.documents.length) {
           await sleep(1200);
           const name = (docs.find((doc) => doc.id === extra.documents[0]) || { name: 'документ' }).name;
@@ -951,18 +1042,85 @@
       },
       async clear() {
         await sleep(300);
-        const deleted = history.filter((m) => m.role !== 'break').length;
+        const deleted = history.length;
         history = [];
         docs = [];
-        return { deleted };
+        activeChat.docs = docs;
+        activeChat.title = '';
+        return Object.assign({ deleted }, chatsView());
       },
-      async newChat() {
+      async newChat(project) {
         await sleep(250);
-        const last = history[history.length - 1];
-        const started = Boolean(last) && last.role !== 'break';
-        if (started) history.push({ role: 'break', content: '', ts: nowTs() });
-        docs = [];
-        return { started, history: history.slice() };
+        const target = project === undefined ? activeChat.project_id : project;
+        if (!history.length && !docs.length) {
+          activeChat.project_id = target;
+          return Object.assign({ started: false }, chatsView(true));
+        }
+        chatId += 1;
+        const chat = { id: chatId, project_id: target, title: '', updated: nowTs(), history: [], docs: [] };
+        chats.push(chat);
+        openDemoChat(chat);
+        return Object.assign({ started: true }, chatsView(true));
+      },
+      async chatOpen(id) {
+        await sleep(200);
+        const chat = chats.find((c) => c.id === id);
+        if (!chat) throw new ApiError('not_found', 'Этого чата больше нет.', 404);
+        openDemoChat(chat);
+        return chatsView(true);
+      },
+      async chatRename(id, title) {
+        await sleep(150);
+        const chat = chats.find((c) => c.id === id);
+        if (chat) chat.title = title;
+        return chatsView();
+      },
+      async chatDelete(id) {
+        await sleep(200);
+        chats = chats.filter((c) => c.id !== id);
+        if (activeChat.id === id) {
+          const next = chats.slice().sort((a, b) => b.updated - a.updated)[0];
+          if (next) openDemoChat(next);
+          else {
+            chatId += 1;
+            const chat = { id: chatId, project_id: null, title: '', updated: nowTs(), history: [], docs: [] };
+            chats.push(chat);
+            openDemoChat(chat);
+          }
+        }
+        return chatsView(true);
+      },
+      async projectSave(data) {
+        await sleep(250);
+        let project;
+        if (data.id) {
+          project = projects.find((p) => p.id === data.id);
+          Object.assign(project, { name: data.name.trim(), emoji: data.emoji, instructions: data.instructions.trim(), mode: data.mode });
+        } else {
+          projectId += 1;
+          project = { id: projectId, name: data.name.trim(), emoji: data.emoji, instructions: data.instructions.trim(), mode: data.mode };
+          projects.push(project);
+          if (data.open) await this.newChat(project.id);
+        }
+        return Object.assign({ project: Object.assign({}, project) }, chatsView(Boolean(data.open)));
+      },
+      async projectDelete(id) {
+        await sleep(200);
+        projects = projects.filter((p) => p.id !== id);
+        chats.forEach((chat) => {
+          if (chat.project_id === id) chat.project_id = null;
+        });
+        return chatsView();
+      },
+      async projectFiles(id) {
+        await sleep(150);
+        return { files: (projectFiles[id] || []).slice() };
+      },
+      async projectFileUpload(id, file) {
+        await sleep(700);
+        docId += 1;
+        (projectFiles[id] = projectFiles[id] || []).push({ id: docId, name: file.name, kind: 'pdf', info: 'PDF, 12 стр.', project_id: id });
+        return { files: projectFiles[id].slice(), documents: docs.slice() };
       },
     };
   })();
@@ -1645,6 +1803,7 @@
       haptic('impact', 'soft');
       if (data.usage) state.usage = data.usage;
       watchNewMemories();
+      noteChatActivity(text || (attachment && attachment.kind === 'document' ? attachment.name : '📷 Фото'));
       if (data.reply && data.reply.provider === 'reminders') refreshReminders();
       state.signature = '';
       state.syncedAt = Date.now();
@@ -1874,7 +2033,8 @@
     docs.forEach((doc) => {
       const chip = el('span', 'docs-chip');
       chip.title = doc.name + ' — ' + doc.info;
-      chip.append(el('span', 'docs-chip__icon', '📄'), el('span', 'docs-chip__name', doc.name));
+      chip.append(el('span', 'docs-chip__icon', doc.project_id ? '🗂' : '📄'), el('span', 'docs-chip__name', doc.name));
+      if (doc.project_id) chip.title += ' (файл проекта)';
       const remove = el('button', 'docs-chip__remove ripple');
       remove.type = 'button';
       remove.setAttribute('aria-label', 'Убрать документ «' + doc.name + '»');
@@ -2378,7 +2538,9 @@
   function inputPlaceholder() {
     if (state.video.session) return 'Что сделать с видео?';
     if (state.searchNext) return 'Что найти в интернете?';
-    return state.mode === 'code' ? 'Опиши задачу или вставь код…' : 'Напиши сообщение…';
+    const base = state.mode === 'code' ? 'Опиши задачу или вставь код…' : 'Напиши сообщение…';
+    const project = currentProject();
+    return project ? project.emoji + ' ' + project.name + ': ' + base.charAt(0).toLowerCase() + base.slice(1) : base;
   }
 
   function renderMode() {
@@ -2406,8 +2568,14 @@
     renderMode();
     haptic('select');
     try {
-      takeMode(await backend.setMode(next));
-      showToast(next === 'code' ? 'Режим кода включён' : 'Обычный режим');
+      const data = await backend.setMode(next);
+      takeMode(data);
+      if (data.locked) {
+        const project = currentProject();
+        showToast('В проекте «' + (project ? project.name : '') + '» режим кода включён всегда — это можно поменять в настройках проекта');
+      } else {
+        showToast(next === 'code' ? 'Режим кода включён' : 'Обычный режим');
+      }
     } catch (error) {
       state.mode = previous;
       renderMode();
@@ -2907,13 +3075,22 @@
     dom.sheet.classList.add('is-opening');
     renderInstructionsSummary();
     const about = opts.page === 'about';
-    state.sheetPage = about ? 'about' : 'main';
-    dom.sheetBody.hidden = about;
+    const projectPage = opts.page === 'project';
+    state.sheetPage = about ? 'about' : projectPage ? 'project' : 'main';
+    dom.sheetBody.hidden = about || projectPage;
     dom.instructionsPage.hidden = true;
     dom.aboutPage.hidden = !about;
-    dom.sheet.classList.remove('is-deep');
+    dom.projectPage.hidden = !projectPage;
+    dom.sheet.classList.toggle('is-deep', projectPage);
     dom.sheetBack.hidden = true;
-    dom.sheetTitle.textContent = about ? 'Как я устроена?' : 'Настройки';
+    dom.sheetTitle.textContent = about ? 'Как я устроена?'
+      : projectPage ? (opts.project ? opts.project.emoji + ' ' + opts.project.name : 'Новый проект')
+      : 'Настройки';
+    if (projectPage) {
+      fillProjectForm(opts.project || null);
+      dom.projectPage.scrollTop = 0;
+      if (!opts.project && finePointer) setTimeout(() => dom.projectName.focus(), 400);
+    }
     if (about) {
       dom.aboutPage.scrollTop = 0;
       setTimeout(renderAbout, reducedMotion ? 0 : 200);
@@ -2990,6 +3167,8 @@
       state.sheetPage = 'main';
       dom.instructionsPage.hidden = true;
       dom.aboutPage.hidden = true;
+      dom.projectPage.hidden = true;
+      state.projectEdit = null;
       dom.sheetBody.hidden = false;
       dom.sheetBack.hidden = true;
       dom.sheetTitle.textContent = 'Настройки';
@@ -3065,8 +3244,7 @@
   async function clearHistory() {
     dom.clearYes.disabled = true;
     try {
-      await backend.clear();
-      if (state.documents) setDocuments([]);
+      applyChats(await backend.clear());
     } catch (error) {
       dom.clearYes.disabled = false;
       showToast(error.message);
@@ -3074,7 +3252,7 @@
       return;
     }
     closeSheet();
-    await wipeFeed('История очищена');
+    await wipeFeed('Чат очищен');
   }
 
   /* Сообщения разлетаются, лента начинается заново. */
@@ -3106,22 +3284,461 @@
     return forms[2];
   }
 
-  /* «Недавнее» — последние сообщения пользователя из ленты, новые сверху. */
-  function renderDrawerRecent() {
-    const nodes = Array.from(dom.messages.querySelectorAll('.msg--user')).reverse().slice(0, 12);
-    state.drawerTargets = nodes;
-    dom.drawerRecent.replaceChildren(...nodes.map((node, index) => {
-      const bubble = node.querySelector('.bubble');
-      const text = (bubble ? bubble.textContent : '').replace(/\s+/g, ' ').trim()
-        || (node.querySelector('.bubble__photo') ? '📷 Фото' : '…');
-      const item = el('li');
-      const button = el('button', 'drawer__recent-btn ripple', text);
+  /* ---------- Чаты и проекты ---------- */
+
+  const PROJECT_EMOJIS = ['📚', '💻', '🌿', '💼', '🎨', '🧪', '🌍', '🎵', '🏋️', '💡', '🏠', '✈️', '📁'];
+
+  function currentProject() {
+    if (!state.chat || state.chat.project_id == null) return null;
+    return state.projects.find((project) => project.id === state.chat.project_id) || null;
+  }
+
+  function projectById(id) {
+    return state.projects.find((project) => project.id === id) || null;
+  }
+
+  /* Ответ сервера с открытым чатом, списком чатов, проектами и документами. */
+  function applyChats(data) {
+    if (!data) return;
+    if (data.chat) state.chat = data.chat;
+    if (Array.isArray(data.chats)) state.chats = data.chats;
+    if (Array.isArray(data.projects)) state.projects = data.projects;
+    if (data.documents !== undefined) setDocuments(data.documents);
+    if ('mode' in data) takeMode(data);
+    if (state.chatFilter !== 'all' && !projectById(state.chatFilter)) state.chatFilter = 'all';
+    renderChatHeader();
+    if (!dom.drawer.hidden) renderChats();
+  }
+
+  /* После ответа: чат поднимается в списке и получает название (как на сервере). */
+  function noteChatActivity(text) {
+    const chat = state.chat;
+    if (!chat) return;
+    chat.updated = nowTs();
+    if (!chat.title && text) {
+      const line = String(text).split('\n').map((part) => part.trim()).find(Boolean) || '';
+      chat.title = line.length > 60 ? line.slice(0, 59).trimEnd() + '…' : line;
+    }
+    state.chats = [Object.assign({}, chat)].concat(state.chats.filter((item) => item.id !== chat.id));
+  }
+
+  /* В шапке — проект открытого чата. */
+  function renderChatHeader() {
+    const project = currentProject();
+    dom.topbarProject.hidden = !project;
+    dom.topbarProject.textContent = project ? project.emoji + ' ' + project.name : '';
+    if (!state.attachment) dom.input.placeholder = inputPlaceholder();
+  }
+
+  const chatDayFormat = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short' });
+
+  function chatWhen(ts) {
+    const date = new Date(ts * 1000);
+    const today = new Date();
+    if (date.toDateString() === today.toDateString()) return timeFormat.format(date);
+    const yesterday = new Date(today.getTime() - 86400000);
+    if (date.toDateString() === yesterday.toDateString()) return 'вчера';
+    return chatDayFormat.format(date).replace('.', '');
+  }
+
+  function renderChats() {
+    // Проекты — фильтр списка чатов.
+    const chips = [{ id: 'all', label: 'Все' }]
+      .concat(state.projects.map((project) => ({ id: project.id, label: project.emoji + ' ' + project.name })))
+      .concat([{ id: 'add', label: '＋ Проект' }]);
+    dom.projectChips.replaceChildren(...chips.map((chip) => {
+      const button = el('button', 'project-chip ripple' + (chip.id === 'add' ? ' project-chip--add' : ''), chip.label);
       button.type = 'button';
-      button.dataset.recent = String(index);
-      item.append(button);
-      return item;
+      button.dataset.project = String(chip.id);
+      if (chip.id !== 'add') {
+        button.setAttribute('role', 'tab');
+        button.setAttribute('aria-selected', String(chip.id === state.chatFilter));
+      }
+      return button;
     }));
-    dom.drawerEmpty.hidden = nodes.length > 0;
+    const filtered = state.chatFilter !== 'all';
+    dom.projectSettings.hidden = !filtered;
+    const project = filtered ? projectById(state.chatFilter) : null;
+    dom.chatsLabel.textContent = project ? 'Чаты проекта «' + project.name + '»' : 'Все чаты';
+
+    const activeId = state.chat ? state.chat.id : null;
+    const list = state.chats.filter((chat) => !filtered || chat.project_id === state.chatFilter);
+    dom.chatList.replaceChildren(...list.map((chat) => {
+      const li = el('li', 'chat-row' + (chat.id === activeId ? ' is-active' : '') + (state.chatMenu === chat.id ? ' is-open' : ''));
+      const title = chat.title || (chat.id === activeId ? 'Новый чат' : 'Без названия');
+      if (state.chatRename === chat.id) {
+        const input = el('input', 'chat-row__input');
+        input.type = 'text';
+        input.maxLength = 60;
+        input.value = chat.title;
+        input.dataset.chatRenameInput = String(chat.id);
+        input.setAttribute('aria-label', 'Название чата');
+        input.enterKeyHint = 'done';
+        li.append(input);
+      } else {
+        const main = el('button', 'chat-row__main ripple');
+        main.type = 'button';
+        main.dataset.chatOpen = String(chat.id);
+        const owner = !filtered && chat.project_id != null ? projectById(chat.project_id) : null;
+        main.append(
+          el('span', 'chat-row__title', (owner ? owner.emoji + ' ' : '') + title),
+          el('span', 'chat-row__meta', chatWhen(chat.updated))
+        );
+        const more = el('button', 'chat-row__more ripple');
+        more.type = 'button';
+        more.dataset.chatMore = String(chat.id);
+        more.setAttribute('aria-label', 'Действия с чатом «' + title + '»');
+        more.textContent = '⋯';
+        li.append(main, more);
+      }
+      if (state.chatMenu === chat.id && state.chatRename !== chat.id) {
+        const actions = el('div', 'chat-row__actions');
+        if (state.chatDeleteAsk === chat.id) {
+          actions.append(el('span', 'chat-row__ask', 'Удалить чат и его файлы?'));
+          const yes = el('button', 'chat-action chat-action--danger ripple', 'Удалить');
+          yes.type = 'button';
+          yes.dataset.chatDeleteYes = String(chat.id);
+          const no = el('button', 'chat-action ripple', 'Отмена');
+          no.type = 'button';
+          no.dataset.chatMore = String(chat.id);
+          actions.append(no, yes);
+        } else {
+          const rename = el('button', 'chat-action ripple', '✏️ Переименовать');
+          rename.type = 'button';
+          rename.dataset.chatRename = String(chat.id);
+          const remove = el('button', 'chat-action chat-action--danger ripple', '🗑 Удалить');
+          remove.type = 'button';
+          remove.dataset.chatDelete = String(chat.id);
+          actions.append(rename, remove);
+        }
+        li.append(actions);
+      }
+      return li;
+    }));
+    dom.drawerEmpty.hidden = list.length > 0;
+    const input = dom.chatList.querySelector('[data-chat-rename-input]');
+    if (input) {
+      input.focus();
+      input.select();
+    }
+  }
+
+  async function openChat(id) {
+    if (state.chat && state.chat.id === id) {
+      closeDrawer();
+      return;
+    }
+    if (state.busy) {
+      showToast('Дождись, пока ' + state.assistantName + ' ответит');
+      return;
+    }
+    let data;
+    try {
+      data = await backend.chatOpen(id);
+    } catch (error) {
+      showToast(error.message);
+      haptic('notify', 'error');
+      return;
+    }
+    applyChats(data);
+    closeDrawer(() => {
+      clearNotice();
+      renderHistory(data.history || []);
+      haptic('impact', 'soft');
+    });
+  }
+
+  async function renameChat(id, title) {
+    state.chatRename = null;
+    state.chatMenu = null;
+    const chat = state.chats.find((item) => item.id === id);
+    if (!title.trim() || (chat && chat.title === title.trim())) {
+      renderChats();
+      return;
+    }
+    try {
+      applyChats(await backend.chatRename(id, title.trim()));
+    } catch (error) {
+      showToast(error.message);
+    }
+    renderChats();
+  }
+
+  async function deleteChat(id) {
+    const wasOpen = state.chat && state.chat.id === id;
+    let data;
+    try {
+      data = await backend.chatDelete(id);
+    } catch (error) {
+      showToast(error.message);
+      haptic('notify', 'error');
+      return;
+    }
+    state.chatMenu = null;
+    state.chatDeleteAsk = null;
+    applyChats(data);
+    renderChats();
+    if (wasOpen) renderHistory(data.history || []);
+    showToast('Чат удалён');
+    haptic('notify', 'success');
+  }
+
+  /* Нажатия в списке чатов и проектов (из общего обработчика шторки). */
+  function chatsClick(event) {
+    const chip = event.target.closest('[data-project]');
+    if (chip) {
+      const value = chip.dataset.project;
+      if (value === 'add') {
+        openProjectEditor(null);
+        return true;
+      }
+      state.chatFilter = value === 'all' ? 'all' : Number(value);
+      state.chatMenu = null;
+      renderChats();
+      haptic('select');
+      return true;
+    }
+    const target = event.target.closest('[data-chat-open], [data-chat-more], [data-chat-rename], [data-chat-delete], [data-chat-delete-yes]');
+    if (!target) return false;
+    const data = target.dataset;
+    if (data.chatOpen) openChat(Number(data.chatOpen));
+    else if (data.chatMore) {
+      const id = Number(data.chatMore);
+      state.chatMenu = state.chatMenu === id && state.chatDeleteAsk !== id ? null : id;
+      state.chatDeleteAsk = null;
+      renderChats();
+      haptic('select');
+    } else if (data.chatRename) {
+      state.chatRename = Number(data.chatRename);
+      renderChats();
+    } else if (data.chatDelete) {
+      state.chatDeleteAsk = Number(data.chatDelete);
+      renderChats();
+      haptic('impact', 'light');
+    } else if (data.chatDeleteYes) deleteChat(Number(data.chatDeleteYes));
+    return true;
+  }
+
+  function bindChats() {
+    dom.chatList.addEventListener('keydown', (event) => {
+      const input = event.target.closest('[data-chat-rename-input]');
+      if (!input) return;
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        input.blur();
+      } else if (event.key === 'Escape') {
+        input.value = '';
+        input.blur();
+      }
+    });
+    dom.chatList.addEventListener('focusout', (event) => {
+      const input = event.target.closest('[data-chat-rename-input]');
+      if (input) renameChat(Number(input.dataset.chatRenameInput), input.value);
+    });
+    dom.projectSettings.addEventListener('click', () => openProjectEditor(projectById(state.chatFilter)));
+    dom.newChatBtn.addEventListener('click', () => startNewChat({ fromTopbar: true }));
+  }
+
+  /* ---------- Настройка проекта ---------- */
+
+  function openProjectEditor(project) {
+    closeDrawer(() => openSheet({ page: 'project', project }));
+  }
+
+  function fillProjectForm(project) {
+    const editing = project ? Object.assign({}, project) : { id: null, name: '', emoji: '📚', instructions: '', mode: '' };
+    state.projectEdit = editing;
+    dom.projectName.value = editing.name;
+    dom.projectInstructions.value = editing.instructions;
+    renderProjectForm();
+    dom.projectFilesBlock.hidden = editing.id === null;
+    dom.projectDeleteBlock.hidden = editing.id === null;
+    dom.projectDeleteConfirm.hidden = true;
+    dom.projectDelete.hidden = false;
+    dom.projectSave.textContent = editing.id === null ? 'Создать проект и чат в нём' : 'Сохранить';
+    renderProjectFiles([]);
+    if (editing.id !== null) loadProjectFiles(editing.id);
+  }
+
+  function renderProjectForm() {
+    const editing = state.projectEdit;
+    if (!editing) return;
+    const emojis = PROJECT_EMOJIS.includes(editing.emoji) ? PROJECT_EMOJIS : [editing.emoji].concat(PROJECT_EMOJIS);
+    dom.projectEmojis.replaceChildren(...emojis.map((emoji) => {
+      const button = el('button', 'emoji-pick ripple', emoji);
+      button.type = 'button';
+      button.dataset.emoji = emoji;
+      button.setAttribute('role', 'radio');
+      button.setAttribute('aria-checked', String(emoji === editing.emoji));
+      return button;
+    }));
+    dom.projectCode.setAttribute('aria-checked', String(editing.mode === 'code'));
+    dom.projectCodeBlock.hidden = state.mode === null;
+    const length = dom.projectInstructions.value.length;
+    dom.projectInstructionsCount.textContent = length + ' / 3000';
+    dom.projectInstructionsCount.classList.toggle('is-near', length > 2700);
+    dom.projectSave.disabled = !dom.projectName.value.trim();
+  }
+
+  function renderProjectFiles(files) {
+    dom.projectFiles.replaceChildren(...files.map((file) => {
+      const li = el('li', 'fact');
+      const body = el('div', 'fact__body');
+      body.append(el('span', 'fact__text', '📄 ' + file.name));
+      const meta = el('div', 'fact__meta');
+      meta.append(el('span', '', file.info));
+      body.append(meta);
+      const remove = el('button', 'fact__remove ripple');
+      remove.type = 'button';
+      remove.dataset.projectFile = String(file.id);
+      remove.setAttribute('aria-label', 'Убрать файл «' + file.name + '»');
+      remove.append(icon('i-close'));
+      li.append(body, remove);
+      return li;
+    }));
+    dom.projectFilesEmpty.hidden = files.length > 0;
+  }
+
+  async function loadProjectFiles(id) {
+    try {
+      const data = await backend.projectFiles(id);
+      if (state.projectEdit && state.projectEdit.id === id) renderProjectFiles(data.files || []);
+    } catch (error) {
+      showToast(error.message);
+    }
+  }
+
+  async function addProjectFile(file) {
+    const editing = state.projectEdit;
+    if (!file || !editing || editing.id === null) return;
+    if (!DOCUMENT_RE.test(file.name || '')) {
+      showToast('Подойдут PDF, Word (.docx), Excel (.xlsx), CSV или текст.');
+      return;
+    }
+    if (file.size > MAX_DOCUMENT_MB * 1024 * 1024) {
+      showToast('Файл больше ' + MAX_DOCUMENT_MB + ' МБ.');
+      return;
+    }
+    dom.projectFileAdd.disabled = true;
+    dom.projectFileAdd.classList.add('is-loading');
+    try {
+      const data = await backend.projectFileUpload(editing.id, file);
+      renderProjectFiles(data.files || []);
+      if (data.documents !== undefined) setDocuments(data.documents);
+      showToast(data.truncated ? 'Файл очень большой: прочитала только начало' : '📄 Файл добавлен в проект');
+      haptic('notify', 'success');
+    } catch (error) {
+      showToast(error.message);
+      haptic('notify', 'error');
+    } finally {
+      dom.projectFileAdd.disabled = false;
+      dom.projectFileAdd.classList.remove('is-loading');
+    }
+  }
+
+  async function removeProjectFile(id) {
+    try {
+      const data = await backend.documentsDelete(id);
+      setDocuments(data.documents);
+      if (state.projectEdit && state.projectEdit.id !== null) loadProjectFiles(state.projectEdit.id);
+    } catch (error) {
+      showToast(error.message);
+    }
+  }
+
+  async function saveProject() {
+    const editing = state.projectEdit;
+    if (!editing || !dom.projectName.value.trim()) return;
+    const creating = editing.id === null;
+    dom.projectSave.disabled = true;
+    let data;
+    try {
+      data = await backend.projectSave({
+        id: editing.id || undefined,
+        name: dom.projectName.value,
+        emoji: editing.emoji,
+        instructions: dom.projectInstructions.value,
+        mode: editing.mode,
+        open: creating,
+      });
+    } catch (error) {
+      dom.projectSave.disabled = false;
+      showToast(error.message);
+      haptic('notify', 'error');
+      return;
+    }
+    applyChats(data);
+    closeSheet();
+    if (creating) {
+      state.chatFilter = data.project.id;
+      renderHistory(data.history || []);
+      showToast(data.project.emoji + ' Проект «' + data.project.name + '» создан — это его первый чат');
+    } else {
+      showToast('Проект сохранён');
+    }
+    haptic('notify', 'success');
+  }
+
+  async function deleteProject() {
+    const editing = state.projectEdit;
+    if (!editing || editing.id === null) return;
+    let data;
+    try {
+      data = await backend.projectDelete(editing.id);
+    } catch (error) {
+      showToast(error.message);
+      return;
+    }
+    state.chatFilter = 'all';
+    applyChats(data);
+    closeSheet();
+    showToast('Проект удалён, его чаты — в «Без проекта»');
+    haptic('notify', 'success');
+  }
+
+  function bindProjectEditor() {
+    dom.projectEmojis.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-emoji]');
+      if (!button || !state.projectEdit) return;
+      state.projectEdit.emoji = button.dataset.emoji;
+      renderProjectForm();
+      haptic('select');
+    });
+    dom.projectName.addEventListener('input', renderProjectForm);
+    dom.projectName.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        dom.projectInstructions.focus();
+      }
+    });
+    dom.projectInstructions.addEventListener('input', renderProjectForm);
+    dom.projectCode.addEventListener('click', () => {
+      if (!state.projectEdit) return;
+      state.projectEdit.mode = state.projectEdit.mode === 'code' ? '' : 'code';
+      renderProjectForm();
+      haptic('select');
+    });
+    dom.projectFileAdd.addEventListener('click', () => dom.projectFileInput.click());
+    dom.projectFileInput.addEventListener('change', () => {
+      const file = dom.projectFileInput.files && dom.projectFileInput.files[0];
+      dom.projectFileInput.value = '';
+      addProjectFile(file);
+    });
+    dom.projectFiles.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-project-file]');
+      if (button) removeProjectFile(Number(button.dataset.projectFile));
+    });
+    dom.projectSave.addEventListener('click', saveProject);
+    dom.projectDelete.addEventListener('click', () => {
+      dom.projectDelete.hidden = true;
+      dom.projectDeleteConfirm.hidden = false;
+      haptic('impact', 'light');
+    });
+    dom.projectDeleteCancel.addEventListener('click', () => {
+      dom.projectDelete.hidden = false;
+      dom.projectDeleteConfirm.hidden = true;
+    });
+    dom.projectDeleteYes.addEventListener('click', deleteProject);
   }
 
   function renderDrawer() {
@@ -3147,7 +3764,10 @@
     dom.drawerInstructionsMeta.textContent = !instr || (!instr.about && !instr.style)
       ? 'не заданы'
       : instr.enabled ? 'вкл.' : 'выкл.';
-    renderDrawerRecent();
+    state.chatMenu = null;
+    state.chatRename = null;
+    state.chatDeleteAsk = null;
+    renderChats();
   }
 
   function openDrawer() {
@@ -3229,31 +3849,20 @@
     }
   }
 
-  function jumpToRecent(index) {
-    const node = state.drawerTargets[index];
-    closeDrawer(() => {
-      if (!node || !node.isConnected) return;
-      node.scrollIntoView({ block: 'center', behavior: reducedMotion ? 'auto' : 'smooth' });
-      node.classList.remove('is-found');
-      void node.offsetWidth;
-      node.classList.add('is-found');
-      setTimeout(() => node.classList.remove('is-found'), 1700);
-    });
-  }
-
-  /* «Новый чат»: ничего не удаляется. Эля начинает с чистого листа, а прошлая переписка
-     остаётся в ленте над разделителем — к ней можно вернуться через «Недавнее». */
-  async function startNewChat() {
+  /* «Новый чат»: открывается пустой чат, прошлый остаётся в списке чатов.
+     Из шторки — в выбранном там проекте («Все» — без проекта), из шапки — в проекте открытого. */
+  async function startNewChat(options) {
+    const fromTopbar = Boolean(options && options.fromTopbar);
     if (dom.drawerNew.disabled) return;
     if (state.busy) {
       showToast('Дождись, пока ' + state.assistantName + ' ответит');
       return;
     }
+    const projectId = fromTopbar ? undefined : (state.chatFilter === 'all' ? null : state.chatFilter);
     dom.drawerNew.disabled = true;
     let data;
     try {
-      data = await backend.newChat();
-      if (state.documents) setDocuments([]); // документы принадлежат разговору
+      data = await backend.newChat(projectId);
     } catch (error) {
       showToast(error.message);
       haptic('notify', 'error');
@@ -3261,18 +3870,26 @@
     } finally {
       dom.drawerNew.disabled = false;
     }
-    closeDrawer(() => {
-      if (data.started) {
-        renderHistory(data.history || []);
-        const marks = dom.messages.querySelectorAll('.chat-break');
-        if (marks.length) marks[marks.length - 1].classList.add('chat-break--new');
-        showToast('Новый чат. Прошлая переписка осталась выше');
-      } else {
-        showToast('Это уже новый чат');
-      }
+    applyChats(data);
+    closeDrawer(async () => {
+      clearNotice();
+      if (dom.messages.children.length && !reducedMotion) await wipeFeedQuietly();
+      renderHistory(data.history || []);
+      const project = currentProject();
+      showToast(project ? 'Новый чат в «' + project.emoji + ' ' + project.name + '»' : 'Новый чат');
       haptic('notify', 'success');
       if (finePointer) dom.input.focus();
     });
+  }
+
+  /* Сообщения прошлого чата разлетаются, перед тем как открыть новый. */
+  async function wipeFeedQuietly() {
+    const nodes = Array.from(dom.messages.children).slice(-10).reverse();
+    nodes.forEach((node, index) => {
+      node.style.setProperty('--i', index);
+      node.classList.add('is-leaving');
+    });
+    await sleep(280 + nodes.length * 25);
   }
 
   /* Шторку можно смахнуть влево. Вертикальная прокрутка внутри работает как обычно. */
@@ -3365,10 +3982,11 @@
         drawerAction(item.dataset.drawer);
         return;
       }
-      const recent = event.target.closest('[data-recent]');
-      if (recent) jumpToRecent(Number(recent.dataset.recent));
+      chatsClick(event);
     });
-    dom.drawerNew.addEventListener('click', startNewChat);
+    dom.drawerNew.addEventListener('click', () => startNewChat());
+    bindChats();
+    bindProjectEditor();
     dom.drawerMe.addEventListener('click', () => closeDrawer(() => openSheet()));
   }
 
@@ -3394,6 +4012,9 @@
     state.mode = data.mode === undefined ? null : data.mode;
     applyVideo(data.video);
     setDocuments(data.documents === undefined ? null : data.documents);
+    state.chat = data.chat || null;
+    state.chats = data.chats || [];
+    state.projects = data.projects || [];
     renderInstructionsSummary();
     if (data.preference_options) state.preferenceOptions = data.preference_options;
     state.syncedAt = Date.now();
@@ -3406,6 +4027,7 @@
     dom.assistantName.textContent = name;
     dom.welcomeName.textContent = name;
     renderMode();
+    renderChatHeader();
     dom.hint.textContent = name + ' — ИИ и может ошибаться. Важное лучше перепроверить.';
     document.querySelectorAll('.orb__letter').forEach((node) => {
       node.textContent = name.charAt(0).toUpperCase();
@@ -3463,8 +4085,9 @@
     if (data.memory && dom.sheet.hidden) state.memory = Object.assign({}, state.memory, data.memory);
     // Монтаж могли начать или закончить в чате с ботом.
     if (data.video) applyVideo(data.video);
-    // Документы могли прислать или убрать в чате с ботом.
+    // Документы могли прислать или убрать в чате с ботом, а чат — сменить командой /chats.
     if (data.documents !== undefined) setDocuments(data.documents);
+    if (data.chat) applyChats({ chat: data.chat, chats: data.chats, projects: data.projects });
     if (data.reminders && dom.sheet.hidden) {
       state.reminders = Object.assign({}, state.reminders, data.reminders);
       updateBell();

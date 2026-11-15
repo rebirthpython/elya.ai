@@ -66,12 +66,15 @@
       </button>
       <div class="orb orb--sm" id="avatar" aria-hidden="true"><span class="orb__body"><span class="orb__blob orb__blob--a"></span><span class="orb__blob orb__blob--b"></span><span class="orb__blob orb__blob--c"></span><span class="orb__gloss"></span></span><span class="orb__letter">Э</span></div>
       <div class="topbar__text">
-        <div class="topbar__name" id="assistant-name">Эля</div>
+        <div class="topbar__name-row"><span class="topbar__name" id="assistant-name">Эля</span><span class="topbar__project" id="topbar-project" hidden></span></div>
         <div class="status" id="status" data-state="online">
           <span class="status__dot"></span>
           <span class="status__label" id="status-label">на связи</span>
         </div>
       </div>
+      <button class="icon-btn ripple" id="new-chat-btn" type="button" aria-label="Новый чат" title="Новый чат">
+        <svg><use href="#i-compose"/></svg>
+      </button>
       <button class="icon-btn ripple" id="bell-btn" type="button" aria-label="Напоминания">
         <svg><use href="#i-bell"/></svg>
         <span class="bell-badge" id="bell-badge" hidden></span>
@@ -301,14 +304,14 @@
       </section>
 
       <section class="block">
-        <h3 class="block__title">История</h3>
+        <h3 class="block__title">Этот чат</h3>
         <div class="danger" id="clear-box">
           <button class="row-btn row-btn--danger ripple" id="clear-btn" type="button">
             <svg><use href="#i-trash"/></svg>
-            <span>Очистить историю диалога</span>
+            <span>Очистить этот чат</span>
           </button>
           <div class="confirm" id="clear-confirm" hidden>
-            <p>Удалить всю переписку? Вернуть её не получится.</p>
+            <p>Удалить переписку и файлы этого чата? Другие чаты останутся. Вернуть её не получится.</p>
             <div class="confirm__actions">
               <button class="btn btn--ghost ripple" id="clear-cancel" type="button">Отмена</button>
               <button class="btn btn--danger ripple" id="clear-yes" type="button">Удалить</button>
@@ -362,6 +365,71 @@
 
       <div class="instr-actions">
         <button class="btn btn--primary ripple instr-save" id="instr-save" type="button" disabled>Сохранить</button>
+      </div>
+    </div>
+    <div class="sheet__body sheet__page project-page" id="project-page" hidden>
+      <section class="block">
+        <h3 class="block__title">Значок и название</h3>
+        <div class="emoji-row" id="project-emojis" role="radiogroup" aria-label="Значок проекта"></div>
+        <div class="field">
+          <input class="field__input field__input--line" id="project-name" type="text" maxlength="40"
+                 placeholder="Например: Английский" aria-label="Название проекта" enterkeyhint="done">
+        </div>
+      </section>
+
+      <section class="block">
+        <label class="block__title" for="project-instructions">Инструкции проекта</label>
+        <div class="field">
+          <textarea class="field__input" id="project-instructions" rows="5" maxlength="3000"
+                    placeholder="Например: я готовлюсь к ЕГЭ по биологии. Объясняй по шагам и проверяй меня вопросами."></textarea>
+          <span class="field__count" id="project-instructions-count">0 / 3000</span>
+        </div>
+        <p class="block__note">Эля учитывает их во всех чатах этого проекта — вдобавок к общим инструкциям.</p>
+      </section>
+
+      <section class="block" id="project-code-block">
+        <div class="memory">
+          <button class="switch-row ripple" id="project-code" type="button" role="switch" aria-checked="false">
+            <span class="switch-row__text">
+              <span class="switch-row__title">Режим кода</span>
+              <span class="switch-row__sub">Во всех чатах проекта Эля отвечает как программист</span>
+            </span>
+            <span class="switch" aria-hidden="true"><span class="switch__knob"></span></span>
+          </button>
+        </div>
+      </section>
+
+      <section class="block" id="project-files-block">
+        <h3 class="block__title">Файлы проекта</h3>
+        <div class="card">
+          <ul class="facts" id="project-files" aria-label="Файлы проекта"></ul>
+          <p class="memory__empty" id="project-files-empty">Файлов пока нет. Учебник, конспект или таблица отсюда видны во всех чатах проекта.</p>
+          <button class="row-btn ripple" id="project-file-add" type="button">
+            <svg><use href="#i-clip"/></svg><span>Добавить файл</span>
+          </button>
+          <input class="visually-hidden" id="project-file-input" type="file" tabindex="-1" aria-hidden="true"
+                 accept=".pdf,.docx,.xlsx,.xlsm,.csv,.txt,.md,application/pdf">
+        </div>
+        <p class="block__note">PDF, Word, Excel, CSV или текст до 20 МБ. Файл, прикреплённый в самом чате, виден только в нём.</p>
+      </section>
+
+      <section class="block" id="project-delete-block">
+        <div class="danger">
+          <button class="row-btn row-btn--danger ripple" id="project-delete" type="button">
+            <svg><use href="#i-trash"/></svg><span>Удалить проект</span>
+          </button>
+          <div class="confirm" id="project-delete-confirm" hidden>
+            <p>Удалить проект и его файлы? Чаты не пропадут — они перейдут в «Без проекта».</p>
+            <div class="confirm__actions">
+              <button class="btn btn--ghost ripple" id="project-delete-cancel" type="button">Отмена</button>
+              <button class="btn btn--danger ripple" id="project-delete-yes" type="button">Удалить</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="instr-actions">
+        <button class="btn btn--primary ripple instr-save" id="project-save" type="button">Сохранить</button>
       </div>
     </div>
     <div class="sheet__body sheet__page about" id="about-page" hidden>
@@ -448,9 +516,15 @@
 
       <div class="drawer__sep" aria-hidden="true"></div>
 
-      <h3 class="drawer__label">Недавнее</h3>
-      <ul class="drawer__recent" id="drawer-recent" aria-label="Недавние сообщения"></ul>
-      <p class="drawer__empty" id="drawer-empty" hidden>Здесь появятся твои последние сообщения — нажми, чтобы вернуться к ним в ленте.</p>
+      <div class="drawer__head-row">
+        <h3 class="drawer__label">Проекты</h3>
+        <button class="drawer__link ripple" id="project-settings" type="button" hidden>⚙️ Настроить</button>
+      </div>
+      <div class="project-chips" id="project-chips" role="tablist" aria-label="Проекты"></div>
+
+      <h3 class="drawer__label" id="chats-label">Чаты</h3>
+      <ul class="chat-list" id="chat-list" aria-label="Чаты"></ul>
+      <p class="drawer__empty" id="drawer-empty" hidden>Здесь появятся твои чаты. Нажми «Новый чат», чтобы начать разговор с чистого листа.</p>
     </div>
 
     <footer class="drawer__foot">
