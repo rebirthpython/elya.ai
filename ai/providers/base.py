@@ -88,12 +88,26 @@ class InsufficientCreditsError(ProviderError):
     provider_level = True
 
 
+class CertificateError(ProviderError):
+    """Сертификат сервера не прошёл проверку (например, нужен свой корневой сертификат)."""
+
+    provider_level = True
+
+
 class ModelNotFoundError(ProviderError):
     """Модель не существует или снята с поддержки."""
 
 
 class ProviderUnavailableError(ProviderError):
     """Таймаут, сетевая ошибка, 5xx."""
+
+
+class ProviderTimeoutError(ProviderUnavailableError):
+    """Модель не ответила за отведённое время."""
+
+
+class ProviderUnreachableError(ProviderUnavailableError):
+    """Не удалось даже подключиться к серверу провайдера (сеть, DNS, блокировка)."""
 
 
 class BadResponseError(ProviderError):
@@ -109,12 +123,18 @@ class BaseProvider(ABC):
         title: str,
         models: tuple[str, ...],
         vision_models: tuple[str, ...] = (),
+        max_output_tokens: int = 0,
     ) -> None:
         self.name = name
         self.title = title
         self.models = models
         # Модели, которые понимают картинки (по ним идут запросы с фото).
         self.vision_models = vision_models
+        # Потолок max_tokens на этом провайдере (0 — без ограничения).
+        self.max_output_tokens = max_output_tokens
+
+    async def aclose(self) -> None:
+        """Освобождает ресурсы провайдера (например, собственный HTTP-клиент)."""
 
     @abstractmethod
     async def complete(

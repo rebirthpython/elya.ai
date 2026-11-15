@@ -23,6 +23,16 @@ class ProviderConfig:
     api_key: str
     models: tuple[str, ...]
     vision_models: tuple[str, ...] = ()
+    # Потолок max_tokens для провайдера (0 — без ограничения): у некоторых бесплатных
+    # тарифов ответ ограничен, и запрос с большим max_tokens отклоняется целиком.
+    max_output_tokens: int = 0
+    # Протокол: "openai" — обычный OpenAI-совместимый API, "gigachat" — GigaChat (OAuth).
+    kind: str = "openai"
+    # Свой корневой сертификат (PEM) для HTTPS, например НУЦ Минцифры для GigaChat.
+    ca_bundle: str = ""
+    # Только для GigaChat: адрес выдачи токена и область доступа.
+    auth_url: str = ""
+    scope: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +70,12 @@ class Settings:
 
 # Известные провайдеры с OpenAI-совместимым API (POST {base_url}/chat/completions).
 # models — значения по умолчанию; их можно переопределить через <NAME>_MODELS.
+# vision — модели для запросов с фото (<NAME>_VISION_MODELS): «*» — все из models.
+# keyless — работает без ключа (ключ необязателен и только поднимает лимиты).
+# max_tokens — потолок длины ответа на бесплатном тарифе (<NAME>_MAX_TOKENS).
+# {account_id} в base_url подставляется из <NAME>_ACCOUNT_ID.
+# Списки моделей бесплатных тарифов меняются: исчезнувшая модель отвечает 404,
+# AIClient откладывает её на несколько часов и переходит к следующей.
 KNOWN_PROVIDERS: dict[str, dict[str, str]] = {
     "gemini": {
         "title": "Google Gemini API",
@@ -67,28 +83,119 @@ KNOWN_PROVIDERS: dict[str, dict[str, str]] = {
         "models": "gemini-flash-latest,gemini-flash-lite-latest",
         "vision": "*",  # все модели Gemini понимают картинки
     },
-    "openrouter": {
-        "title": "OpenRouter",
-        "base_url": "https://openrouter.ai/api/v1",
-        "models": "",
-    },
-    "groq": {
-        "title": "Groq",
-        "base_url": "https://api.groq.com/openai/v1",
-        "models": "",
-        "vision": "meta-llama/llama-4-scout-17b-16e-instruct",
+    "github": {
+        "title": "GitHub Models",
+        "base_url": "https://models.github.ai/inference",
+        "models": "openai/gpt-4.1,openai/gpt-4.1-mini,openai/gpt-4o-mini",
+        "vision": "*",
+        "max_tokens": "4000",  # бесплатный тариф: до 4000 токенов ответа
     },
     "mistral": {
         "title": "Mistral AI",
         "base_url": "https://api.mistral.ai/v1",
-        "models": "mistral-small-latest",
+        "models": "mistral-large-latest,mistral-medium-latest,mistral-small-latest",
+        "vision": "*",
+    },
+    "groq": {
+        "title": "Groq",
+        "base_url": "https://api.groq.com/openai/v1",
+        "models": "openai/gpt-oss-120b,qwen/qwen3.8-27b,llama-3.3-70b-versatile,openai/gpt-oss-20b",
+        "vision": "meta-llama/llama-4-scout-17b-16e-instruct",
+    },
+    "cerebras": {
+        "title": "Cerebras",
+        "base_url": "https://api.cerebras.ai/v1",
+        "models": "gpt-oss-120b",
+    },
+    "openrouter": {
+        "title": "OpenRouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        # openrouter/free — роутер, сам выбирающий доступную бесплатную модель.
+        "models": "google/gemma-4-31b-it:free,openrouter/free",
+        "vision": "google/gemma-4-31b-it:free",
+    },
+    "nvidia": {
+        "title": "NVIDIA NIM",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "models": "openai/gpt-oss-120b,nvidia/nemotron-3-ultra-550b-a55b,meta/llama-3.3-70b-instruct",
+        "vision": "meta/llama-4-maverick-17b-128e-instruct",
+    },
+    "cloudflare": {
+        "title": "Cloudflare Workers AI",
+        "base_url": "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
+        "models": (
+            "@cf/meta/llama-3.3-70b-instruct-fp8-fast,@cf/zai-org/glm-4.7-flash,"
+            "@cf/openai/gpt-oss-120b"
+        ),
+        "vision": "@cf/meta/llama-4-scout-17b-16e-instruct",
+    },
+    "zai": {
+        "title": "Z.ai (GLM)",
+        "base_url": "https://api.z.ai/api/paas/v4",
+        "models": "glm-4.7-flash,glm-4.5-flash",
+        "vision": "glm-4.6v-flash",
+    },
+    "gigachat": {
+        "title": "GigaChat",
+        "kind": "gigachat",
+        "base_url": "https://gigachat.devices.sberbank.ru/api/v1",
+        "auth_url": "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+        "scope": "GIGACHAT_API_PERS",
+        "models": "GigaChat-2",
+    },
+    "cohere": {
+        "title": "Cohere",
+        "base_url": "https://api.cohere.ai/compatibility/v1",
+        "models": "command-a-03-2025,command-r-plus-08-2024",
+        "vision": "command-a-vision-07-2025",
+    },
+    "huggingface": {
+        "title": "Hugging Face",
+        "base_url": "https://router.huggingface.co/v1",
+        "models": "openai/gpt-oss-120b,Qwen/Qwen3-235B-A22B-Instruct-2507",
+    },
+    # ---- Работают без ключа: запасной вариант на крайний случай ----
+    "ovh": {
+        "title": "OVHcloud AI Endpoints",
+        "base_url": "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1",
+        "models": "Qwen3.5-397B-A17B,gpt-oss-120b,Meta-Llama-3_3-70B-Instruct",
+        "vision": "Qwen2.5-VL-72B-Instruct",
+        "keyless": "1",
+    },
+    "kilo": {
+        "title": "Kilo Gateway",
+        "base_url": "https://api.kilo.ai/api/gateway",
+        "models": "kilo-auto/free",
+        "keyless": "1",
+    },
+    "llm7": {
+        "title": "LLM7.io",
+        "base_url": "https://api.llm7.io/v1",
+        "models": "gpt-oss:20b,mistral-Nemo-Instruct-2407",
+        "keyless": "1",
+    },
+    "pollinations": {
+        "title": "Pollinations",
+        "base_url": "https://gen.pollinations.ai/v1",
+        "models": "openai,mistral",
+        "vision": "openai",
+        "keyless": "1",
     },
     "custom": {
         "title": "Custom OpenAI-compatible API",
         "base_url": "",
         "models": "",
+        "keyless": "1",
     },
 }
+
+# Порядок по умолчанию: сначала сильные модели с щедрыми лимитами, в конце — сервисы
+# без ключа. Провайдеры без ключа (кроме keyless) пропускаются, так что для подключения
+# нового достаточно вписать его ключ в .env.
+DEFAULT_PROVIDER_ORDER = (
+    "gemini,github,mistral,groq,cerebras,openrouter,nvidia,cloudflare,zai,gigachat,"
+    "cohere,huggingface,ovh,kilo,llm7,pollinations"
+)
 
 
 def _get_str(name: str, default: str = "") -> str:
@@ -159,7 +266,7 @@ def _load_webapp_port() -> int:
 
 
 def _load_provider(name: str) -> ProviderConfig | None:
-    """Возвращает конфиг провайдера или None, если для него не задан ключ."""
+    """Возвращает конфиг провайдера или None, если он не настроен (нет ключа или адреса)."""
     known = KNOWN_PROVIDERS.get(name)
     if known is None:
         raise ConfigError(
@@ -171,12 +278,19 @@ def _load_provider(name: str) -> ProviderConfig | None:
     base_url = _get_str(f"{prefix}_BASE_URL", known["base_url"]).rstrip("/")
     models = tuple(_split_csv(_get_str(f"{prefix}_MODELS", known["models"])))
 
-    if name == "custom":
-        # Локальные серверы (например, Ollama) могут работать без ключа.
-        if not base_url:
-            return None
-    elif not api_key:
+    if not base_url:
+        return None  # custom без адреса
+    # Сервисы без ключа (и локальные серверы вроде Ollama) работают и так.
+    if not api_key and not known.get("keyless"):
         return None
+
+    if "{account_id}" in base_url:
+        account_id = _get_str(f"{prefix}_ACCOUNT_ID")
+        if not account_id:
+            raise ConfigError(
+                f"Для провайдера {name!r} нужен ещё ID аккаунта: задайте {prefix}_ACCOUNT_ID."
+            )
+        base_url = base_url.replace("{account_id}", account_id)
 
     if not models:
         raise ConfigError(
@@ -192,6 +306,12 @@ def _load_provider(name: str) -> ProviderConfig | None:
         vision_models = ()
     else:
         vision_models = tuple(_split_csv(vision_raw))
+
+    ca_bundle = _get_str(f"{prefix}_CA_BUNDLE")
+    if ca_bundle and not os.path.isfile(ca_bundle):
+        raise ConfigError(f"{prefix}_CA_BUNDLE: файл сертификата не найден: {ca_bundle!r}")
+
+    kind = known.get("kind", "openai")
     return ProviderConfig(
         name=name,
         title=known["title"],
@@ -199,6 +319,13 @@ def _load_provider(name: str) -> ProviderConfig | None:
         api_key=api_key,
         models=models,
         vision_models=vision_models,
+        max_output_tokens=_get_int(
+            f"{prefix}_MAX_TOKENS", int(known.get("max_tokens", "0")), minimum=0
+        ),
+        kind=kind,
+        ca_bundle=ca_bundle,
+        auth_url=_get_str(f"{prefix}_AUTH_URL", known.get("auth_url", "")) if kind == "gigachat" else "",
+        scope=_get_str(f"{prefix}_SCOPE", known.get("scope", "")) if kind == "gigachat" else "",
     )
 
 
@@ -218,7 +345,7 @@ def load_settings(env_file: str | None = ".env") -> Settings:
             "иначе ботом сможет пользоваться кто угодно."
         )
 
-    provider_names = _split_csv(_get_str("AI_PROVIDERS", "gemini,openrouter").lower())
+    provider_names = _split_csv(_get_str("AI_PROVIDERS", DEFAULT_PROVIDER_ORDER).lower())
     if not provider_names:
         raise ConfigError("AI_PROVIDERS пуст: укажите хотя бы одного провайдера.")
     providers = tuple(

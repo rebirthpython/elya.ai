@@ -1,20 +1,26 @@
+import os
+
+import certifi
 import pytest
 
-from config.settings import ConfigError, load_settings
+from config.settings import DEFAULT_PROVIDER_ORDER, KNOWN_PROVIDERS, ConfigError, load_settings
 
 ENV_KEYS = [
-    "BOT_TOKEN", "ALLOWED_USER_IDS", "AI_PROVIDERS", "GEMINI_API_KEY", "GEMINI_MODELS",
-    "OPENROUTER_API_KEY", "OPENROUTER_MODELS", "GROQ_API_KEY", "GROQ_MODELS",
-    "CUSTOM_BASE_URL", "CUSTOM_API_KEY", "CUSTOM_MODELS", "DAILY_REQUEST_LIMIT", "TEMPERATURE",
-    "MISTRAL_API_KEY", "MISTRAL_MODELS", "WEBAPP_URL", "WEBAPP_HOST", "WEBAPP_PORT",
-    "WEBAPP_AUTH_MAX_AGE",
+    "BOT_TOKEN", "ALLOWED_USER_IDS", "AI_PROVIDERS", "DAILY_REQUEST_LIMIT", "TEMPERATURE",
+    "WEBAPP_URL", "WEBAPP_HOST", "WEBAPP_PORT", "WEBAPP_AUTH_MAX_AGE",
 ]
+KEYLESS = [name for name in DEFAULT_PROVIDER_ORDER.split(",") if KNOWN_PROVIDERS[name].get("keyless")]
 
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     for key in ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+    # Все настройки провайдеров: <ИМЯ>_API_KEY, <ИМЯ>_MODELS, <ИМЯ>_BASE_URL и т. д.
+    prefixes = tuple(f"{name.upper()}_" for name in KNOWN_PROVIDERS)
+    for key in list(os.environ):
+        if key.startswith(prefixes):
+            monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("BOT_TOKEN", "123:abc")
     monkeypatch.setenv("ALLOWED_USER_IDS", "111, 222")
 
@@ -23,7 +29,8 @@ def test_minimal_gemini_config(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "g-key")
     settings = load_settings(env_file=None)
     assert settings.allowed_user_ids == frozenset({111, 222})
-    assert [p.name for p in settings.providers] == ["gemini"]  # openrouter без ключа пропущен
+    # провайдеры без ключа пропущены, сервисы без ключа (keyless) стоят в конце
+    assert [p.name for p in settings.providers] == ["gemini", *KEYLESS]
     assert settings.providers[0].models == ("gemini-flash-latest", "gemini-flash-lite-latest")
 
 
@@ -43,13 +50,16 @@ def test_provider_order_and_custom_without_key(monkeypatch):
         {"ALLOWED_USER_IDS": ""},
         {"ALLOWED_USER_IDS": "abc", "GEMINI_API_KEY": "k"},
         {"AI_PROVIDERS": "unknown", "GEMINI_API_KEY": "k"},
-        {"AI_PROVIDERS": "openrouter", "OPENROUTER_API_KEY": "k"},  # нет моделей
+        {"AI_PROVIDERS": "openrouter", "OPENROUTER_API_KEY": "k", "OPENROUTER_MODELS": " , "},
+        {"AI_PROVIDERS": "custom", "CUSTOM_BASE_URL": "http://localhost:11434/v1"},  # нет моделей
+        {"AI_PROVIDERS": "cloudflare", "CLOUDFLARE_API_KEY": "k"},  # нет ID аккаунта
+        {"GEMINI_API_KEY": "k", "GEMINI_CA_BUNDLE": "/nonexistent/ca.pem"},
         {"GEMINI_API_KEY": "k", "TEMPERATURE": "5"},
         {"GEMINI_API_KEY": "k", "WEBAPP_URL": "http://elya.example"},  # Telegram требует HTTPS
         {"GEMINI_API_KEY": "k", "WEBAPP_URL": "elya.example"},
         {"GEMINI_API_KEY": "k", "WEBAPP_URL": "https://elya.example/?demo"},
         {"GEMINI_API_KEY": "k", "WEBAPP_PORT": "70000"},
-        {},  # ни одного ключа
+        {"AI_PROVIDERS": "gemini,openrouter"},  # ни одного ключа
     ],
 )
 def test_invalid_configs(monkeypatch, env):
@@ -81,4 +91,60 @@ def test_mistral_provider_has_default_model(monkeypatch):
     monkeypatch.setenv("MISTRAL_API_KEY", "m-key")
     provider = load_settings(env_file=None).providers[0]
     assert provider.base_url == "https://api.mistral.ai/v1"
-    assert provider.models == ("mistral-small-latest",)
+    assert provider.models == ("mistral-large-latest", "mistral-medium-latest", "mistral-small-latest")
+    assert provider.vision_models == provider.models
+
+
+def test_every_known_provider_is_ready_to_use():
+    """Достаточно вписать ключ: у каждого провайдера есть адрес и модели по умолчанию."""
+    order = DEFAULT_PROVIDER_ORDER.split(",")
+    assert len(order) == len(set(order))
+    assert set(order) == set(KNOWN_PROVIDERS) - {"custom"}
+    for name in order:
+        known = KNOWN_PROVIDERS[name]
+        assert known["title"] and known["base_url"].startswith("https://"), name
+        assert known["models"], name
+    # бесплатные сервисы без ключа — запасной вариант, они в самом конце
+    assert order[-len(KEYLESS):] == KEYLESS
+
+
+def test_all_providers_with_keys(monkeypatch):
+    for name in KNOWN_PROVIDERS:
+        monkeypatch.setenv(f"{name.upper()}_API_KEY", f"{name}-key")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acc123")
+    providers = load_settings(env_file=None).providers
+    assert [p.name for p in providers] == DEFAULT_PROVIDER_ORDER.split(",")
+    assert all(p.models for p in providers)
+    by_name = {p.name: p for p in providers}
+    assert by_name["cloudflare"].base_url == (
+        "https://api.cloudflare.com/client/v4/accounts/acc123/ai/v1"
+    )
+    assert by_name["github"].max_output_tokens == 4000
+    assert by_name["gemini"].max_output_tokens == 0
+    assert by_name["ovh"].api_key == "ovh-key"  # ключ необязателен, но передаётся
+    giga = by_name["gigachat"]
+    assert giga.kind == "gigachat" and giga.api_key == "gigachat-key"
+    assert giga.auth_url.startswith("https://ngw.devices.sberbank.ru")
+    assert giga.scope == "GIGACHAT_API_PERS"
+    assert {p.kind for p in providers if p.name != "gigachat"} == {"openai"}
+
+
+def test_keyless_provider_works_without_key(monkeypatch):
+    monkeypatch.setenv("AI_PROVIDERS", "ovh")
+    provider = load_settings(env_file=None).providers[0]
+    assert provider.name == "ovh" and provider.api_key == ""
+    assert provider.vision_models  # у OVH есть модель для фото
+
+
+def test_provider_overrides(monkeypatch):
+    monkeypatch.setenv("AI_PROVIDERS", "github,gigachat")
+    monkeypatch.setenv("GITHUB_API_KEY", "ghp")
+    monkeypatch.setenv("GITHUB_MAX_TOKENS", "2000")
+    monkeypatch.setenv("GITHUB_CA_BUNDLE", certifi.where())
+    monkeypatch.setenv("GIGACHAT_API_KEY", "auth-key")
+    monkeypatch.setenv("GIGACHAT_SCOPE", "GIGACHAT_API_B2B")
+    monkeypatch.setenv("GIGACHAT_MODELS", "GigaChat-2-Max,GigaChat-2")
+    github, giga = load_settings(env_file=None).providers
+    assert github.max_output_tokens == 2000 and github.ca_bundle == certifi.where()
+    assert giga.scope == "GIGACHAT_API_B2B"
+    assert giga.models == ("GigaChat-2-Max", "GigaChat-2")

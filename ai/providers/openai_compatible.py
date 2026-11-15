@@ -1,4 +1,5 @@
-"""Провайдер для любых OpenAI-совместимых API (Gemini, OpenRouter, Groq, Ollama и др.).
+"""Провайдер для любых OpenAI-совместимых API (Gemini, GitHub Models, Groq, Mistral,
+OpenRouter, NVIDIA, Cloudflare, Ollama и др.).
 
 Использует только стандартный эндпоинт POST {base_url}/chat/completions через HTTPX,
 поэтому не зависит от SDK конкретных компаний.
@@ -17,12 +18,15 @@ from ai.providers.base import (
     AuthError,
     BadResponseError,
     BaseProvider,
+    CertificateError,
     ChatMessage,
     CompletionResult,
     InsufficientCreditsError,
     ModelNotFoundError,
     ProviderError,
+    ProviderTimeoutError,
     ProviderUnavailableError,
+    ProviderUnreachableError,
     RateLimitError,
     RegionNotSupportedError,
 )
@@ -33,8 +37,19 @@ _REGION_MARKERS = (
     "not available in your country",
     "not available in your region",
     "unsupported_country",
+    "unsupported_region",
+    "region is not supported",
+    "country, region, or territory not supported",
 )
 _AUTH_MARKERS = ("api key", "api_key", "unauthorized", "invalid authentication")
+# Модель убрали из каталога или переименовали: многие провайдеры отвечают на это 400, а не 404.
+_MODEL_MISSING_RE = re.compile(
+    r"model_not_found|unknown[ _]model|invalid model|no such model|not a valid model"
+    r"|no endpoints found|not supported by any provider"
+    r"|\bmodel\b[^.]{0,120}?\b(?:does not exist|not found|decommissioned"
+    r"|no longer (?:supported|available)|has been deprecated)",
+    re.IGNORECASE,
+)
 
 
 def _error_detail(payload: Any) -> tuple[str, int | None]:
@@ -110,11 +125,37 @@ class OpenAICompatibleProvider(BaseProvider):
         models: tuple[str, ...],
         http_client: httpx.AsyncClient,
         vision_models: tuple[str, ...] = (),
+        max_output_tokens: int = 0,
+        owns_client: bool = False,
     ) -> None:
-        super().__init__(name, title, models, vision_models)
+        super().__init__(name, title, models, vision_models, max_output_tokens)
         self._url = f"{base_url.rstrip('/')}/chat/completions"
         self._api_key = api_key
         self._http = http_client
+        # Свой клиент (например, со своим корневым сертификатом) закрывается вместе с провайдером.
+        self._owns_client = owns_client
+
+    async def aclose(self) -> None:
+        if self._owns_client:
+            await self._http.aclose()
+
+    async def _headers(self, model: str) -> dict[str, str]:
+        """Заголовки авторизации запроса; провайдеры с токенами переопределяют."""
+        return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+
+    def _network_error(self, exc: httpx.HTTPError, model: str) -> ProviderError:
+        kwargs = {"provider": self.name, "model": model}
+        if isinstance(exc, httpx.ConnectError) and "CERTIFICATE_VERIFY_FAILED" in str(exc):
+            return CertificateError(
+                f"TLS certificate is not trusted; set {self.name.upper()}_CA_BUNDLE "
+                "to the root certificate (PEM)",
+                **kwargs,
+            )
+        if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+            return ProviderUnreachableError(f"cannot connect: {type(exc).__name__}", **kwargs)
+        if isinstance(exc, httpx.TimeoutException):
+            return ProviderTimeoutError("timeout", **kwargs)
+        return ProviderUnavailableError(f"network error: {type(exc).__name__}", **kwargs)
 
     async def complete(
         self,
@@ -130,16 +171,12 @@ class OpenAICompatibleProvider(BaseProvider):
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
-        headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+        headers = await self._headers(model)
 
         try:
             response = await self._http.post(self._url, json=payload, headers=headers)
-        except httpx.TimeoutException as exc:
-            raise ProviderUnavailableError("timeout", provider=self.name, model=model) from exc
         except httpx.HTTPError as exc:
-            raise ProviderUnavailableError(
-                f"network error: {type(exc).__name__}", provider=self.name, model=model
-            ) from exc
+            raise self._network_error(exc, model) from exc
 
         try:
             data = response.json()
@@ -180,7 +217,7 @@ class OpenAICompatibleProvider(BaseProvider):
             "temperature": temperature,
             "stream": True,
         }
-        headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+        headers = await self._headers(model)
         raw_parts: list[str] = []
         shown = ""
         finish_reason = None
@@ -247,12 +284,8 @@ class OpenAICompatibleProvider(BaseProvider):
                     if visible.startswith(shown) and len(visible) > len(shown):
                         yield visible[len(shown):]
                         shown = visible
-        except httpx.TimeoutException as exc:
-            raise ProviderUnavailableError("timeout", provider=self.name, model=model) from exc
         except httpx.HTTPError as exc:
-            raise ProviderUnavailableError(
-                f"network error: {type(exc).__name__}", provider=self.name, model=model
-            ) from exc
+            raise self._network_error(exc, model) from exc
 
         text = _THINK_RE.sub("", "".join(raw_parts)).strip()
         if not text:
@@ -300,7 +333,9 @@ class OpenAICompatibleProvider(BaseProvider):
             return AuthError(message, **kwargs)
         if status == 402:
             return InsufficientCreditsError(message, **kwargs)
-        if status == 404:
+        if status == 404 or (
+            status in (400, 410, 422) and _MODEL_MISSING_RE.search(detail)
+        ):
             return ModelNotFoundError(message, **kwargs)
         if status == 408 or status >= 500:
             return ProviderUnavailableError(message, **kwargs)

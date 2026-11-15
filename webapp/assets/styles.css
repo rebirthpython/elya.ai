@@ -1914,6 +1914,13 @@ body.is-thinking .glow--think {
   overflow: hidden;
 }
 
+/* Моделей десятки: список прокручивается внутри блока, а не растягивает настройки */
+#model-list {
+  max-height: min(392px, 55vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .option {
   display: flex;
   align-items: center;

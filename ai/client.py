@@ -1,5 +1,6 @@
 """AI-клиент: перебирает провайдеров и модели по приоритету (фолбэк),
-временно отключает модели, упёршиеся в лимит, и соблюдает дневной лимит запросов."""
+временно отключает модели, упёршиеся в лимит, пропавшие из каталога или зависшие,
+и соблюдает дневной лимит запросов."""
 
 from __future__ import annotations
 
@@ -12,7 +13,10 @@ from ai.providers.base import (
     BaseProvider,
     ChatMessage,
     CompletionResult,
+    ModelNotFoundError,
     ProviderError,
+    ProviderTimeoutError,
+    ProviderUnreachableError,
     RateLimitError,
 )
 from services.usage import UsageTracker
@@ -47,7 +51,7 @@ class AllProvidersFailedError(AIError):
         """rate_limit | config | unavailable — для понятного сообщения пользователю."""
         if not self.errors or any(isinstance(e, RateLimitError) for e in self.errors):
             return "rate_limit"
-        if all(e.provider_level for e in self.errors):
+        if all(e.provider_level or isinstance(e, ModelNotFoundError) for e in self.errors):
             return "config"
         return "unavailable"
 
@@ -62,6 +66,7 @@ class AIClient:
         usage: UsageTracker | None = None,
         base_cooldown: float = 60.0,
         max_cooldown: float = 3600.0,
+        missing_model_cooldown: float = 6 * 3600.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if not providers:
@@ -72,6 +77,8 @@ class AIClient:
         self._usage = usage
         self._base_cooldown = base_cooldown
         self._max_cooldown = max_cooldown
+        # Модель, которой нет в каталоге провайдера, проверяется заново раз в несколько часов.
+        self._missing_model_cooldown = missing_model_cooldown
         self._clock = clock
         # (provider, model|None) -> (конец паузы, число ошибок подряд, последняя ошибка)
         self._cooldowns: dict[tuple[str, str | None], tuple[float, int, ProviderError]] = {}
@@ -80,18 +87,38 @@ class AIClient:
     def provider_titles(self) -> list[str]:
         return [p.title for p in self._providers]
 
+    @property
+    def providers(self) -> list[BaseProvider]:
+        return list(self._providers)
+
+    def is_paused(self, provider: str, model: str | None = None) -> bool:
+        """Модель (или весь провайдер при model=None) сейчас пропускается после ошибки."""
+        if self._cooling_error((provider, None)) is not None:
+            return True
+        return model is not None and self._cooling_error((provider, model)) is not None
+
+    async def aclose(self) -> None:
+        for provider in self._providers:
+            await provider.aclose()
+
     def _cooling_error(self, key: tuple[str, str | None]) -> ProviderError | None:
         """Ошибка, из-за которой модель/провайдер сейчас на паузе, иначе None."""
         entry = self._cooldowns.get(key)
         return entry[2] if entry is not None and entry[0] > self._clock() else None
 
     def _cool_down(
-        self, key: tuple[str, str | None], error: ProviderError, delay: float | None = None
+        self,
+        key: tuple[str, str | None],
+        error: ProviderError,
+        delay: float | None = None,
+        *,
+        cap: float | None = None,
     ) -> None:
         strikes = self._cooldowns[key][1] + 1 if key in self._cooldowns else 1
         if delay is None:
             delay = self._base_cooldown * 2 ** (strikes - 1)
-        self._cooldowns[key] = (self._clock() + min(delay, self._max_cooldown), strikes, error)
+        limit = self._max_cooldown if cap is None else cap
+        self._cooldowns[key] = (self._clock() + min(delay, limit), strikes, error)
 
     @property
     def available_models(self) -> list[tuple[BaseProvider, str]]:
@@ -179,9 +206,12 @@ class AIClient:
             if self._usage and not await self._usage.try_consume():
                 raise DailyLimitExceededError(self._usage.daily_limit)
 
+            limit = max_tokens if max_tokens is not None else self._max_tokens
+            if provider.max_output_tokens:
+                limit = min(limit, provider.max_output_tokens)
             options = {
                 "model": model,
-                "max_tokens": max_tokens if max_tokens is not None else self._max_tokens,
+                "max_tokens": limit,
                 "temperature": temperature if temperature is not None else self._temperature,
             }
             started = self._clock()
@@ -207,6 +237,16 @@ class AIClient:
                     self._cool_down((provider.name, None), exc, self._base_cooldown * 10)
                 elif isinstance(exc, RateLimitError):
                     self._cool_down(key, exc, exc.retry_after)
+                elif isinstance(exc, ModelNotFoundError):
+                    # Модель убрали из бесплатного каталога: не тратить на неё каждый запрос.
+                    delay = self._missing_model_cooldown
+                    self._cool_down(key, exc, delay, cap=delay)
+                elif isinstance(exc, ProviderUnreachableError):
+                    # Сервер недоступен целиком (сеть, DNS, блокировка): его модели не ждём.
+                    self._cool_down((provider.name, None), exc)
+                elif isinstance(exc, ProviderTimeoutError):
+                    # Зависшая модель: следующие запросы не ждут её таймаута.
+                    self._cool_down(key, exc)
                 if emitted:
                     raise AllProvidersFailedError([exc]) from exc
                 continue
