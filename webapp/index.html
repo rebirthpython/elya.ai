@@ -79,6 +79,12 @@
       </button>
     </header>
 
+    <div class="about-bar">
+      <button class="about-pill ripple" id="about-btn" type="button" aria-haspopup="dialog">
+        <svg><use href="#i-spark"/></svg><span>Как я устроена?</span>
+      </button>
+    </div>
+
     <main class="chat" id="chat">
       <div class="chat__inner">
         <section class="welcome" id="welcome" hidden>
@@ -346,6 +352,47 @@
       <div class="instr-actions">
         <button class="btn btn--primary ripple instr-save" id="instr-save" type="button" disabled>Сохранить</button>
       </div>
+    </div>
+    <div class="sheet__body sheet__page about" id="about-page" hidden>
+      <div class="about__hero">
+        <div class="about__lines" id="about-lines">…</div>
+        <div class="about__lines-label" id="about-lines-label">строк кода</div>
+      </div>
+
+      <section class="block">
+        <h3 class="block__title">Как я отвечаю</h3>
+        <p class="about__text">Твоё сообщение я отправляю нейросети. Их у меня несколько, все бесплатные: Gemini, GitHub Models, Groq, OpenRouter и другие. Если одна занята или упёрлась в лимит, сразу спрашиваю следующую, поэтому отвечаю почти всегда.</p>
+      </section>
+
+      <section class="block">
+        <h3 class="block__title">Что я умею</h3>
+        <ul class="about__list">
+          <li>💬 Болтать и отвечать на вопросы — здесь и в чате с ботом</li>
+          <li>📷 Смотреть фото и решать задания с них</li>
+          <li>🎤 Понимать голосовые</li>
+          <li>🌐 Искать в интернете со ссылками на источники</li>
+          <li>🎨 Рисовать картинки</li>
+          <li>🎬 Монтировать видео</li>
+          <li>👩‍💻 Писать и разбирать код</li>
+          <li>📚 Делать конспекты лекций и презентации</li>
+          <li>⏰ Напоминать о делах</li>
+        </ul>
+      </section>
+
+      <section class="block">
+        <h3 class="block__title">Что я помню</h3>
+        <p class="about__text">Помню нашу переписку, а если включена память, то и важное о тебе: имя, планы, вкусы. Всё это видно в настройках, и любой факт можно удалить.</p>
+      </section>
+
+      <section class="block">
+        <h3 class="block__title">Из чего я сделана</h3>
+        <p class="about__text">Бот написан на Python (aiogram), данные хранятся в SQLite. Это приложение — обычная веб-страница на HTML, CSS и JavaScript, которая открывается прямо в Telegram.</p>
+      </section>
+
+      <a class="about__author ripple" id="about-author" href="https://t.me/modespeed" target="_blank" rel="noopener">
+        <span class="about__author-label">Создатель</span>
+        <span class="about__author-name">@modespeed</span>
+      </a>
     </div>
   </section>
 

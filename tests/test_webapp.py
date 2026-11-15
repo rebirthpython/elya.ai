@@ -264,6 +264,7 @@ async def test_state_describes_assistant_models_and_history(env):
     assert data["voice"] is False
     assert data["instructions"] == {"about": "", "style": "", "enabled": True, "max_length": 1500}
     assert data["vision"] is False
+    assert data["about"]["code_lines"] > 1000  # «Как я устроена?»: строки кода проекта
     assert [o["id"] for o in data["preference_options"]["style"]] == [
         "friendly", "caring", "playful", "business",
     ]

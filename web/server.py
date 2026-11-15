@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -31,6 +32,7 @@ from database.models import Message
 from memory.manager import MemoryManager
 from memory.repository import CHAT_BREAK
 from services.chat import ChatService
+from services.code_stats import project_code_lines
 from services.drawing import Drawing, DrawingService, history_text
 from services.imagegen import ImageGenerationError, ImageLimitError
 from services.instructions import MAX_INSTRUCTION_LENGTH, InstructionsStore
@@ -315,6 +317,7 @@ async def get_state(request: web.Request) -> web.Response:
             "reminders": await _reminders_payload(app[REMINDERS], user.id),
             "video": await video_api.state_payload(app, user.id),
             "preference_options": preference_options(),
+            "about": {"code_lines": await asyncio.to_thread(project_code_lines)},
         }
     )
 

@@ -89,6 +89,11 @@
     openInstructions: $('open-instructions'),
     instructionsSummary: $('instructions-summary'),
     instructionsPage: $('instructions-page'),
+    aboutBtn: $('about-btn'),
+    aboutPage: $('about-page'),
+    aboutLines: $('about-lines'),
+    aboutLinesLabel: $('about-lines-label'),
+    aboutAuthor: $('about-author'),
     instructionsToggle: $('instructions-toggle'),
     instructionsStatus: $('instructions-status'),
     instrAbout: $('instr-about'),
@@ -687,6 +692,7 @@
           video: { available: true, upload_limit_mb: 100, session: videoView() },
           images: { enabled: true, used: 0, limit: 50 },
           search: true,
+          about: { code_lines: 31836 },
           preference_options: {
             style: [
               { id: 'friendly', title: 'Дружелюбный', description: 'Тепло, с лёгким юмором' },
@@ -2740,6 +2746,18 @@
     void dom.sheet.offsetWidth;
     dom.sheet.classList.add('is-opening');
     renderInstructionsSummary();
+    const about = opts.page === 'about';
+    state.sheetPage = about ? 'about' : 'main';
+    dom.sheetBody.hidden = about;
+    dom.instructionsPage.hidden = true;
+    dom.aboutPage.hidden = !about;
+    dom.sheet.classList.remove('is-deep');
+    dom.sheetBack.hidden = true;
+    dom.sheetTitle.textContent = about ? 'Как я устроена?' : 'Настройки';
+    if (about) {
+      dom.aboutPage.scrollTop = 0;
+      setTimeout(renderAbout, reducedMotion ? 0 : 200);
+    }
     dom.input.blur();
 
     state.sheetAnim = motion(dom.sheet, isWide()
@@ -2764,6 +2782,24 @@
     } else {
       dom.sheetBody.scrollTop = 0;
     }
+  }
+
+  /* «Как я устроена?»: число строк кода считает сервер при запуске. */
+  function renderAbout() {
+    const total = state.codeLines;
+    dom.aboutLinesLabel.textContent = plural(total, ['строка', 'строки', 'строк']) + ' кода';
+    const format = (n) => n.toLocaleString('ru-RU');
+    if (reducedMotion || total <= 0) {
+      dom.aboutLines.textContent = total > 0 ? format(total) : '—';
+      return;
+    }
+    const started = performance.now();
+    const duration = 1100;
+    (function step(now) {
+      const t = Math.min(1, (now - started) / duration);
+      dom.aboutLines.textContent = format(Math.round(total * (1 - Math.pow(1 - t, 3))));
+      if (t < 1) requestAnimationFrame(step);
+    })(started);
   }
 
   function closeSheet() {
@@ -2793,6 +2829,7 @@
       // В следующий раз панель открывается с основной страницы.
       state.sheetPage = 'main';
       dom.instructionsPage.hidden = true;
+      dom.aboutPage.hidden = true;
       dom.sheetBody.hidden = false;
       dom.sheetBack.hidden = true;
       dom.sheetTitle.textContent = 'Настройки';
@@ -3180,6 +3217,7 @@
     state.firstName = (data.user && data.user.first_name) || '';
     state.models = data.models || [];
     state.providers = data.providers || [];
+    state.codeLines = (data.about && data.about.code_lines) || 0;
     state.usage = data.usage || state.usage;
     state.maxLength = (data.limits && data.limits.max_text_length) || 4000;
     state.voice = Boolean(data.voice);
@@ -3365,6 +3403,12 @@
 
     bindDrawer();
     dom.menuBtn.addEventListener('click', () => openSheet());
+    dom.aboutBtn.addEventListener('click', () => openSheet({ page: 'about' }));
+    dom.aboutAuthor.addEventListener('click', (event) => {
+      if (!supports('6.1')) return; // вне Telegram ссылка откроется сама
+      event.preventDefault();
+      tg.openTelegramLink(dom.aboutAuthor.href);
+    });
     dom.bellBtn.addEventListener('click', () => openSheet({ focus: 'reminders' }));
     dom.reminderForm.addEventListener('submit', (event) => {
       event.preventDefault();
