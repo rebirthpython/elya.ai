@@ -23,6 +23,8 @@ class ProviderConfig:
     api_key: str
     models: tuple[str, ...]
     vision_models: tuple[str, ...] = ()
+    # Модели для этапа размышления в режиме /think (пусто — те же, что для ответов).
+    thinking_models: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +46,8 @@ class Settings:
     # Конспекты и презентации: длина ответа модели и максимальный размер материала.
     study_max_output_tokens: int = 8192
     study_max_input_chars: int = 60000
+    # Глубокое размышление (/think): длина черновика размышлений, который модель пишет до ответа.
+    thinking_max_output_tokens: int = 8192
     # Mini App (HTML5-интерфейс внутри Telegram). Пустой webapp_url — Mini App выключен.
     webapp_url: str = ""
     webapp_host: str = "0.0.0.0"
@@ -192,6 +196,9 @@ def _load_provider(name: str) -> ProviderConfig | None:
         vision_models = ()
     else:
         vision_models = tuple(_split_csv(vision_raw))
+    # <NAME>_THINKING_MODELS: модели, с которых начинается размышление в режиме /think
+    # (например, более сильные или «рассуждающие»); остальные модели — запасные.
+    thinking_models = tuple(_split_csv(_get_str(f"{prefix}_THINKING_MODELS")))
     return ProviderConfig(
         name=name,
         title=known["title"],
@@ -199,6 +206,7 @@ def _load_provider(name: str) -> ProviderConfig | None:
         api_key=api_key,
         models=models,
         vision_models=vision_models,
+        thinking_models=thinking_models,
     )
 
 
@@ -247,6 +255,7 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         log_level=_get_str("LOG_LEVEL", "INFO").upper() or "INFO",
         study_max_output_tokens=_get_int("STUDY_MAX_OUTPUT_TOKENS", 8192, minimum=1024),
         study_max_input_chars=_get_int("STUDY_MAX_INPUT_CHARS", 60000, minimum=1000),
+        thinking_max_output_tokens=_get_int("THINKING_MAX_OUTPUT_TOKENS", 8192, minimum=512),
         webapp_url=_load_webapp_url(),
         webapp_host=_get_str("WEBAPP_HOST", "0.0.0.0") or "0.0.0.0",
         webapp_port=_load_webapp_port(),

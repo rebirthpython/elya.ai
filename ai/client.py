@@ -107,10 +107,20 @@ class AIClient:
     def has_vision(self) -> bool:
         return bool(self.vision_models)
 
+    @property
+    def thinking_models(self) -> list[tuple[BaseProvider, str]]:
+        """Пары (провайдер, модель), с которых начинается размышление (режим /think)."""
+        return [(p, model) for p in self._providers for model in p.thinking_models]
+
     def _candidates(
-        self, prefer: tuple[str, str] | None, vision: bool = False
+        self, prefer: tuple[str, str] | None, vision: bool = False, thinking: bool = False
     ) -> list[tuple[BaseProvider, str]]:
         candidates = self.vision_models if vision else self.available_models
+        if thinking:
+            # Сначала модели для размышлений, остальные — запасные. С фото годятся
+            # только те из них, что понимают картинки.
+            first = [pair for pair in self.thinking_models if not vision or pair in candidates]
+            candidates = first + [pair for pair in candidates if pair not in first]
         if prefer is not None:
             # Стабильная сортировка: выбранная модель первой, остальные — в прежнем порядке.
             candidates.sort(key=lambda pair: (pair[0].name, pair[1]) != prefer)
@@ -123,15 +133,19 @@ class AIClient:
         prefer: tuple[str, str] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        thinking: bool = False,
     ) -> CompletionResult:
         """Возвращает ответ первой сработавшей модели.
 
         prefer=(провайдер, модель) — с какой модели начать; при её отказе
         остальные пробуются в обычном порядке. temperature и max_tokens
         переопределяют значения по умолчанию для служебных запросов.
+        thinking=True — начинать с моделей для размышлений (<NAME>_THINKING_MODELS).
         """
         result: CompletionResult | None = None
-        async for event in self._attempts(messages, prefer, temperature, max_tokens, streaming=False):
+        async for event in self._attempts(
+            messages, prefer, temperature, max_tokens, streaming=False, thinking=thinking
+        ):
             if isinstance(event, CompletionResult):
                 result = event
         assert result is not None
@@ -144,6 +158,7 @@ class AIClient:
         prefer: tuple[str, str] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        thinking: bool = False,
     ) -> AsyncIterator[str | CompletionResult]:
         """Ответ по частям: строки — новый текст по мере генерации, последним — CompletionResult.
 
@@ -151,7 +166,9 @@ class AIClient:
         оборвался на середине, бросается AllProvidersFailedError: часть ответа уже
         показана, и незаметно подменить модель нельзя.
         """
-        async for event in self._attempts(messages, prefer, temperature, max_tokens, streaming=True):
+        async for event in self._attempts(
+            messages, prefer, temperature, max_tokens, streaming=True, thinking=thinking
+        ):
             yield event
 
     async def _attempts(
@@ -162,13 +179,14 @@ class AIClient:
         max_tokens: int | None,
         *,
         streaming: bool,
+        thinking: bool = False,
     ) -> AsyncIterator[str | CompletionResult]:
         vision = any(m.images for m in messages)
         if vision and not self.has_vision:
             raise NoVisionModelError
         errors: list[ProviderError] = []
 
-        for provider, model in self._candidates(prefer, vision):
+        for provider, model in self._candidates(prefer, vision, thinking):
             key = (provider.name, model)
             paused = self._cooling_error((provider.name, None)) or self._cooling_error(key)
             if paused is not None:

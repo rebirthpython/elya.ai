@@ -110,8 +110,9 @@ class OpenAICompatibleProvider(BaseProvider):
         models: tuple[str, ...],
         http_client: httpx.AsyncClient,
         vision_models: tuple[str, ...] = (),
+        thinking_models: tuple[str, ...] = (),
     ) -> None:
-        super().__init__(name, title, models, vision_models)
+        super().__init__(name, title, models, vision_models, thinking_models)
         self._url = f"{base_url.rstrip('/')}/chat/completions"
         self._api_key = api_key
         self._http = http_client

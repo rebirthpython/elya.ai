@@ -61,6 +61,19 @@ def instructions_keyboard(enabled: bool, has_text: bool, webapp_url: str) -> Inl
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
+class ThinkingCallback(CallbackData, prefix="think"):
+    action: str  # toggle
+
+
+def thinking_keyboard(enabled: bool) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="⏸ Выключить" if enabled else "💭 Включить",
+        callback_data=ThinkingCallback(action="toggle"),
+    )
+    return builder.as_markup()
+
+
 def open_app_keyboard(webapp_url: str, assistant_name: str) -> InlineKeyboardMarkup:
     """Кнопка, открывающая Mini App (работает только в личном чате с ботом)."""
     button = InlineKeyboardButton(

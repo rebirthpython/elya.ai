@@ -4,27 +4,32 @@ from __future__ import annotations
 
 from html import escape
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.enums import ParseMode
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from ai.client import AIClient
+from bot.handlers.chat import handle_photo, respond
 from bot.keyboards.common import (
     ClearHistoryCallback,
     InstructionsCallback,
     instructions_keyboard,
     MemoryCallback,
+    ThinkingCallback,
     clear_confirm_keyboard,
     forget_confirm_keyboard,
     memory_keyboard,
     open_app_keyboard,
+    thinking_keyboard,
 )
 from config.settings import Settings
 from memory.manager import MemoryManager
+from services.chat import ChatService
 from services.instructions import Instructions, InstructionsStore
 from services.longterm import LongTermMemory
+from services.thinking import ThinkingStore
 from services.usage import UsageTracker
 
 
@@ -56,7 +61,8 @@ async def cmd_start(
         "Просто пиши мне обычными сообщениями: могу ответить на вопрос, помочь с учёбой, "
         "спланировать день или просто поболтать. Я помню контекст нашего разговора.\n\n"
         f"{app_note}"
-        "📝 /notes — сделаю конспект или сокращу лекцию, 🎞 /slides — соберу презентацию.\n\n"
+        "📝 /notes — сделаю конспект или сокращу лекцию, 🎞 /slides — соберу презентацию.\n"
+        "💭 /think — режим глубокого размышления для сложных задач.\n\n"
         f"{_privacy_note(ai_client)}\n\n"
         "Все команды — в /help.",
         parse_mode=ParseMode.HTML,
@@ -80,8 +86,10 @@ async def cmd_help(
         "📚 Помогать с учёбой: объяснить тему, проверить текст, составить план\n"
         "📝 Делать конспекты и сокращать лекции, выделяя термины, даты и имена\n"
         "🎞 Делать презентации с анимациями и заметками докладчика\n"
-        "🗓 Помогать с планированием и организацией дел\n\n"
+        "🗓 Помогать с планированием и организацией дел\n"
+        "💭 Глубоко размышлять над сложными задачами, прежде чем ответить\n\n"
         "<b>Команды</b>\n"
+        "/think — режим глубокого размышления (или /think и вопрос — разово)\n"
         "/notes — конспект, краткая выжимка или главные детали из лекции\n"
         "/slides — презентация (.pptx) по теме или материалу\n"
         "/start — приветствие\n"
@@ -229,6 +237,70 @@ async def on_instructions_action(
     await callback.answer("Включены" if current.enabled else "Выключены")
 
 
+def _thinking_text(enabled: bool, has_app: bool) -> str:
+    status = "включено" if enabled else "выключено"
+    shared = " Режим общий для чата и приложения." if has_app else ""
+    return (
+        f"💭 <b>Глубокое размышление {status}.</b>\n\n"
+        "В этом режиме я сначала подробно обдумываю вопрос: разбираю задачу по шагам, ищу "
+        "ошибки и проверяю себя — и только потом отвечаю. Ход мыслей можно развернуть над "
+        "ответом.\n\n"
+        "Пригодится для задач и расчётов, логики, кода и важных решений. Ответ приходит "
+        f"дольше и тратит два запроса к ИИ вместо одного.{shared}\n\n"
+        "Для одного вопроса, не включая режим: <code>/think вопрос</code>"
+    )
+
+
+async def cmd_think(
+    message: Message,
+    command: CommandObject,
+    bot: Bot,
+    settings: Settings,
+    chat_service: ChatService,
+    thinking: ThinkingStore | None = None,
+) -> None:
+    """/think вопрос — разовый ответ с размышлением; /think — включить или выключить режим."""
+    if message.from_user is None:
+        return
+    question = (command.args or "").strip()
+    if message.photo or (message.document and (message.document.mime_type or "").startswith("image/")):
+        await handle_photo(message, bot, chat_service, caption=question, deep=True)
+        return
+    if question:
+        await respond(message, bot, chat_service, question, deep=True)
+        return
+    if thinking is None:
+        await message.answer(
+            "Режим сейчас не переключить, но можно спросить разово: /think и вопрос в том же сообщении."
+        )
+        return
+    enabled = await thinking.is_enabled(message.from_user.id)
+    await message.answer(
+        _thinking_text(enabled, settings.webapp_enabled),
+        parse_mode=ParseMode.HTML,
+        reply_markup=thinking_keyboard(enabled),
+    )
+
+
+async def on_thinking_action(
+    callback: CallbackQuery,
+    callback_data: ThinkingCallback,
+    settings: Settings,
+    thinking: ThinkingStore | None = None,
+) -> None:
+    if thinking is None or not isinstance(callback.message, Message):
+        await callback.answer()
+        return
+    user_id = callback.from_user.id
+    enabled = await thinking.set_enabled(user_id, not await thinking.is_enabled(user_id))
+    await callback.message.edit_text(
+        _thinking_text(enabled, settings.webapp_enabled),
+        parse_mode=ParseMode.HTML,
+        reply_markup=thinking_keyboard(enabled),
+    )
+    await callback.answer("Включено: буду думать глубже" if enabled else "Выключено")
+
+
 async def cmd_clear(message: Message) -> None:
     await message.answer(
         "Удалить всю историю нашего диалога? Это действие нельзя отменить.",
@@ -265,6 +337,7 @@ def create_router() -> Router:
     router = Router(name="commands")
     router.message.register(cmd_start, CommandStart())
     router.message.register(cmd_help, Command("help"))
+    router.message.register(cmd_think, Command("think"))
     router.message.register(cmd_instructions, Command("instructions"))
     router.message.register(cmd_memory, Command("memory"))
     router.message.register(cmd_forget, Command("forget"))
@@ -273,5 +346,6 @@ def create_router() -> Router:
     router.callback_query.register(on_clear_confirm, ClearHistoryCallback.filter())
     router.callback_query.register(on_memory_action, MemoryCallback.filter())
     router.callback_query.register(on_instructions_action, InstructionsCallback.filter())
+    router.callback_query.register(on_thinking_action, ThinkingCallback.filter())
     router.message.register(cmd_unknown, F.text.startswith("/"))
     return router

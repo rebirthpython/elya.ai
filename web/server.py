@@ -31,6 +31,7 @@ from services.instructions import MAX_INSTRUCTION_LENGTH, InstructionsStore
 from services.longterm import MAX_FACT_LENGTH, MAX_FACTS, LongTermMemory, MemoryFullError
 from services.preferences import PreferencesStore
 from services.speech import SpeechError, SpeechToText
+from services.thinking import ThinkingDelta, ThinkingDone, ThinkingStore
 from services.vision import MAX_IMAGE_BYTES, NO_VISION_TEXT, ImageError, to_data_url
 from services.reminders import (
     MAX_AHEAD,
@@ -63,6 +64,7 @@ LONG_MEMORY = web.AppKey("long_memory", LongTermMemory)
 REMINDERS = web.AppKey("reminders", Reminders)
 INSTRUCTIONS = web.AppKey("instructions", object)
 SPEECH = web.AppKey("speech", object)
+THINKING = web.AppKey("thinking", object)
 
 MAX_VOICE_BYTES = 5 * 1024 * 1024
 # Что умеет записывать браузер телефона → расширение файла для Whisper
@@ -222,6 +224,37 @@ async def _instructions_payload(store: InstructionsStore | None, user_id: int) -
     return {**(await store.get(user_id)).as_dict(), "max_length": MAX_INSTRUCTION_LENGTH}
 
 
+def _deep_flag(value: Any) -> bool | None:
+    """Режим глубокого размышления из запроса: true/false; иначе — как настроил пользователь."""
+    if isinstance(value, bool):
+        return value
+    if value in ("1", "true"):
+        return True
+    if value in ("0", "false"):
+        return False
+    return None
+
+
+async def _thinking_payload(store: ThinkingStore | None, user_id: int) -> dict[str, Any] | None:
+    if store is None:
+        return None
+    return {"enabled": await store.is_enabled(user_id)}
+
+
+async def post_thinking(request: web.Request) -> web.Response:
+    """{"enabled": true} — включает или выключает режим глубокого размышления."""
+    user: WebAppUser = request[_USER_KEY]
+    store: ThinkingStore | None = request.app[THINKING]
+    if store is None:
+        return _error(503, "unavailable", "Режим глубокого размышления сейчас недоступен.")
+    payload = await _read_json(request)
+    enabled = payload.get("enabled") if payload else None
+    if not isinstance(enabled, bool):
+        return _error(400, "bad_request", "Некорректный запрос.")
+    await store.set_enabled(user.id, enabled)
+    return web.json_response(await _thinking_payload(store, user.id))
+
+
 async def post_instructions(request: web.Request) -> web.Response:
     """{"about": "...", "style": "...", "enabled": true} — любые поля по отдельности."""
     user: WebAppUser = request[_USER_KEY]
@@ -270,6 +303,7 @@ async def get_state(request: web.Request) -> web.Response:
             "vision": app[AI_CLIENT].has_vision,
             "preferences": (await app[PREFERENCES].get(user.id)).as_dict(),
             "instructions": await _instructions_payload(app[INSTRUCTIONS], user.id),
+            "thinking": await _thinking_payload(app[THINKING], user.id),
             "memory": await _memory_payload(app[LONG_MEMORY], user.id),
             "reminders": await _reminders_payload(app[REMINDERS], user.id),
             "preference_options": preference_options(),
@@ -288,7 +322,9 @@ async def post_chat(request: web.Request) -> web.Response:
         return _error(
             400, "too_long", f"Сообщение длиннее {MAX_TEXT_LENGTH} символов — сократи его."
         )
-    return await _answer(request, user, text, payload.get("model"))
+    return await _answer(
+        request, user, text, payload.get("model"), deep=_deep_flag(payload.get("deep"))
+    )
 
 
 async def _read_part(part, limit: int) -> bytes | None:
@@ -315,7 +351,7 @@ async def post_photo(request: web.Request) -> web.Response:
                 image = await _read_part(part, MAX_IMAGE_BYTES)
                 if image is None:
                     return _error(413, "too_large", "Картинка слишком большая: до 5 МБ.")
-            elif part.name in ("text", "model"):
+            elif part.name in ("text", "model", "deep"):
                 raw = await _read_part(part, MAX_TEXT_LENGTH * 4)
                 if raw is None:
                     return _error(400, "too_long", f"Подпись длиннее {MAX_TEXT_LENGTH} символов.")
@@ -331,7 +367,9 @@ async def post_photo(request: web.Request) -> web.Response:
         data_url = to_data_url(image)
     except ImageError:
         return _error(415, "bad_image", "Не получилось открыть картинку: нужен JPEG, PNG или WebP.")
-    return await _answer(request, user, text, fields.get("model"), images=(data_url,))
+    return await _answer(
+        request, user, text, fields.get("model"), images=(data_url,), deep=_deep_flag(fields.get("deep"))
+    )
 
 
 def _rate_limited(app: web.Application, user: WebAppUser) -> web.Response | None:
@@ -374,6 +412,7 @@ async def _reply_payload(app: web.Application, result: CompletionResult) -> dict
             "provider": result.provider,
             "model": result.model,
             "truncated": result.truncated,
+            "reasoning": result.reasoning,
         },
         "usage": {"used": await usage.used_today(), "limit": usage.daily_limit},
     }
@@ -385,6 +424,7 @@ async def _answer(
     text: str,
     model: Any,
     images: tuple[str, ...] = (),
+    deep: bool | None = None,
 ) -> web.Response:
     """Общая часть /api/chat и /api/photo: лимит частоты, ответ модели, ошибки ИИ."""
     app = request.app
@@ -397,6 +437,7 @@ async def _answer(
             user_name=user.first_name,
             prefer=_resolve_model(app[AI_CLIENT], model),
             images=images,
+            deep=deep,
         )
     except AIError as exc:
         return _error(*_ai_error(exc))
@@ -406,7 +447,11 @@ async def _answer(
 async def post_chat_stream(request: web.Request) -> web.StreamResponse:
     """Как /api/chat, но ответ приходит по мере генерации — построчно (NDJSON):
     {"type": "delta", "text": "..."} … и в конце {"type": "done", "reply": …, "usage": …}
-    или {"type": "error", "error": {...}}. Ошибки до начала ответа — обычный JSON со статусом."""
+    или {"type": "error", "error": {...}}. Ошибки до начала ответа — обычный JSON со статусом.
+
+    В режиме глубокого размышления ответу предшествуют {"type": "thinking", "text": "..."}
+    (первое — с пустым текстом, сразу) и {"type": "thinking_done", "seconds": N}; поток тогда
+    начинается сразу, и ошибки ИИ приходят уже в нём."""
     app = request.app
     user: WebAppUser = request[_USER_KEY]
     payload = await _read_json(request)
@@ -426,6 +471,7 @@ async def post_chat_stream(request: web.Request) -> web.StreamResponse:
         text,
         user_name=user.first_name,
         prefer=_resolve_model(app[AI_CLIENT], payload.get("model")),
+        deep=_deep_flag(payload.get("deep")),
     )
     try:
         # Ждём начала ответа: если модель недоступна, честнее вернуть обычную ошибку.
@@ -451,7 +497,12 @@ async def post_chat_stream(request: web.Request) -> web.StreamResponse:
                 if isinstance(event, CompletionResult):
                     await emit({"type": "done", **await _reply_payload(app, event)})
                     break
-                await emit({"type": "delta", "text": event})
+                if isinstance(event, ThinkingDelta):
+                    await emit({"type": "thinking", "text": event.text})
+                elif isinstance(event, ThinkingDone):
+                    await emit({"type": "thinking_done", "seconds": round(event.seconds, 1)})
+                else:
+                    await emit({"type": "delta", "text": event})
                 event = await anext(events)
         except AIError as exc:
             status, code, message = _ai_error(exc)
@@ -649,6 +700,7 @@ def create_web_app(
     reminders: Reminders,
     speech: SpeechToText | None = None,
     instructions: InstructionsStore | None = None,
+    thinking: ThinkingStore | None = None,
 ) -> web.Application:
     app = web.Application(
         middlewares=[security_headers, api_guard], client_max_size=MAX_BODY_BYTES
@@ -664,6 +716,7 @@ def create_web_app(
     app[REMINDERS] = reminders
     app[SPEECH] = speech
     app[INSTRUCTIONS] = instructions
+    app[THINKING] = thinking
 
     app.router.add_get("/", index)
     app.router.add_get("/healthz", health)
@@ -673,6 +726,7 @@ def create_web_app(
     app.router.add_post("/api/clear", post_clear)
     app.router.add_post("/api/preferences", post_preferences)
     app.router.add_post("/api/instructions", post_instructions)
+    app.router.add_post("/api/thinking", post_thinking)
     app.router.add_post("/api/memory", post_memory)
     app.router.add_post("/api/memory/add", post_memory_add)
     app.router.add_post("/api/memory/delete", post_memory_delete)

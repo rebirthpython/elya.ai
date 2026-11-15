@@ -21,6 +21,7 @@ def build_providers(
             api_key=cfg.api_key,
             models=cfg.models,
             vision_models=cfg.vision_models,
+            thinking_models=cfg.thinking_models,
             http_client=http_client,
         )
         for cfg in configs

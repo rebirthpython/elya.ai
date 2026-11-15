@@ -24,6 +24,8 @@ class CompletionResult:
     provider: str
     model: str
     truncated: bool = False
+    # Ход мыслей, если ответ дан в режиме глубокого размышления (заполняет ChatService).
+    reasoning: str = ""
 
 
 class ProviderError(Exception):
@@ -109,12 +111,15 @@ class BaseProvider(ABC):
         title: str,
         models: tuple[str, ...],
         vision_models: tuple[str, ...] = (),
+        thinking_models: tuple[str, ...] = (),
     ) -> None:
         self.name = name
         self.title = title
         self.models = models
         # Модели, которые понимают картинки (по ним идут запросы с фото).
         self.vision_models = vision_models
+        # Модели, с которых начинается размышление в режиме глубокого размышления.
+        self.thinking_models = thinking_models
 
     @abstractmethod
     async def complete(

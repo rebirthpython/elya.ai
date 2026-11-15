@@ -39,8 +39,60 @@ Llama и т. п.): какая именно модель отвечает сей�
 - Если просят конспект, сокращение лекции или презентацию, предложи команды в чате с ботом: \
 /notes — конспект в файле Word с проверкой, что не потерялись термины, даты и имена; \
 /slides — презентация PowerPoint с анимациями. Короткий конспект можно написать и прямо здесь.
+- {thinking_rule}
+{user_line}{memory_block}{instructions_block}{reasoning_block}
+Текущая дата и время (UTC): {now}.
+"""
+
+THINKING_HINT_RULE = (
+    "Для сложных задач (расчёты, логика, код, важные решения) есть режим глубокого "
+    "размышления: в чате с ботом — /think, в приложении — кнопка ✨ в поле ввода. В нём ты "
+    "сначала обдумываешь вопрос по шагам и проверяешь себя, а потом отвечаешь. Предлагай его "
+    "изредка и только к месту — когда задача действительно непростая."
+)
+THINKING_ACTIVE_RULE = (
+    "Сейчас включён режим глубокого размышления: вопрос ты уже обдумала заранее "
+    "(черновик — ниже)."
+)
+
+# Этап размышления в режиме глубокого размышления: черновик для себя, а не ответ.
+THINKING_PROMPT_TEMPLATE = """\
+Ты — {name}, персональный ИИ-ассистент, и сейчас ты в режиме глубокого размышления. \
+Собеседнику пока не отвечай: сначала тщательно обдумай его последнее сообщение с учётом \
+диалога. Итоговый ответ ты напишешь следующим шагом, опираясь на эти размышления, а собеседник \
+увидит их свёрнутыми над ответом.
+
+Как размышлять:
+1. Пойми, что на самом деле нужно собеседнику и зачем. Отметь неясности и разумные допущения.
+2. Разбей задачу на части и пройди их по шагам. Вычисления делай явно, по одному действию, \
+с промежуточными результатами.
+3. Не останавливайся на первой идее: рассмотри другие подходы, контрпримеры, крайние случаи \
+и типичные ловушки.
+4. Проверь себя: пересчитай другим способом, подставь результат обратно, поищи ошибку \
+в логике. Нашла ошибку — исправь и продолжай.
+5. Закончи выводом: что ответить, что важно не упустить и в чём остаются сомнения.
+
+Правила:
+- Пиши на языке собеседника, сжато, как черновик для себя: без приветствий, обращений \
+к собеседнику и оформления (никаких заголовков и таблиц).
+- Глубина — по задаче: на приветствие или простую реплику хватит одной-двух строк, \
+на задачу, расчёт, код или важное решение — столько, сколько нужно.
+- Не выдумывай факты, цифры, цитаты и источники: чего не знаешь — так и отметь. \
+Доступа к интернету и свежим новостям у тебя нет.
 {user_line}{memory_block}{instructions_block}
 Текущая дата и время (UTC): {now}.
+"""
+
+REASONING_BLOCK_TEMPLATE = """
+Режим глубокого размышления. Перед ответом ты уже обдумала последнее сообщение собеседника. \
+Вот твой черновик (собеседник видит его свёрнутым над ответом):
+<размышления>
+{reasoning}
+</размышления>
+{incomplete}Опирайся на черновик, но не доверяй ему слепо: заметишь ошибку или пробел — исправь \
+их в ответе. Напиши итоговый ответ в своём обычном стиле и с учётом правил выше: обычно начни \
+с главного вывода; ход решения приводи, когда он нужен для понимания (задачи, расчёты, код), \
+но не пересказывай черновик и не ссылайся на него.
 """
 
 _MAX_USER_NAME = 64
@@ -84,6 +136,16 @@ def _clean_user_name(user_name: str | None) -> str:
     return " ".join(user_name.split())[:_MAX_USER_NAME].strip()
 
 
+def _user_line(user_name: str | None) -> str:
+    name = _clean_user_name(user_name)
+    if not name:
+        return ""
+    return (
+        f"\nИмя собеседника в Telegram: «{name}». Можешь обращаться по имени, "
+        "но не в каждом сообщении.\n"
+    )
+
+
 def build_system_prompt(
     assistant_name: str,
     now: datetime | None = None,
@@ -93,21 +155,50 @@ def build_system_prompt(
     verbosity: str = "normal",
     memory: str = "",
     instructions: str = "",
+    reasoning: str | None = None,
+    reasoning_incomplete: bool = False,
 ) -> str:
+    """reasoning — черновик размышлений (режим глубокого размышления); None — обычный ответ."""
     now = now or datetime.now(timezone.utc)
-    name = _clean_user_name(user_name)
-    user_line = (
-        f"\nИмя собеседника в Telegram: «{name}». Можешь обращаться по имени, "
-        "но не в каждом сообщении.\n"
-        if name
-        else ""
-    )
+    deep = reasoning is not None
     return SYSTEM_PROMPT_TEMPLATE.format(
         name=assistant_name,
         now=now.strftime("%Y-%m-%d %H:%M"),
-        user_line=user_line,
+        user_line=_user_line(user_name),
         memory_block=memory,
         instructions_block=instructions,
+        reasoning_block=(
+            REASONING_BLOCK_TEMPLATE.format(
+                reasoning=reasoning.strip() or "(пусто)",
+                incomplete=(
+                    "Черновик оборвался на середине — додумай недостающее сама.\n"
+                    if reasoning_incomplete
+                    else ""
+                ),
+            )
+            if deep
+            else ""
+        ),
+        thinking_rule=THINKING_ACTIVE_RULE if deep else THINKING_HINT_RULE,
         style_rule=STYLE_RULES.get(style, STYLE_RULES["friendly"]),
         length_rule=LENGTH_RULES.get(verbosity, LENGTH_RULES["normal"]),
+    )
+
+
+def build_thinking_prompt(
+    assistant_name: str,
+    now: datetime | None = None,
+    *,
+    user_name: str | None = None,
+    memory: str = "",
+    instructions: str = "",
+) -> str:
+    """Системный промпт этапа размышления: модель пишет черновик для себя, а не ответ."""
+    now = now or datetime.now(timezone.utc)
+    return THINKING_PROMPT_TEMPLATE.format(
+        name=assistant_name,
+        now=now.strftime("%Y-%m-%d %H:%M"),
+        user_line=_user_line(user_name),
+        memory_block=memory,
+        instructions_block=instructions,
     )

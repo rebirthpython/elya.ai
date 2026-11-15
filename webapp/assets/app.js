@@ -35,6 +35,7 @@
     composer: document.querySelector('.composer'),
     composerBox: $('composer-box'),
     attach: $('attach'),
+    think: $('think'),
     fileInput: $('file-input'),
     attachment: $('attachment'),
     attachmentImg: $('attachment-img'),
@@ -144,6 +145,8 @@
     reminders: { timezone: null, items: [], max: 50, max_text: 300 },
     instructions: null,
     instructionsEdited: false, // пользователь правил поля и ещё не сохранил
+    thinking: null, // { enabled } — режим глубокого размышления; null — недоступен
+    hintText: '',
     sheetPage: 'main',
     clearArmed: null,
   };
@@ -312,19 +315,28 @@
     return data;
   }
 
+  /* Тело запроса к /api/chat: модель — если выбрана вручную, deep — если режим доступен. */
+  function chatBody(text, model, deep) {
+    const body = { text };
+    if (model !== AUTO) body.model = model;
+    if (typeof deep === 'boolean') body.deep = deep;
+    return body;
+  }
+
   const server = {
     state: () => request('api/state'),
-    chat: (text, model) => request('api/chat', model === AUTO ? { text } : { text, model }),
-    /* Ответ по мере генерации (NDJSON). onDelta получает новые куски текста;
-       возвращает то же, что chat(). Без поддержки потоков — обычный chat(). */
-    async chatStream(text, model, onDelta) {
-      if (!window.ReadableStream || !window.TextDecoder) return server.chat(text, model);
+    chat: (text, model, deep) => request('api/chat', chatBody(text, model, deep)),
+    /* Ответ по мере генерации (NDJSON). on.delta получает новые куски текста, а в режиме
+       глубокого размышления до ответа приходят on.thinking (куски черновика; первый — пустой)
+       и on.thinkingDone(секунды). Возвращает то же, что chat(). Без поддержки потоков — chat(). */
+    async chatStream(text, model, deep, on) {
+      if (!window.ReadableStream || !window.TextDecoder) return server.chat(text, model, deep);
       let response;
       try {
         response = await fetch('api/chat/stream', {
           method: 'POST',
           headers: { Authorization: 'tma ' + tg.initData, 'Content-Type': 'application/json' },
-          body: JSON.stringify(model === AUTO ? { text } : { text, model }),
+          body: JSON.stringify(chatBody(text, model, deep)),
         });
       } catch (error) {
         throw new ApiError('network', 'Нет связи с сервером. Проверь интернет и попробуй ещё раз.');
@@ -350,7 +362,9 @@
         } catch (error) {
           return;
         }
-        if (event.type === 'delta' && event.text) onDelta(event.text);
+        if (event.type === 'delta' && event.text) on.delta(event.text);
+        else if (event.type === 'thinking') on.thinking(event.text || '');
+        else if (event.type === 'thinking_done') on.thinkingDone(Number(event.seconds) || 0);
         else if (event.type === 'done') result = event;
         else if (event.type === 'error') {
           const info = event.error || {};
@@ -379,16 +393,18 @@
     clear: () => request('api/clear', {}),
     savePreferences: (patch) => request('api/preferences', patch),
     saveInstructions: (patch) => request('api/instructions', patch),
+    thinkingSet: (enabled) => request('api/thinking', { enabled }),
     memorySet: (enabled) => request('api/memory', { enabled }),
     memoryAdd: (text) => request('api/memory/add', { text }),
     memoryDelete: (id) => request('api/memory/delete', { id }),
     memoryClear: () => request('api/memory/delete', { all: true }),
     setTimezone: (tz) => request('api/timezone', { tz }),
     voice: (blob, type) => request('api/voice', blob, type),
-    photo: (text, blob, model) => {
+    photo: (text, blob, model, deep) => {
       const form = new FormData();
       if (text) form.append('text', text);
       if (model && model !== AUTO) form.append('model', model);
+      if (typeof deep === 'boolean') form.append('deep', deep ? '1' : '0');
       form.append('image', blob, 'photo.jpg');
       return request('api/photo', form);
     },
@@ -417,6 +433,7 @@
     let turn = 0;
     let preferences = { style: 'friendly', verbosity: 'normal' };
     let instructions = { about: '', style: '', enabled: true, max_length: 1500 };
+    let thinking = false;
     let memory = { enabled: false, facts: [], max_facts: 50, max_fact_length: 200 };
     let factId = 0;
     let reminders = { timezone: null, items: [], max: 50, max_text: 300 };
@@ -441,6 +458,7 @@
           limits: { max_text_length: 4000 },
           preferences: Object.assign({}, preferences),
           instructions: Object.assign({}, instructions),
+          thinking: { enabled: thinking },
           memory: memoryView(),
           reminders: remindersView(),
           voice: true,
@@ -464,6 +482,11 @@
         await sleep(250);
         instructions = Object.assign({}, instructions, patch);
         return Object.assign({}, instructions);
+      },
+      async thinkingSet(enabled) {
+        await sleep(200);
+        thinking = enabled;
+        return { enabled };
       },
       async savePreferences(patch) {
         await sleep(250);
@@ -525,12 +548,30 @@
         memory.facts = [];
         return memoryView();
       },
-      async chatStream(text, model, onDelta) {
+      async chatStream(text, model, deep, on) {
+        const thoughtful = (typeof deep === 'boolean' ? deep : thinking) && !/напомни/i.test(text);
+        let reasoning = '';
+        if (thoughtful) {
+          on.thinking('');
+          const started = Date.now();
+          reasoning = 'Что спрашивают: «' + text.slice(0, 80) + '». Разберу по шагам.\n' +
+            'Сначала пойму, что на самом деле нужно, и отмечу допущения.\n' +
+            'Потом решу по частям и проверю вывод другим способом — нет ли ловушки.\n' +
+            'Вывод: отвечу по делу и начну с главного.';
+          await sleep(600);
+          const pieces = reasoning.split(/(\s+)/);
+          for (let i = 0; i < pieces.length; i += 3) {
+            on.thinking(pieces.slice(i, i + 3).join(''));
+            await sleep(90);
+          }
+          on.thinkingDone((Date.now() - started) / 1000);
+        }
         const data = await this.chat(text, model);
         if (data.reply.provider === 'reminders') return data;
+        data.reply.reasoning = reasoning;
         const words = data.reply.content.split(/(\s+)/);
         for (let i = 0; i < words.length; i += 4) {
-          onDelta(words.slice(i, i + 4).join(''));
+          on.delta(words.slice(i, i + 4).join(''));
           await sleep(60);
         }
         return data;
@@ -670,7 +711,8 @@
   }
 
   function setStatus(kind) {
-    const labels = { online: 'на связи', typing: 'печатает…', offline: 'нет связи' };
+    const labels = { online: 'на связи', typing: 'печатает…', thinking: 'размышляет…', offline: 'нет связи' };
+    const busy = kind === 'typing' || kind === 'thinking';
     if (dom.status.dataset.state !== kind) {
       motion(dom.statusLabel, [
         { opacity: 0, transform: 'translateY(6px)' },
@@ -679,8 +721,8 @@
     }
     dom.status.dataset.state = kind;
     dom.statusLabel.textContent = labels[kind];
-    dom.avatar.classList.toggle('orb--thinking', kind === 'typing');
-    document.body.classList.toggle('is-thinking', kind === 'typing');
+    dom.avatar.classList.toggle('orb--thinking', busy);
+    document.body.classList.toggle('is-thinking', busy);
   }
 
   /* Заголовок разбивается на слова, чтобы они появлялись по очереди. */
@@ -998,6 +1040,124 @@
     onScroll();
   }
 
+  /* ---------- Глубокое размышление ---------- */
+
+  function formatThinkTime(seconds) {
+    const total = Math.max(1, Math.round(seconds));
+    const minutes = Math.floor(total / 60);
+    const rest = total % 60;
+    if (!minutes) return rest + ' с';
+    return rest ? minutes + ' мин ' + rest + ' с' : minutes + ' мин';
+  }
+
+  /* Карточка над ответом в режиме глубокого размышления. Пока модель думает — «Размышляю…»
+     с таймером и последними строками черновика; потом она сворачивается в «Размышляла N с»,
+     а нажатие разворачивает весь ход мыслей. Черновик не хранится в истории, поэтому
+     в перезагруженной ленте этих карточек нет (и они не считаются сообщениями). */
+  function createThought() {
+    const root = el('article', 'thought is-active msg--new');
+    const head = el('button', 'thought__head');
+    head.type = 'button';
+    head.setAttribute('aria-expanded', 'false');
+    const spark = icon('i-think');
+    spark.classList.add('thought__icon');
+    const title = el('span', 'thought__title', 'Размышляю…');
+    const time = el('span', 'thought__time');
+    const chevron = icon('i-chevron');
+    chevron.classList.add('thought__chevron');
+    head.append(spark, title, time, chevron);
+    const body = el('div', 'thought__body');
+    const text = el('div', 'thought__text');
+    body.append(text);
+    root.append(head, body);
+    dom.messages.append(root);
+
+    const started = Date.now();
+    let reasoning = '';
+    let finished = false;
+    const timer = setInterval(() => {
+      time.textContent = formatThinkTime((Date.now() - started) / 1000);
+    }, 1000);
+
+    head.addEventListener('click', () => {
+      if (!finished || root.classList.contains('is-empty')) return;
+      const open = !root.classList.contains('is-open');
+      root.classList.toggle('is-open', open);
+      head.setAttribute('aria-expanded', String(open));
+      haptic('select');
+      if (open) motion(body, [{ opacity: 0, transform: 'translateY(-4px)' }, { opacity: 1, transform: 'none' }], { duration: 260, easing: 'ease-out' });
+    });
+
+    function stop() {
+      finished = true;
+      clearInterval(timer);
+      root.classList.remove('is-active');
+    }
+
+    return {
+      push(piece) {
+        reasoning += piece;
+        const shown = reasoning.trim();
+        root.classList.toggle('has-text', Boolean(shown));
+        text.textContent = shown;
+        body.scrollTop = body.scrollHeight; // видны последние строки
+        if (state.stick && !userIsScrolling()) dom.chat.scrollTop = dom.chat.scrollHeight;
+      },
+      /* seconds — сколько думала (null — неизвестно), full — черновик целиком. */
+      done(seconds, full) {
+        if (finished) return;
+        stop();
+        if (full) reasoning = full;
+        text.textContent = reasoning.trim();
+        body.scrollTop = 0;
+        title.textContent = seconds === null ? 'Ход размышлений' : 'Размышляла';
+        time.textContent = seconds === null ? '' : formatThinkTime(seconds);
+        root.classList.toggle('is-empty', !reasoning.trim());
+        head.setAttribute('aria-label', 'Ход размышлений: показать или скрыть');
+      },
+      /* Ответ не получился: обмен не сохранён, поэтому карточка убирается. */
+      remove() {
+        stop();
+        root.remove();
+      },
+    };
+  }
+
+  function renderThinking() {
+    const data = state.thinking;
+    const on = Boolean(data && data.enabled);
+    dom.composerBox.classList.toggle('can-think', Boolean(data));
+    dom.composerBox.classList.toggle('is-deep', on);
+    dom.think.setAttribute('aria-pressed', String(on));
+    dom.input.placeholder = on ? 'Задай задачу…' : 'Напиши сообщение…';
+    dom.hint.textContent = on
+      ? 'Глубокое размышление: отвечаю дольше, но тщательнее.'
+      : state.hintText;
+  }
+
+  async function toggleThinking() {
+    if (!state.thinking) return;
+    const next = !state.thinking.enabled;
+    state.thinking = { enabled: next };
+    renderThinking();
+    haptic('select');
+    if (!reducedMotion) {
+      dom.think.classList.remove('is-popping');
+      void dom.think.offsetWidth;
+      dom.think.classList.add('is-popping');
+    }
+    try {
+      state.thinking = await backend.thinkingSet(next);
+      renderThinking();
+      showToast(next ? '✨ Глубокое размышление включено' : 'Глубокое размышление выключено');
+    } catch (error) {
+      state.thinking = { enabled: !next };
+      renderThinking();
+      showToast(error.message);
+      haptic('notify', 'error');
+    }
+  }
+
   /* ---------- Отправка ---------- */
 
   function setBusy(busy) {
@@ -1109,6 +1269,8 @@
     updateWelcome();
     const typing = showTyping();
     let live = null;
+    let thought = null;
+    const deep = state.thinking ? state.thinking.enabled : undefined;
     if (fly) {
       // Сначала лента встаёт на место, потом сообщение летит в уже известную точку.
       scrollToBottom(false);
@@ -1120,19 +1282,39 @@
     try {
       let data;
       if (attachment) {
-        data = await backend.photo(text, attachment.blob, state.model);
+        data = await backend.photo(text, attachment.blob, state.model, deep);
       } else {
-        data = await backend.chatStream(text, state.model, (piece) => {
-          // Первый кусок ответа — убираем «печатает» и открываем пузырь.
-          if (!live) {
-            typing.dismiss();
-            live = startStreamingReply();
-          }
-          live.text += piece;
-          live.view.push(live.text);
+        data = await backend.chatStream(text, state.model, deep, {
+          delta(piece) {
+            // Первый кусок ответа — убираем «печатает» и открываем пузырь.
+            if (!live) {
+              typing.dismiss();
+              live = startStreamingReply();
+            }
+            live.text += piece;
+            live.view.push(live.text);
+          },
+          thinking(piece) {
+            if (!thought) {
+              typing.dismiss();
+              thought = createThought();
+              setStatus('thinking');
+              if (state.stick) scrollToBottom(true);
+            }
+            thought.push(piece);
+          },
+          thinkingDone(seconds) {
+            if (thought) thought.done(seconds);
+            setStatus('typing');
+          },
         });
       }
       typing.dismiss();
+      if (!thought && data.reply && data.reply.reasoning) {
+        // Ответ пришёл целиком (фото или без потока): ход мыслей — свёрнутой карточкой.
+        thought = createThought();
+        thought.done(null, data.reply.reasoning);
+      }
       if (live) finishStreamingReply(live, data.reply);
       else addAssistantReply(data.reply);
       haptic('impact', 'soft');
@@ -1148,6 +1330,9 @@
         // Ответ оборвался посреди: показанная часть остаётся, но помечается.
         live.view.flush();
         live.item.root.classList.add('msg--failed');
+        if (thought) thought.done(null);
+      } else if (thought) {
+        thought.remove();
       }
       setBusy(false);
       haptic('notify', 'error');
@@ -2147,6 +2332,7 @@
     if (data.memory) state.memory = Object.assign({}, state.memory, data.memory);
     if (data.reminders) state.reminders = Object.assign({}, state.reminders, data.reminders);
     state.instructions = data.instructions || null;
+    state.thinking = data.thinking || null;
     renderInstructionsSummary();
     if (data.preference_options) state.preferenceOptions = data.preference_options;
     state.syncedAt = Date.now();
@@ -2159,7 +2345,8 @@
     dom.assistantName.textContent = name;
     dom.welcomeName.textContent = name;
     dom.input.maxLength = state.maxLength;
-    dom.hint.textContent = name + ' — ИИ и может ошибаться. Важное лучше перепроверить.';
+    state.hintText = name + ' — ИИ и может ошибаться. Важное лучше перепроверить.';
+    renderThinking();
     document.querySelectorAll('.orb__letter').forEach((node) => {
       node.textContent = name.charAt(0).toUpperCase();
     });
@@ -2216,6 +2403,11 @@
       state.reminders = Object.assign({}, state.reminders, data.reminders);
       updateBell();
     }
+    if (data.thinking !== undefined) {
+      // Режим могли переключить в чате с ботом (/think).
+      state.thinking = data.thinking || null;
+      renderThinking();
+    }
     setStatus('online');
     const history = data.history || [];
     const signature = historySignature(history);
@@ -2252,6 +2444,8 @@
     dom.send.addEventListener('click', submit);
     dom.mic.addEventListener('click', startRecording);
     dom.attach.addEventListener('click', () => dom.fileInput.click());
+    dom.think.addEventListener('mousedown', (event) => event.preventDefault());
+    dom.think.addEventListener('click', toggleThinking);
     dom.fileInput.addEventListener('change', () => {
       const file = dom.fileInput.files && dom.fileInput.files[0];
       dom.fileInput.value = ''; // чтобы то же фото можно было выбрать ещё раз

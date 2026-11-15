@@ -13,7 +13,9 @@ from aiogram.utils.chat_action import ChatActionSender
 from ai.client import AllProvidersFailedError, DailyLimitExceededError, NoVisionModelError
 from ai.providers.base import CompletionResult
 from bot.utils.live import LiveMessage
+from bot.utils.thinking import ThinkingMessage
 from services.chat import ChatService
+from services.thinking import ThinkingDelta, ThinkingDone
 from services.speech import SpeechError, SpeechToText
 from services.vision import MAX_IMAGE_BYTES, NO_VISION_TEXT, ImageError, to_data_url
 
@@ -40,7 +42,7 @@ _FAILURE_TEXTS = {
 async def handle_text(message: Message, bot: Bot, chat_service: ChatService) -> None:
     if message.from_user is None or not message.text or not message.text.strip():
         return
-    await _reply(message, bot, chat_service, message.text.strip())
+    await respond(message, bot, chat_service, message.text.strip())
 
 
 async def handle_voice(
@@ -70,11 +72,20 @@ async def handle_voice(
         await message.answer("Не расслышала ни слова. Попробуй записать ещё раз 🙂")
         return
     await message.answer(f"🎤 <i>{escape(text)}</i>", parse_mode=ParseMode.HTML)
-    await _reply(message, bot, chat_service, text)
+    await respond(message, bot, chat_service, text)
 
 
-async def handle_photo(message: Message, bot: Bot, chat_service: ChatService) -> None:
-    """Фото (или картинка, отправленная файлом) + подпись → ответ Эли."""
+async def handle_photo(
+    message: Message,
+    bot: Bot,
+    chat_service: ChatService,
+    *,
+    caption: str | None = None,
+    deep: bool | None = None,
+) -> None:
+    """Фото (или картинка, отправленная файлом) + подпись → ответ Эли.
+
+    caption заменяет подпись сообщения (например, без команды /think в начале)."""
     if message.from_user is None:
         return
     if message.photo:
@@ -94,14 +105,25 @@ async def handle_photo(message: Message, bot: Bot, chat_service: ChatService) ->
     except ImageError:
         await message.answer("Не получилось открыть картинку. Пришли её как фото (JPEG, PNG или WebP).")
         return
-    await _reply(message, bot, chat_service, (message.caption or "").strip(), images=(image,))
+    text = (message.caption or "") if caption is None else caption
+    await respond(message, bot, chat_service, text.strip(), images=(image,), deep=deep)
 
 
-async def _reply(
-    message: Message, bot: Bot, chat_service: ChatService, text: str, images: tuple[str, ...] = ()
+async def respond(
+    message: Message,
+    bot: Bot,
+    chat_service: ChatService,
+    text: str,
+    images: tuple[str, ...] = (),
+    *,
+    deep: bool | None = None,
 ) -> None:
-    """Ответ Эли, который появляется в чате по мере генерации."""
+    """Ответ Эли, который появляется в чате по мере генерации.
+
+    deep — режим глубокого размышления (None — как настроил пользователь): тогда перед
+    ответом приходит сообщение «💭 Размышляю…», которое потом сворачивается в ход мыслей."""
     live = LiveMessage(bot, message)
+    thinking = ThinkingMessage(bot, message)
     answer = ""
     result = None
     try:
@@ -111,16 +133,23 @@ async def _reply(
                 text,
                 user_name=message.from_user.first_name,
                 images=images,
+                deep=deep,
             ):
                 if isinstance(event, CompletionResult):
                     result = event
+                elif isinstance(event, ThinkingDelta):
+                    await thinking.update(event.text)
+                elif isinstance(event, ThinkingDone):
+                    await thinking.finish(event.reasoning, event.seconds)
                 else:
                     answer += event
                     await live.update(answer)
     except NoVisionModelError:
+        await thinking.abort()
         await message.answer(NO_VISION_TEXT)
         return
     except DailyLimitExceededError as exc:
+        await thinking.abort()
         await live.fail(
             f"📵 Достигнут дневной лимит запросов к ИИ ({exc.limit}). "
             "Он обновится в 00:00 по UTC. Это защита от перерасхода бесплатной квоты."
@@ -128,6 +157,7 @@ async def _reply(
         return
     except AllProvidersFailedError as exc:
         logger.error("All AI providers failed (%s)", exc.kind)
+        await thinking.abort()
         await live.fail(
             "⚠️ Ответ оборвался: ИИ-сервис перестал отвечать. Отправь сообщение ещё раз."
             if live.started

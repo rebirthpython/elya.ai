@@ -119,3 +119,12 @@ class UserInstructions(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class ThinkingSettings(Base):
+    """Режим глубокого размышления: Эля сначала обдумывает вопрос, потом отвечает."""
+
+    __tablename__ = "thinking_settings"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
