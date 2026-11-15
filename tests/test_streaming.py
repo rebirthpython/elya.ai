@@ -187,12 +187,12 @@ async def chat(tmp_path):
 
     engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 's.db'}")
     await init_db(engine)
-    memory = MemoryManager(MessageRepository(create_session_factory(engine), store_limit=100), history_limit=30)
+    memory = MemoryManager(MessageRepository(create_session_factory(engine)), history_limit=30)
     settings = Settings(
         bot_token="1:x", allowed_user_ids=frozenset({1}),
         providers=(ProviderConfig("a", "A", "http://x", "", ("a-m",)),),
         database_url="", assistant_name="Эля", history_max_messages=30, history_max_chars=12000,
-        history_store_limit=500, max_output_tokens=256, temperature=0.5, request_timeout=30,
+        max_output_tokens=256, temperature=0.5, request_timeout=30,
         rate_limit_per_minute=10, daily_request_limit=100, log_level="INFO",
     )
 

@@ -152,7 +152,7 @@ async def env(tmp_path, media_dir, monkeypatch):
     await init_db(engine)
     session_factory = create_session_factory(engine)
     usage = UsageTracker(session_factory, 100)
-    memory = MemoryManager(MessageRepository(session_factory, store_limit=500), history_limit=30)
+    memory = MemoryManager(MessageRepository(session_factory), history_limit=30)
     inbox = tmp_path / "inbox"
     inbox.mkdir()
     session = VideoSession(inbox)

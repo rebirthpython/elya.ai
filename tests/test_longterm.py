@@ -56,10 +56,10 @@ async def env(tmp_path):
             bot_token="1:x", allowed_user_ids=frozenset({USER}),
             providers=(ProviderConfig("fake", "Fake", "http://x", "", ("m",)),),
             database_url="", assistant_name="Эля", history_max_messages=30, history_max_chars=12000,
-            history_store_limit=500, max_output_tokens=256, temperature=0.5, request_timeout=30,
+            max_output_tokens=256, temperature=0.5, request_timeout=30,
             rate_limit_per_minute=10, daily_request_limit=100, log_level="INFO",
         )
-        memory = MemoryManager(MessageRepository(sf, store_limit=500), history_limit=30)
+        memory = MemoryManager(MessageRepository(sf), history_limit=30)
         chat = ChatService(settings, ai, memory, None, longterm)
         return provider, longterm, chat
 

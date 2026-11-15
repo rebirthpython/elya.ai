@@ -1,4 +1,4 @@
-"""Диалог с ИИ: обычные текстовые сообщения."""
+"""Диалог с ИИ: текст, голосовые, фото и поиск в интернете (/search)."""
 
 from __future__ import annotations
 
@@ -8,11 +8,14 @@ from html import escape
 from aiogram import Bot, F, Router
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
+from aiogram.filters import Command, CommandObject
+from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, Message
 from aiogram.utils.chat_action import ChatActionSender
 
 from ai.client import AllProvidersFailedError, DailyLimitExceededError, NoVisionModelError
 from ai.providers.base import CompletionResult
+from bot.handlers.draw import DrawStates, draw_and_send, maybe_draw
 from bot.utils.live import LiveMessage
 from bot.utils.text import close_open_fence
 from config.settings import Settings
@@ -26,6 +29,8 @@ from services.code import (
     read_code_file,
 )
 from services.modes import CODE, ModeStore
+from services.drawing import DrawingService
+from services.search import SearchStarted
 from services.speech import SpeechError, SpeechToText
 from services.vision import MAX_IMAGE_BYTES, NO_VISION_TEXT, ImageError, to_data_url
 
@@ -49,16 +54,26 @@ _FAILURE_TEXTS = {
 }
 
 
-async def handle_text(message: Message, bot: Bot, chat_service: ChatService) -> None:
+async def handle_text(
+    message: Message, bot: Bot, chat_service: ChatService, drawing: DrawingService | None = None
+) -> None:
     if message.from_user is None or not message.text or not message.text.strip():
         return
-    await send_reply(message, bot, chat_service, message.text.strip())
+    text = message.text.strip()
+    if await maybe_draw(message, bot, drawing, text):
+        return
+    await send_reply(message, bot, chat_service, text)
 
 
 async def handle_voice(
-    message: Message, bot: Bot, chat_service: ChatService, speech: SpeechToText | None = None
+    message: Message,
+    bot: Bot,
+    chat_service: ChatService,
+    speech: SpeechToText | None = None,
+    drawing: DrawingService | None = None,
+    state: FSMContext | None = None,
 ) -> None:
-    """Голосовое → текст (Groq Whisper) → обычный ответ Эли."""
+    """Голосовое → текст (Groq Whisper) → обычный ответ Эли (или картинка, если просят нарисовать)."""
     if message.from_user is None or message.voice is None:
         return
     if speech is None:
@@ -82,6 +97,14 @@ async def handle_voice(
         await message.answer("Не расслышала ни слова. Попробуй записать ещё раз 🙂")
         return
     await message.answer(f"🎤 <i>{escape(text)}</i>", parse_mode=ParseMode.HTML)
+    if drawing is not None and drawing.enabled and state is not None \
+            and await state.get_state() == DrawStates.waiting.state:
+        # После /draw описание картинки можно надиктовать.
+        await state.clear()
+        await draw_and_send(message, bot, drawing, text, explicit=True)
+        return
+    if await maybe_draw(message, bot, drawing, text):
+        return
     await send_reply(message, bot, chat_service, text)
 
 
@@ -176,6 +199,30 @@ async def _send_code_files(message: Message, text: str) -> None:
             return
 
 
+async def cmd_search(
+    message: Message, command: CommandObject, bot: Bot, chat_service: ChatService
+) -> None:
+    """/search запрос — ответ по свежим результатам поиска со ссылками на источники."""
+    if message.from_user is None:
+        return
+    if not chat_service.search_enabled:
+        await message.answer(
+            "🔎 Поиск в интернете пока не настроен: владельцу бота нужно добавить ключ "
+            "SERPER_API_KEY или SERPAPI_API_KEY (бесплатно, подробности — в README)."
+        )
+        return
+    query = (command.args or "").strip()
+    if not query:
+        await message.answer(
+            "Напиши, что найти, например: <code>/search курс евро сегодня</code>\n\n"
+            "Можно и без команды: «погугли, когда выходит …» или «найди в интернете …»."
+            + (" А если для ответа нужны свежие сведения, я поищу сама." if chat_service.search_auto else ""),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    await send_reply(message, bot, chat_service, query, search=True)
+
+
 async def send_reply(
     message: Message,
     bot: Bot,
@@ -183,6 +230,8 @@ async def send_reply(
     text: str,
     images: tuple[str, ...] = (),
     file: CodeFile | None = None,
+    *,
+    search: bool | None = None,
 ) -> None:
     """Ответ Эли, который появляется в чате по мере генерации."""
     live = LiveMessage(bot, message)
@@ -196,9 +245,12 @@ async def send_reply(
                 user_name=message.from_user.first_name,
                 images=images,
                 file=file,
+                search=search,
             ):
                 if isinstance(event, CompletionResult):
                     result = event
+                elif isinstance(event, SearchStarted):
+                    await live.status(f"🔎 Ищу в интернете: «{event.query}»…")
                 else:
                     answer += event
                     await live.update(answer)
@@ -236,6 +288,13 @@ async def handle_unsupported(message: Message) -> None:
         "Файл с лекцией (.txt, .docx, .pdf) можно прислать после команды /notes или /slides, "
         "а файл с кодом — в режиме кода: /code."
     )
+
+
+def create_search_router() -> Router:
+    """Отдельно от общего чата: команда должна сработать раньше «неизвестной команды»."""
+    router = Router(name="search")
+    router.message.register(cmd_search, Command("search", "google"))
+    return router
 
 
 def create_router() -> Router:

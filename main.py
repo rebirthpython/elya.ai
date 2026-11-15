@@ -26,6 +26,7 @@ from bot.handlers.video import VideoStates
 from bot.middlewares.access import AccessMiddleware
 from bot.middlewares.throttling import ThrottlingMiddleware
 from config.settings import ConfigError, Settings, load_settings
+from database.models import DailyImageUsage, DailySearchUsage
 from database.session import (
     create_engine,
     create_session_factory,
@@ -35,6 +36,8 @@ from database.session import (
 from memory.manager import MemoryManager
 from memory.repository import MessageRepository
 from services.chat import ChatService
+from services.drawing import DrawingService
+from services.imagegen import ImageGenerator, build_image_backends
 from bot.handlers.reminders import make_sender
 from services.instructions import InstructionsStore
 from services.longterm import LongTermMemory
@@ -43,6 +46,7 @@ from services.speech import SpeechToText
 from services.reminders import ReminderScheduler, Reminders
 from services.preferences import PreferencesStore
 from services.rate_limit import SlidingWindowLimiter
+from services.search import WebSearch, build_search_providers
 from services.usage import UsageTracker
 from study.pipeline import StudyService
 from video.ffmpeg import FFmpeg
@@ -57,6 +61,8 @@ BOT_COMMANDS = [
     BotCommand(command="slides", description="Презентация с анимациями"),
     BotCommand(command="video", description="Монтаж видео"),
     BotCommand(command="code", description="Режим кода: пишу и разбираю программы"),
+    BotCommand(command="draw", description="Нарисовать картинку"),
+    BotCommand(command="search", description="Найти в интернете со ссылками на источники"),
     BotCommand(command="help", description="Что я умею"),
     BotCommand(command="reminders", description="Мои напоминания"),
     BotCommand(command="timezone", description="Часовой пояс для напоминаний"),
@@ -82,6 +88,8 @@ def create_dispatcher(
     instructions: InstructionsStore | None = None,
     video: VideoService | None = None,
     modes: ModeStore | None = None,
+    drawing: DrawingService | None = None,
+    search: WebSearch | None = None,
 ) -> Dispatcher:
     """chat_service и limiter передаются снаружи, когда их делит с ботом Mini App."""
     dp = Dispatcher(storage=MemoryStorage())
@@ -95,8 +103,10 @@ def create_dispatcher(
     dp["speech"] = speech
     dp["video"] = video
     dp["modes"] = modes
+    dp["drawing"] = drawing
+    dp["web_search"] = search
     dp["chat_service"] = chat_service or ChatService(
-        settings, ai_client, memory, instructions=instructions, modes=modes
+        settings, ai_client, memory, instructions=instructions, modes=modes, search=search
     )
 
     dp["study"] = StudyService(
@@ -117,6 +127,23 @@ def create_dispatcher(
     )
     dp.include_routers(*get_routers())
     return dp
+
+
+def create_web_search(
+    settings: Settings, http_client: httpx.AsyncClient, session_factory
+) -> WebSearch | None:
+    """Поиск в интернете: провайдеры с ключами и DuckDuckGo без ключа."""
+    config = settings.search
+    if not config.enabled:
+        return None
+    return WebSearch(
+        build_search_providers(config, http_client),
+        max_results=config.max_results,
+        language=config.language,
+        region=config.region,
+        auto=config.auto,
+        usage=UsageTracker(session_factory, config.daily_limit, table=DailySearchUsage),
+    )
 
 
 def setup_logging(level: str) -> None:
@@ -164,7 +191,7 @@ async def run(settings: Settings) -> None:
         usage=usage,
     )
     memory = MemoryManager(
-        MessageRepository(session_factory, store_limit=settings.history_store_limit),
+        MessageRepository(session_factory),
         history_limit=settings.history_max_messages,
     )
 
@@ -190,6 +217,16 @@ async def run(settings: Settings) -> None:
     await video.start()
     logger.info("Video editing: %s", video.status)
     modes = ModeStore(session_factory)
+    drawing = DrawingService(
+        ImageGenerator(
+            build_image_backends(settings.image_providers, http_client),
+            usage=UsageTracker(session_factory, settings.image_daily_limit, table=DailyImageUsage),
+        ),
+        ai_client,
+        memory,
+        assistant_name=settings.assistant_name,
+    )
+    search = create_web_search(settings, http_client, session_factory)
     chat_service = ChatService(
         settings,
         ai_client,
@@ -199,6 +236,7 @@ async def run(settings: Settings) -> None:
         reminders,
         instructions=instructions,
         modes=modes,
+        search=search,
     )
     limiter = SlidingWindowLimiter(settings.rate_limit_per_minute)
 
@@ -216,6 +254,8 @@ async def run(settings: Settings) -> None:
         instructions=instructions,
         video=video,
         modes=modes,
+        drawing=drawing,
+        search=search,
     )
     web_runner = None
     scheduler_task = None
@@ -247,8 +287,10 @@ async def run(settings: Settings) -> None:
                         speech,
                         instructions,
                         modes,
-                        video=video,
+                        drawing=drawing,
                         bot=bot,
+                        search=search,
+                        video=video,
                         fsm_storage=dp.storage,
                     ),
                     settings.webapp_host,
@@ -263,9 +305,17 @@ async def run(settings: Settings) -> None:
                 )
                 raise SystemExit(1) from None
         logger.info(
-            "Bot @%s started. Providers: %s. Mini App: %s",
+            "Bot @%s started. Providers: %s. Images: %s. Web search: %s. Mini App: %s",
             me.username,
             ", ".join(f"{p.name}[{','.join(p.models)}]" for p in settings.providers),
+            ", ".join(f"{p.name}[{p.model}]" for p in settings.image_providers)
+            or "off (set CLOUDFLARE_API_TOKEN or POLLINATIONS_API_KEY to enable)",
+            (
+                ",".join(name for name, _ in settings.search.providers)
+                + (" (auto)" if settings.search.auto else " (on request)")
+                if search
+                else "off (set SERPER_API_KEY or SERPAPI_API_KEY to enable)"
+            ),
             settings.webapp_url or "off (set WEBAPP_URL to enable)",
         )
         scheduler = ReminderScheduler(reminders, make_sender(bot))

@@ -30,22 +30,41 @@ from services.chat import ChatService
 from services.instructions import Instructions, InstructionsStore
 from services.longterm import LongTermMemory
 from services.modes import CHAT, CODE, ModeStore
+from services.search import WebSearch
 from services.usage import UsageTracker
 
 
-def _privacy_note(ai_client: AIClient) -> str:
+def _privacy_note(ai_client: AIClient, web_search: WebSearch | None = None) -> str:
     providers = escape(", ".join(ai_client.provider_titles))
+    search_note = (
+        f"Поисковые запросы, которые я составляю для ответа, уходят в <i>"
+        f"{escape(', '.join(web_search.provider_titles))}</i>. "
+        if web_search
+        else ""
+    )
     return (
         "🔒 <b>О приватности.</b> Твои сообщения и недавняя история диалога отправляются "
-        f"для ответа во внешний ИИ-сервис: <i>{providers}</i>. На бесплатных тарифах "
+        f"для ответа во внешний ИИ-сервис: <i>{providers}</i>. {search_note}На бесплатных тарифах "
         "провайдеры могут использовать данные для улучшения своих моделей, поэтому "
         "не присылай пароли, номера карт и другие секреты. История хранится только в базе "
         "этого бота, её можно удалить командой /clear."
     )
 
 
+def _search_start(web_search: WebSearch) -> str:
+    when = "когда нужны свежие сведения, я загляну в интернет" if web_search.auto else "загляну в интернет"
+    return (
+        f"🔎 Могу поискать в интернете: {when} и приложу ссылки на источники. "
+        "Попроси «погугли …» или используй /search.\n\n"
+    )
+
+
 async def cmd_start(
-    message: Message, state: FSMContext, settings: Settings, ai_client: AIClient
+    message: Message,
+    state: FSMContext,
+    settings: Settings,
+    ai_client: AIClient,
+    web_search: WebSearch | None = None,
 ) -> None:
     await state.clear()
     first_name = message.from_user.first_name if message.from_user else ""
@@ -61,10 +80,12 @@ async def cmd_start(
         "Просто пиши мне обычными сообщениями: могу ответить на вопрос, помочь с учёбой, "
         "спланировать день или просто поболтать. Я помню контекст нашего разговора.\n\n"
         f"{app_note}"
+        "🎨 Напиши «нарисуй …» или /draw — нарисую картинку.\n"
         "📝 /notes — сделаю конспект или сокращу лекцию, 🎞 /slides — соберу презентацию, "
         "🎬 /video — смонтирую видео (или просто пришли его мне), "
         "👩‍💻 /code — режим кода: пишу программы и ищу ошибки.\n\n"
-        f"{_privacy_note(ai_client)}\n\n"
+        f"{_search_start(web_search) if web_search else ''}"
+        f"{_privacy_note(ai_client, web_search)}\n\n"
         "Все команды — в /help.",
         parse_mode=ParseMode.HTML,
         reply_markup=(
@@ -76,11 +97,21 @@ async def cmd_start(
 
 
 async def cmd_help(
-    message: Message, settings: Settings, memory: MemoryManager, usage: UsageTracker
+    message: Message,
+    settings: Settings,
+    memory: MemoryManager,
+    usage: UsageTracker,
+    web_search: WebSearch | None = None,
 ) -> None:
     used = await usage.used_today()
     limit = str(usage.daily_limit) if usage.daily_limit else "∞"
     history = await memory.history_size(message.from_user.id) if message.from_user else 0
+    if web_search:
+        search_limit = str(web_search.daily_limit) if web_search.daily_limit else "∞"
+        search_stats = f"🔎 Поисков в интернете сегодня: {await web_search.used_today()} из {search_limit}\n"
+        search_line = "🔎 Искать в интернете и давать ссылки на источники\n"
+    else:
+        search_stats = search_line = ""
     await message.answer(
         f"<b>Что умеет {escape(settings.assistant_name)}</b>\n\n"
         "💬 Отвечать на вопросы и поддерживать диалог с учётом контекста\n"
@@ -89,12 +120,16 @@ async def cmd_help(
         "🎞 Делать презентации с анимациями и заметками докладчика\n"
         "🎬 Монтировать видео: обрезать, склеить, ускорить, убрать паузы, субтитры, вертикальный формат\n"
         "👩‍💻 Программировать: писать и объяснять код, искать ошибки, разбирать файлы\n"
+        "🎨 Рисовать картинки: просто напиши «нарисуй …»\n"
+        f"{search_line}"
         "🗓 Помогать с планированием и организацией дел\n\n"
         "<b>Команды</b>\n"
         "/notes — конспект, краткая выжимка или главные детали из лекции\n"
         "/slides — презентация (.pptx) по теме или материалу\n"
         "/video — монтаж видео (можно и просто прислать видео)\n"
         "/code — режим кода (выключить: /code off)\n"
+        "/draw — нарисовать картинку по описанию\n"
+        "/search — найти в интернете и ответить со ссылками на источники\n"
         "/start — приветствие\n"
         "/help — эта справка\n"
         "/reminders — мои напоминания (ставятся фразой «напомни завтра в 9 …»)\n"
@@ -105,7 +140,8 @@ async def cmd_help(
         "/clear — очистить историю диалога\n"
         "/cancel — отменить текущее действие\n\n"
         f"📊 Сообщений в истории: {history}\n"
-        f"📈 Запросов к ИИ сегодня (UTC): {used} из {limit}\n\n"
+        f"📈 Запросов к ИИ сегодня (UTC): {used} из {limit}\n"
+        f"{search_stats}\n"
         "<i>Скоро: долговременная память, настройки стиля, напоминания, голосовые и фото.</i>",
         parse_mode=ParseMode.HTML,
     )

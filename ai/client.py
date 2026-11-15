@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import AsyncIterator, Callable
+from contextlib import aclosing
 
 from ai.providers.base import (
     BadResponseError,
@@ -151,8 +152,13 @@ class AIClient:
         оборвался на середине, бросается AllProvidersFailedError: часть ответа уже
         показана, и незаметно подменить модель нельзя.
         """
-        async for event in self._attempts(messages, prefer, temperature, max_tokens, streaming=True):
-            yield event
+        # aclosing: если ответ перестали читать (обрыв, служебная строка поиска),
+        # поток провайдера и его HTTP-соединение закрываются сразу, а не сборщиком мусора.
+        async with aclosing(
+            self._attempts(messages, prefer, temperature, max_tokens, streaming=True)
+        ) as events:
+            async for event in events:
+                yield event
 
     async def _attempts(
         self,
@@ -189,12 +195,13 @@ class AIClient:
             result: CompletionResult | None = None
             try:
                 if streaming:
-                    async for event in provider.stream(messages, **options):
-                        if isinstance(event, CompletionResult):
-                            result = event
-                        elif event:
-                            emitted = True
-                            yield event
+                    async with aclosing(provider.stream(messages, **options)) as stream:
+                        async for event in stream:
+                            if isinstance(event, CompletionResult):
+                                result = event
+                            elif event:
+                                emitted = True
+                                yield event
                     if result is None:
                         raise BadResponseError("stream ended without a result", provider=provider.name, model=model)
                 else:

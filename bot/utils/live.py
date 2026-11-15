@@ -45,10 +45,25 @@ class LiveMessage:
         self._last_edit = 0.0
         self._shown = ""
         self._sent: Message | None = None
+        # В сообщении пока служебная строка («🔎 Ищу…»), а не текст ответа.
+        self._status = False
 
     @property
     def started(self) -> bool:
-        return self._sent is not None
+        """Пользователь уже видит часть ответа."""
+        return self._sent is not None and not self._status
+
+    async def status(self, text: str) -> None:
+        """Служебная строка вместо ответа — показывается сразу, ответ потом её заменит."""
+        if self._sent is None:
+            try:
+                self._sent = await self._message.answer(text, parse_mode=None, link_preview_options=_NO_PREVIEW)
+            except TelegramAPIError as exc:
+                logger.debug("Status message not sent: %s", exc)
+                return
+        elif not await self._edit(text, None):
+            return
+        self._shown, self._last_edit, self._status = text, self._clock(), True
 
     def _preview(self, text: str) -> str:
         text = text.strip()
@@ -77,7 +92,7 @@ class LiveMessage:
         preview = self._preview(text)
         if preview != self._shown:
             await self._edit(preview, None)
-            self._shown, self._last_edit = preview, now
+            self._shown, self._last_edit, self._status = preview, now, False
 
     async def finish(self, text: str) -> None:
         """Окончательный ответ с оформлением."""
@@ -95,6 +110,9 @@ class LiveMessage:
         """Ответ оборвался: дописываем пояснение к уже показанному тексту или шлём его отдельно."""
         if self._sent is None:
             await self._message.answer(notice)
+            return
+        if self._status:
+            await self._edit(notice, None)  # ответа ещё не было — статус заменяется пояснением
             return
         partial = self._shown.removesuffix(CURSOR)
         await self._edit(f"{partial}\n\n{notice}", None)

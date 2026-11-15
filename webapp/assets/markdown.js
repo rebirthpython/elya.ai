@@ -320,7 +320,18 @@
       appendLines(node, paragraph);
       root.append(node);
     }
+    markSources(root);
     return root;
+  }
+
+  /* «Источники:» и список ссылок в конце ответа с поиском — оформляются отдельно. */
+  function markSources(root) {
+    const list = root.lastElementChild;
+    const title = list && list.previousElementSibling;
+    if (list && list.tagName === 'OL' && title && title.tagName === 'P' && title.textContent.trim() === 'Источники:') {
+      title.classList.add('md-sources__title');
+      list.classList.add('md-sources');
+    }
   }
 
   window.ElyaMarkdown = { render };

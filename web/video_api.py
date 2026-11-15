@@ -45,12 +45,11 @@ from bot.handlers.video import (
 )
 from video.plan import fmt_time
 from video.service import VideoService
-from web.common import SETTINGS, _USER_KEY, _apply_headers, _error, _rate_limited, _read_json
+from web.common import BOT, SETTINGS, _USER_KEY, _apply_headers, _error, _rate_limited, _read_json
 
 logger = logging.getLogger(__name__)
 
 VIDEO = web.AppKey("video", object)
-BOT = web.AppKey("bot", object)
 FSM_STORAGE = web.AppKey("fsm_storage", object)
 
 PING_INTERVAL = 15.0  # прокси (Cloudflare) рвут ответ, если он долго молчит

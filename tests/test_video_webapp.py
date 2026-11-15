@@ -40,7 +40,7 @@ async def app_env(tmp_path, media_dir, monkeypatch):
     engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'web.db'}")
     await init_db(engine)
     factory = create_session_factory(engine)
-    memory = MemoryManager(MessageRepository(factory, store_limit=500), history_limit=30)
+    memory = MemoryManager(MessageRepository(factory), history_limit=30)
     usage = UsageTracker(factory, 100)
     planner = Planner()
     ai = AIClient([planner], max_tokens=100, temperature=0.5, usage=usage)

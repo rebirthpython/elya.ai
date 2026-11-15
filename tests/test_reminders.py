@@ -412,12 +412,12 @@ async def test_chat_service_handles_reminders_without_the_llm(env, tmp_path):
     engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'chat.db'}")
     await init_db(engine)
     sf = create_session_factory(engine)
-    memory = MemoryManager(MessageRepository(sf, store_limit=100), history_limit=30)
+    memory = MemoryManager(MessageRepository(sf), history_limit=30)
     settings = Settings(
         bot_token="1:x", allowed_user_ids=frozenset({USER}),
         providers=(ProviderConfig("fake", "Fake", "http://x", "", ("m",)),),
         database_url="", assistant_name="Эля", history_max_messages=30, history_max_chars=12000,
-        history_store_limit=500, max_output_tokens=256, temperature=0.5, request_timeout=30,
+        max_output_tokens=256, temperature=0.5, request_timeout=30,
         rate_limit_per_minute=10, daily_request_limit=100, log_level="INFO",
     )
     chat = ChatService(settings, AIClient([provider], max_tokens=1, temperature=0), memory, None, None, rem)

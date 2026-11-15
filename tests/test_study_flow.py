@@ -89,7 +89,7 @@ async def study_env(tmp_path, monkeypatch):
     await init_db(engine)
     session_factory = create_session_factory(engine)
     usage = UsageTracker(session_factory, 100)
-    memory = MemoryManager(MessageRepository(session_factory, store_limit=500), history_limit=30)
+    memory = MemoryManager(MessageRepository(session_factory), history_limit=30)
     provider = TaskProvider()
     session = StudySession()
 

@@ -74,7 +74,7 @@ def _settings(**overrides) -> Settings:
         bot_token=TOKEN, allowed_user_ids=frozenset({OWNER_ID}),
         providers=(ProviderConfig("alpha", "Alpha AI", "http://x", "", ("a1",)),),
         database_url="", assistant_name="Эля", history_max_messages=30, history_max_chars=12000,
-        history_store_limit=500, max_output_tokens=256, temperature=0.5, request_timeout=30,
+        max_output_tokens=256, temperature=0.5, request_timeout=30,
         rate_limit_per_minute=10, daily_request_limit=100, log_level="INFO",
         webapp_url="https://elya.example", webapp_auth_max_age=3600,
     )
@@ -87,7 +87,7 @@ async def env(tmp_path):
     engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'web.db'}")
     await init_db(engine)
     session_factory = create_session_factory(engine)
-    memory = MemoryManager(MessageRepository(session_factory, store_limit=500), history_limit=30)
+    memory = MemoryManager(MessageRepository(session_factory), history_limit=30)
     preferences = PreferencesStore(session_factory)
     long_memory = LongTermMemory(session_factory)
     instructions = InstructionsStore(session_factory)
@@ -205,7 +205,7 @@ async def test_interface_is_served_with_security_headers(env):
 # ---------- доступ ----------
 
 
-@pytest.mark.parametrize("path", ["/api/state", "/api/chat", "/api/clear", "/api/unknown"])
+@pytest.mark.parametrize("path", ["/api/state", "/api/chat", "/api/clear", "/api/chat/new", "/api/unknown"])
 async def test_api_rejects_requests_without_valid_init_data(env, path):
     client, providers = await env["make"]()
     for headers in ({}, {"Authorization": "tma hash=abc"}, auth(sign_init_data(token="1:OTHER"))):
@@ -386,6 +386,26 @@ async def test_daily_limit_is_reported(env):
     assert response.status == 429
     assert (await response.json())["error"]["code"] == "daily_limit"
     assert len(providers[0].calls) == 1
+
+
+async def test_new_chat_keeps_history_and_starts_a_fresh_context(env):
+    await env["memory"].save_exchange(OWNER_ID, "старое", "ответ")
+    client, providers = await env["make"]()
+
+    data = await (await client.post("/api/chat/new", json={}, headers=auth())).json()
+    assert data["started"] is True
+    assert [m["role"] for m in data["history"]] == ["user", "assistant", "break"]
+    again = await (await client.post("/api/chat/new", json={}, headers=auth())).json()
+    assert again["started"] is False and again["history"] == data["history"]
+
+    assert (await client.post("/api/chat", json={"text": "новое"}, headers=auth())).status == 200
+    _, messages = providers[0].calls[-1]
+    sent = " ".join(str(m.content) for m in messages if m.role != "system")
+    assert "старое" not in sent and "новое" in sent
+
+    state = await (await client.get("/api/state", headers=auth())).json()
+    assert [m["role"] for m in state["history"]] == ["user", "assistant", "break", "user", "assistant"]
+    assert state["history"][0]["content"] == "старое"
 
 
 async def test_clear_removes_only_own_history(env):

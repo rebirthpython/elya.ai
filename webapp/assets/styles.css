@@ -818,6 +818,30 @@ body.is-thinking .glow--think {
   animation: pop-in 0.5s var(--spring) both;
 }
 
+/* Разделитель «Новый чат»: выше — прошлая переписка, она хранится и остаётся в ленте. */
+.chat-break {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 18px 4px 8px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.chat-break::before,
+.chat-break::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: color-mix(in srgb, var(--text-2) 35%, transparent);
+}
+
+.chat-break--new {
+  animation: pop-in 0.5s var(--spring) both;
+}
+
 .msg {
   display: flex;
   flex-direction: column;
@@ -1111,6 +1135,31 @@ body.is-thinking .glow--think {
   font-size: 13.5px;
   white-space: nowrap;
   animation: fade-in 0.5s ease both;
+}
+
+/* Эля ищет в интернете: длинный запрос не растягивает пузырь за край экрана */
+.typing--search .typing__hint {
+  max-width: min(62vw, 340px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Список источников под ответом с поиском */
+.md .md-sources__title {
+  margin: 0.9em 0 0.35em;
+  padding-top: 0.7em;
+  border-top: 1px solid var(--line);
+  color: var(--text-2);
+  font-size: 0.86em;
+}
+
+.md ol.md-sources {
+  color: var(--text-2);
+  font-size: 0.86em;
+}
+
+.md ol.md-sources a {
+  overflow-wrap: anywhere;
 }
 
 /* Ошибка отправки */
@@ -1603,6 +1652,50 @@ body.is-thinking .glow--think {
   display: none;
 }
 
+/* Глобус — следующее сообщение с поиском в интернете (если поиск подключён) */
+.search-btn {
+  display: none;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  margin: 2px 0 2px -10px;
+  border-radius: 50%;
+  color: var(--text-2);
+  font-size: 21px;
+  transition: color 0.2s, background 0.25s, transform 0.4s var(--spring);
+}
+
+.composer__box.can-search .search-btn {
+  display: grid;
+}
+
+.composer__box.can-attach .search-btn {
+  margin-left: -8px;
+}
+
+.search-btn:active {
+  transform: scale(0.86);
+}
+
+.search-btn.is-on {
+  background: color-mix(in srgb, var(--rose) 16%, transparent);
+  color: var(--rose);
+}
+
+.search-btn.is-on svg {
+  animation: globe-on 0.6s var(--spring) both;
+}
+
+@keyframes globe-on {
+  from { transform: rotate(-120deg) scale(0.6); }
+}
+
+.composer__box.is-recording .search-btn,
+.composer__box.is-transcribing .search-btn {
+  display: none;
+}
+
 /* Выбранное фото над полем ввода */
 .attachment {
   position: relative;
@@ -1666,6 +1759,33 @@ body.is-thinking .glow--think {
   width: 100%;
   margin: 0;
   border-radius: 18px 18px 6px 18px;
+}
+
+/* Нарисованная картинка в ответе: во всю ширину пузыря, под ней подпись и промпт */
+.msg--assistant .bubble--art {
+  width: min(86vw, 440px);
+}
+
+.bubble__art {
+  display: block;
+  width: calc(100% + 28px);
+  height: auto;
+  min-height: 120px;
+  margin: -10px -14px 10px;
+  border-radius: var(--radius-bubble) var(--radius-bubble) 6px 6px;
+  background: var(--surface-2);
+  animation: fade-in 0.4s ease both;
+}
+
+.bubble--art em {
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.bubble__note {
+  margin: 8px 0 0;
+  color: var(--text-3);
+  font-size: 12.5px;
 }
 
 /* ---------- Голосовой ввод ---------- */
@@ -3009,6 +3129,267 @@ body.is-thinking .glow--think {
 }
 
 /* ---------- Меньше движения ---------- */
+
+/* ---------- Боковая шторка ---------- */
+
+.topbar__drawer {
+  margin-left: -6px;
+  margin-right: -4px;
+}
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 22;
+  background: rgba(8, 5, 12, 0.55);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 23;
+  display: flex;
+  flex-direction: column;
+  width: min(84vw, 340px);
+  padding-top: var(--tg-content-safe-area-inset-top, 0px);
+  padding-bottom: calc(12px + var(--safe-bottom));
+  border-right: 1px solid var(--line);
+  border-radius: 0 26px 26px 0;
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  touch-action: pan-y;
+  will-change: transform;
+}
+
+.drawer.is-dragging {
+  transition: none;
+}
+
+.drawer__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 14px 10px 18px;
+}
+
+.drawer__title {
+  flex: 1;
+  min-width: 0;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.drawer__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 10px 12px;
+}
+
+.drawer__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.drawer-item {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 50px;
+  padding: 0 12px;
+  border-radius: 16px;
+  color: var(--text);
+  font-size: 16.5px;
+  font-weight: 500;
+  text-align: left;
+  transition: background 0.2s, transform 0.35s var(--spring);
+}
+
+.drawer-item[hidden] {
+  display: none;
+}
+
+.drawer-item svg {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  color: var(--text-2);
+}
+
+.drawer-item__label {
+  flex: 1;
+  min-width: 0;
+}
+
+.drawer-item__meta {
+  flex: none;
+  color: var(--text-3);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.drawer-item__meta.is-badge {
+  min-width: 22px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--grad-ink);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 22px;
+  text-align: center;
+}
+
+.drawer-item:active {
+  transform: scale(0.97);
+  background: var(--surface-2);
+}
+
+.drawer__sep {
+  height: 1px;
+  margin: 12px 12px;
+  background: var(--line-strong);
+}
+
+.drawer__label {
+  margin: 4px 12px 6px;
+  color: var(--text-3);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.drawer__recent {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.drawer__recent-btn {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  display: block;
+  width: 100%;
+  padding: 11px 12px;
+  border-radius: 14px;
+  color: var(--text);
+  font-size: 15.5px;
+  text-align: left;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  transition: background 0.2s, transform 0.35s var(--spring);
+}
+
+.drawer__recent-btn:active {
+  transform: scale(0.98);
+  background: var(--surface-2);
+}
+
+.drawer__empty {
+  margin: 4px 12px;
+  color: var(--text-3);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.drawer__foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px 0;
+}
+
+.drawer__new {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 50px;
+  padding: 0 22px 0 18px;
+  border-radius: 999px;
+  background: var(--grad-ink);
+  color: #fff;
+  font-size: 16.5px;
+  font-weight: 600;
+  box-shadow: 0 10px 24px -10px rgba(207, 52, 118, 0.75);
+  transition: transform 0.4s var(--spring);
+}
+
+.drawer__new svg {
+  width: 22px;
+  height: 22px;
+}
+
+.drawer__new:active {
+  transform: scale(0.94);
+}
+
+.drawer__me {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  display: grid;
+  place-items: center;
+  width: 50px;
+  height: 50px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--surface-2);
+  transition: transform 0.4s var(--spring);
+}
+
+.drawer__me span {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--grad);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.drawer__me:active {
+  transform: scale(0.9);
+}
+
+/* Сообщение, к которому вернулись из «Недавнего», ненадолго подсвечивается */
+.msg.is-found .bubble {
+  animation: found 1.6s var(--ease-out);
+}
+
+@keyframes found {
+  0%, 30% { box-shadow: 0 0 0 3px var(--focus); }
+  100% { box-shadow: 0 0 0 3px transparent; }
+}
+
+@media (hover: hover) {
+  .drawer-item:hover,
+  .drawer__recent-btn:hover {
+    background: var(--surface-2);
+  }
+}
+
 
 @media (prefers-reduced-motion: reduce) {
   *,

@@ -13,6 +13,8 @@ from services.rate_limit import SlidingWindowLimiter
 
 SETTINGS = web.AppKey("settings", Settings)
 LIMITER = web.AppKey("limiter", SlidingWindowLimiter)
+# Бот нужен приложению, чтобы присылать в чат картинки и смонтированные видео.
+BOT = web.AppKey("bot", object)
 
 _USER_KEY = web.RequestKey("tg_user", WebAppUser)
 

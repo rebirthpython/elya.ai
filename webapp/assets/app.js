@@ -35,6 +35,7 @@
     composer: document.querySelector('.composer'),
     composerBox: $('composer-box'),
     attach: $('attach'),
+    searchToggle: $('search-toggle'),
     fileInput: $('file-input'),
     attachment: $('attachment'),
     attachmentImg: $('attachment-img'),
@@ -96,6 +97,27 @@
     instrStyleCount: $('instr-style-count'),
     instrSave: $('instr-save'),
     remindersBlock: $('reminders-block'),
+    memoryBlock: $('memory-block'),
+    drawerBtn: $('drawer-btn'),
+    drawer: $('drawer'),
+    drawerBackdrop: $('drawer-backdrop'),
+    drawerClose: $('drawer-close'),
+    drawerTitle: $('drawer-title'),
+    drawerScroll: $('drawer-scroll'),
+    drawerDraw: $('drawer-draw'),
+    drawerVideo: $('drawer-video'),
+    drawerVideoMeta: $('drawer-video-meta'),
+    drawerCode: $('drawer-code'),
+    drawerCodeMeta: $('drawer-code-meta'),
+    drawerReminders: $('drawer-reminders'),
+    drawerMemory: $('drawer-memory'),
+    drawerInstructions: $('drawer-instructions'),
+    drawerInstructionsMeta: $('drawer-instructions-meta'),
+    drawerRecent: $('drawer-recent'),
+    drawerEmpty: $('drawer-empty'),
+    drawerNew: $('drawer-new'),
+    drawerMe: $('drawer-me'),
+    drawerInitials: $('drawer-initials'),
     remindersList: $('reminders-list'),
     remindersEmpty: $('reminders-empty'),
     reminderForm: $('reminder-form'),
@@ -148,6 +170,8 @@
     memoryTimers: [],
     voice: false,
     vision: false,
+    search: false, // на сервере подключён поиск в интернете
+    searchNext: false, // кнопка 🌐: следующее сообщение — с поиском
     attachment: null,
     // Монтаж видео: available — есть ffmpeg на сервере; session — идёт монтаж (общий с чатом бота).
     video: { available: false, uploadLimitMb: 100, session: null, working: false },
@@ -159,6 +183,11 @@
     instructionsEdited: false, // пользователь правил поля и ещё не сохранил
     sheetPage: 'main',
     clearArmed: null,
+    images: { enabled: false },
+    drawerAnim: null,
+    drawerClosing: false,
+    drawerTargets: [],
+    drawerDragged: false,
   };
 
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -325,19 +354,28 @@
     return data;
   }
 
+  function chatBody(text, model, search) {
+    const body = { text };
+    if (model !== AUTO) body.model = model;
+    if (search) body.search = true;
+    return body;
+  }
+
   const server = {
     state: () => request('api/state'),
-    chat: (text, model) => request('api/chat', model === AUTO ? { text } : { text, model }),
+    chat: (text, model, search) => request('api/chat', chatBody(text, model, search)),
     /* Ответ по мере генерации (NDJSON). onDelta получает новые куски текста;
-       возвращает то же, что chat(). Без поддержки потоков — обычный chat(). */
-    async chatStream(text, model, onDelta) {
-      if (!window.ReadableStream || !window.TextDecoder) return server.chat(text, model);
+       extra.search — искать в интернете, extra.onSearch(query) — Эля начала искать.
+       Возвращает то же, что chat(). Без поддержки потоков — обычный chat(). */
+    async chatStream(text, model, onDelta, extra) {
+      const search = Boolean(extra && extra.search);
+      if (!window.ReadableStream || !window.TextDecoder) return server.chat(text, model, search);
       let response;
       try {
         response = await fetch('api/chat/stream', {
           method: 'POST',
           headers: { Authorization: 'tma ' + tg.initData, 'Content-Type': 'application/json' },
-          body: JSON.stringify(model === AUTO ? { text } : { text, model }),
+          body: JSON.stringify(chatBody(text, model, search)),
         });
       } catch (error) {
         throw new ApiError('network', 'Нет связи с сервером. Проверь интернет и попробуй ещё раз.');
@@ -364,7 +402,9 @@
           return;
         }
         if (event.type === 'delta' && event.text) onDelta(event.text);
-        else if (event.type === 'done') result = event;
+        else if (event.type === 'search') {
+          if (extra && extra.onSearch) extra.onSearch(String(event.query || ''));
+        } else if (event.type === 'done') result = event;
         else if (event.type === 'error') {
           const info = event.error || {};
           throw new ApiError(info.code || 'ai_unavailable', info.message || 'Ответ оборвался. Попробуй ещё раз.', 503);
@@ -390,6 +430,7 @@
       return result;
     },
     clear: () => request('api/clear', {}),
+    newChat: () => request('api/chat/new', {}),
     savePreferences: (patch) => request('api/preferences', patch),
     saveInstructions: (patch) => request('api/instructions', patch),
     setMode: (mode) => request('api/mode', { mode }),
@@ -427,6 +468,7 @@
       if (!response.ok) throw new ApiError('http_' + response.status, 'Этого варианта уже нет — он в чате с ботом.', response.status);
       return response.blob();
     },
+    drawAgain: (id) => request('api/draw/again', { id }),
   };
 
   /* Ошибка из ответа сервера (JSON с полем error) или по статусу. */
@@ -536,6 +578,32 @@
       : [];
     let used = 12;
     let turn = 0;
+    let drawingId = 0;
+
+    /* В демо «рисунок» — случайный градиент с кругами: так видно, как выглядит ответ с картинкой. */
+    function demoDrawing(request, id) {
+      const hue = Math.floor(Math.random() * 360);
+      const circles = Array.from({ length: 6 }, (_, i) => {
+        const x = 80 + Math.random() * 360;
+        const y = 80 + Math.random() * 360;
+        const r = 30 + Math.random() * 90;
+        return '<circle cx="' + x.toFixed(0) + '" cy="' + y.toFixed(0) + '" r="' + r.toFixed(0) +
+          '" fill="hsl(' + ((hue + i * 40) % 360) + ' 80% 70% / 0.55)"/>';
+      }).join('');
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">' +
+        '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(' + hue +
+        ' 70% 45%)"/><stop offset="1" stop-color="hsl(' + ((hue + 90) % 360) + ' 70% 25%)"/></linearGradient></defs>' +
+        '<rect width="512" height="512" fill="url(#g)"/>' + circles + '</svg>';
+      const content = '🎨 Нарисовала картинку: демо-рисунок\n\n_Промпт: в демо-режиме я рисую узоры, а в Telegram — настоящую картинку по описанию_';
+      history.push({ role: 'user', content: request, ts: nowTs() }, { role: 'assistant', content, ts: nowTs() });
+      return {
+        reply: {
+          role: 'assistant', content, ts: nowTs(), provider: 'images', model: 'demo', truncated: false,
+          image: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg), drawing_id: id, sent_to_chat: false,
+        },
+        usage: { used, limit: 300 },
+      };
+    }
     let preferences = { style: 'friendly', verbosity: 'normal' };
     let instructions = { about: '', style: '', enabled: true, max_length: 1500 };
     let mode = 'chat';
@@ -617,6 +685,8 @@
           voice: true,
           vision: true,
           video: { available: true, upload_limit_mb: 100, session: videoView() },
+          images: { enabled: true, used: 0, limit: 50 },
+          search: true,
           preference_options: {
             style: [
               { id: 'friendly', title: 'Дружелюбный', description: 'Тепло, с лёгким юмором' },
@@ -755,9 +825,19 @@
         memory.facts = [];
         return memoryView();
       },
-      async chatStream(text, model, onDelta) {
-        const data = await this.chat(text, model);
-        if (data.reply.provider === 'reminders') return data;
+      async drawAgain(id) {
+        await sleep(1500);
+        return demoDrawing('🔄 Ещё вариант', id);
+      },
+      async chatStream(text, model, onDelta, extra) {
+        const searching = Boolean(extra && extra.search) || /гугл|в интернете|источник/i.test(text);
+        if (searching && extra && extra.onSearch) {
+          await sleep(600);
+          extra.onSearch(text.replace(/^(?:по|за)гугли[,:]?\s*|^найди в интернете[,:]?\s*/i, '').slice(0, 80));
+          await sleep(1400);
+        }
+        const data = await this.chat(text, model, searching);
+        if (data.reply.provider === 'reminders' || data.reply.image) return data;
         const words = data.reply.content.split(/(\s+)/);
         for (let i = 0; i < words.length; i += 4) {
           onDelta(words.slice(i, i + 4).join(''));
@@ -765,10 +845,14 @@
         }
         return data;
       },
-      async chat(text, model) {
+      async chat(text, model, searching) {
         await sleep(1100 + Math.random() * 700);
         if (/ошибк/i.test(text)) {
           throw new ApiError('ai_unavailable', 'ИИ-сервис сейчас не отвечает. Отправь сообщение ещё раз чуть позже.', 503);
+        }
+        if (/нарису|изобрази|картинк/i.test(text)) {
+          drawingId += 1;
+          return demoDrawing(text, drawingId);
         }
         if (/напомни/i.test(text)) {
           reminderId += 1;
@@ -777,8 +861,12 @@
           history.push({ role: 'user', content: text, ts: nowTs() }, { role: 'assistant', content, ts: nowTs() });
           return { reply: { role: 'assistant', content, ts: nowTs(), provider: 'reminders', model: '', truncated: false }, usage: { used, limit: 300 } };
         }
-        const content = replies[turn % replies.length];
-        turn += 1;
+        const content = searching
+          ? 'Вот что пишут в интернете [1]. В демо-режиме я не ищу по-настоящему, поэтому ответ и ссылки — заготовка [2].\n\n' +
+            '**Источники:**\n1. [Пример результата поиска](https://example.com/) — example.com\n' +
+            '2. [Ещё один источник](https://example.org/) — example.org'
+          : replies[turn % replies.length];
+        if (!searching) turn += 1;
         used += 1;
         if (memory.enabled && /(^|\s)(я|мне|люблю|живу)(\s|$)/i.test(text)) {
           setTimeout(() => {
@@ -801,9 +889,16 @@
       },
       async clear() {
         await sleep(300);
-        const deleted = history.length;
+        const deleted = history.filter((m) => m.role !== 'break').length;
         history = [];
         return { deleted };
+      },
+      async newChat() {
+        await sleep(250);
+        const last = history[history.length - 1];
+        const started = Boolean(last) && last.role !== 'break';
+        if (started) history.push({ role: 'break', content: '', ts: nowTs() });
+        return { started, history: history.slice() };
       },
     };
   })();
@@ -980,9 +1075,37 @@
     return button;
   }
 
+  function artImage(src) {
+    const image = el('img', 'bubble__art');
+    image.alt = 'Нарисованная картинка';
+    image.decoding = 'async';
+    // Картинка подгружается после пузыря: лента досматривается до конца, если была внизу.
+    image.addEventListener('load', () => {
+      if (state.stick && !userIsScrolling()) scrollToBottom(false);
+    });
+    image.src = src;
+    return image;
+  }
+
+  function againChip(id) {
+    const button = el('button', 'chip-btn');
+    button.type = 'button';
+    button.append(icon('i-retry'), el('span', '', 'Ещё вариант'));
+    button.addEventListener('click', () => drawAgain(id));
+    return button;
+  }
+
   function addMessage(message, options) {
     const fresh = Boolean(options && options.fresh);
     addDay(message.ts, fresh);
+    if (message.role === 'break') {
+      // Разделитель «Новый чат»: выше — прошлая переписка, Эля её уже не учитывает.
+      const mark = el('div', 'chat-break' + (fresh ? ' chat-break--new' : ''));
+      mark.setAttribute('role', 'separator');
+      mark.append(el('span', '', 'Новый чат'));
+      dom.messages.append(mark);
+      return null;
+    }
 
     const flight = fresh && options && options.flight;
     const root = el('article', 'msg msg--' + message.role + (flight ? ' msg--flying' : fresh ? ' msg--new' : ''));
@@ -998,8 +1121,17 @@
         model.title = message.model;
         meta.append(model);
       }
-      meta.append(copyChip(message.content, 'Копировать'));
-      if (!(options && options.reveal)) bubble.append(window.ElyaMarkdown.render(message.content));
+      if (message.image) {
+        // Нарисованная картинка: сама картинка, под ней подпись и промпт.
+        bubble.classList.add('bubble--art');
+        bubble.append(artImage(message.image));
+        if (message.content) bubble.append(window.ElyaMarkdown.render(message.content));
+        if (message.sent_to_chat) bubble.append(el('p', 'bubble__note', 'Картинка есть и в чате с ботом — там её можно сохранить.'));
+        if (message.drawing_id) meta.append(againChip(message.drawing_id));
+      } else {
+        meta.append(copyChip(message.content, 'Копировать'));
+        if (!(options && options.reveal)) bubble.append(window.ElyaMarkdown.render(message.content));
+      }
     } else if (options && options.file) {
       bubble.append(el('span', 'bubble__file', options.file.icon + ' ' + options.file.name));
       if (message.content) bubble.append(el('span', 'bubble__caption', message.content));
@@ -1117,6 +1249,10 @@
   }
 
   function addAssistantReply(reply) {
+    if (reply.image) {
+      addMessage(reply, { fresh: true });
+      return;
+    }
     const item = addMessage(reply, { fresh: true, reveal: true });
     state.finishReveal = reveal(item.root, item.bubble, reply.content, () => {
       state.finishReveal = null;
@@ -1178,8 +1314,7 @@
     root.append(bubble);
     dom.messages.append(root);
 
-    // Если модель долго думает, рядом с точками появляется пояснение.
-    const timers = TYPING_HINTS.map(([delay, text]) => setTimeout(() => {
+    const setHint = (text) => {
       const from = bubble.offsetWidth;
       let hint = bubble.querySelector('.typing__hint');
       if (!hint) {
@@ -1189,7 +1324,16 @@
       hint.textContent = text;
       motion(hint, [{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: 350, easing: 'ease-out' });
       motion(bubble, [{ width: from + 'px' }, { width: bubble.offsetWidth + 'px' }], { duration: 450, easing: SPRING });
-    }, delay));
+    };
+    // Если модель долго думает, рядом с точками появляется пояснение.
+    let timers = TYPING_HINTS.map(([delay, text]) => setTimeout(() => setHint(text), delay));
+    /* Эля ищет в интернете: показываем запрос, дальше — обычные подсказки заново. */
+    root.searching = (query) => {
+      timers.forEach(clearTimeout);
+      root.classList.add('typing--search');
+      setHint(query ? 'ищу в интернете: «' + query + '»…' : 'ищу в интернете…');
+      timers = TYPING_HINTS.slice(1).map(([delay, text]) => setTimeout(() => setHint(text), delay + 4000));
+    };
     root.dismiss = () => {
       timers.forEach(clearTimeout);
       root.remove();
@@ -1260,6 +1404,8 @@
     dom.send.disabled = state.recording ? false : state.busy || state.transcribing || empty;
     dom.composerBox.classList.toggle('can-attach', state.vision || state.video.available);
     dom.attach.disabled = state.busy;
+    dom.composerBox.classList.toggle('can-search', state.search && !state.attachment);
+    dom.searchToggle.disabled = state.busy;
     dom.composerBox.classList.toggle(
       'has-mic',
       state.voice && CAN_RECORD && empty && !state.recording && !state.transcribing
@@ -1324,7 +1470,16 @@
     flight.oncancel = land;
   }
 
-  async function send(rawText, failedItem, origin, attachment) {
+  /* Кнопка 🌐: следующее сообщение Эля обязательно проверит в интернете. */
+  function setSearchNext(on) {
+    const value = Boolean(on) && state.search;
+    state.searchNext = value;
+    dom.searchToggle.classList.toggle('is-on', value);
+    dom.searchToggle.setAttribute('aria-pressed', String(value));
+    if (!state.attachment) dom.input.placeholder = inputPlaceholder();
+  }
+
+  async function send(rawText, failedItem, origin, attachment, search) {
     const text = String(rawText).trim();
     if (!failedItem && !attachment && !state.busy && text) {
       // /video и всё, что пишут во время монтажа, — монтажёру, а не в обычный чат.
@@ -1340,6 +1495,9 @@
       }
     }
     if ((!text && !attachment) || state.busy) return;
+    // Повтор после ошибки ищет так же, как исходное сообщение.
+    const searchOn = search !== undefined ? search : state.searchNext && !attachment;
+    if (search === undefined && state.searchNext) setSearchNext(false);
 
     if (state.finishReveal) state.finishReveal();
     clearNotice();
@@ -1380,6 +1538,11 @@
           }
           live.text += piece;
           live.view.push(live.text);
+        }, {
+          search: searchOn,
+          onSearch: (query) => {
+            if (!live) typing.searching(query);
+          },
         });
       }
       typing.dismiss();
@@ -1407,7 +1570,44 @@
       }
       if (error.code === 'network') setStatus('offline');
       item.root.classList.add('msg--failed');
-      showNotice(error.message, () => send(text, item, null, attachment));
+      showNotice(error.message, () => send(text, item, null, attachment, searchOn));
+      scrollToBottom(true);
+    }
+  }
+
+  /* «Ещё вариант» под картинкой: в ленте — как сообщение пользователя, затем новая картинка. */
+  async function drawAgain(id) {
+    if (state.busy) return;
+    if (state.finishReveal) state.finishReveal();
+    clearNotice();
+    setBusy(true);
+    haptic('impact', 'light');
+    const item = addMessage({ role: 'user', content: '🔄 Ещё вариант', ts: nowTs() }, { fresh: true });
+    const typing = showTyping();
+    scrollToBottom(true);
+    try {
+      const data = await backend.drawAgain(id);
+      typing.dismiss();
+      addAssistantReply(data.reply);
+      haptic('impact', 'soft');
+      if (data.usage) state.usage = data.usage;
+      state.signature = '';
+      state.syncedAt = Date.now();
+      setBusy(false);
+    } catch (error) {
+      typing.dismiss();
+      setBusy(false);
+      haptic('notify', 'error');
+      if (error.status === 401 || error.status === 403) {
+        showLoadError(error, boot);
+        return;
+      }
+      if (error.code === 'network') setStatus('offline');
+      item.root.classList.add('msg--failed');
+      showNotice(error.message, () => {
+        item.root.remove();
+        drawAgain(id);
+      });
       scrollToBottom(true);
     }
   }
@@ -1460,6 +1660,7 @@
     dom.attachmentFile.hidden = true;
     dom.attachment.classList.remove('is-leaving');
     dom.attachment.hidden = false;
+    if (state.searchNext) setSearchNext(false);
     dom.input.placeholder = 'Подпись или вопрос к фото…';
     haptic('impact', 'light');
     updateComposer();
@@ -1487,14 +1688,6 @@
 
   /* ---------- Монтаж видео ---------- */
 
-  function plural(n, one, few, many) {
-    const mod10 = n % 10;
-    const mod100 = n % 100;
-    if (mod10 === 1 && mod100 !== 11) return one;
-    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
-    return many;
-  }
-
   function formatSize(bytes) {
     const mb = bytes / 1024 / 1024;
     if (mb >= 1) return (mb >= 10 ? Math.round(mb) : mb.toFixed(1).replace('.', ',')) + ' МБ';
@@ -1520,7 +1713,7 @@
     if (session) {
       const count = session.clips.length;
       let text = 'Монтаж';
-      text += count ? ' · ' + count + ' ' + plural(count, 'клип', 'клипа', 'клипов') : ' · жду видео';
+      text += count ? ' · ' + count + ' ' + plural(count, ['клип', 'клипа', 'клипов']) : ' · жду видео';
       if (session.music) text += ' · 🎵';
       dom.videoBarText.textContent = text;
     }
@@ -2018,6 +2211,7 @@
 
   function inputPlaceholder() {
     if (state.video.session) return 'Что сделать с видео?';
+    if (state.searchNext) return 'Что найти в интернете?';
     return state.mode === 'code' ? 'Опиши задачу или вставь код…' : 'Напиши сообщение…';
   }
 
@@ -2560,11 +2754,12 @@
     setTimeout(renderUsage, reducedMotion ? 0 : 180);
     if (supports('6.1')) tg.BackButton.show();
     haptic('impact', 'light');
-    if (opts.focus === 'reminders') {
-      // Колокольчик открывает настройки сразу на напоминаниях.
+    const focusBlock = { reminders: dom.remindersBlock, memory: dom.memoryBlock }[opts.focus];
+    if (focusBlock) {
+      // Колокольчик и шторка открывают настройки сразу на нужном разделе.
       setTimeout(() => {
         // offsetTop не зависит от анимации появления блоков (transform), в отличие от getBoundingClientRect.
-        dom.sheetBody.scrollTo({ top: dom.remindersBlock.offsetTop - 8, behavior: reducedMotion ? 'auto' : 'smooth' });
+        dom.sheetBody.scrollTo({ top: focusBlock.offsetTop - 8, behavior: reducedMotion ? 'auto' : 'smooth' });
       }, reducedMotion ? 0 : 380);
     } else {
       dom.sheetBody.scrollTop = 0;
@@ -2681,6 +2876,11 @@
       return;
     }
     closeSheet();
+    await wipeFeed('История очищена');
+  }
+
+  /* Сообщения разлетаются, лента начинается заново. */
+  async function wipeFeed(toast) {
     const nodes = Array.from(dom.messages.children).slice(-14).reverse();
     nodes.forEach((node, index) => {
       node.style.setProperty('--i', index);
@@ -2688,8 +2888,289 @@
     });
     if (nodes.length && !reducedMotion) await sleep(380 + nodes.length * 35);
     renderHistory([]);
-    showToast('История очищена');
+    showToast(toast);
     haptic('notify', 'success');
+  }
+
+  /* ---------- Боковая шторка ---------- */
+
+  function initials(name) {
+    const words = String(name || '').trim().split(/\s+/).filter(Boolean);
+    if (!words.length) return state.assistantName.charAt(0).toUpperCase();
+    return words.slice(0, 2).map((word) => word.charAt(0).toUpperCase()).join('');
+  }
+
+  function plural(n, forms) {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return forms[0];
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return forms[1];
+    return forms[2];
+  }
+
+  /* «Недавнее» — последние сообщения пользователя из ленты, новые сверху. */
+  function renderDrawerRecent() {
+    const nodes = Array.from(dom.messages.querySelectorAll('.msg--user')).reverse().slice(0, 12);
+    state.drawerTargets = nodes;
+    dom.drawerRecent.replaceChildren(...nodes.map((node, index) => {
+      const bubble = node.querySelector('.bubble');
+      const text = (bubble ? bubble.textContent : '').replace(/\s+/g, ' ').trim()
+        || (node.querySelector('.bubble__photo') ? '📷 Фото' : '…');
+      const item = el('li');
+      const button = el('button', 'drawer__recent-btn ripple', text);
+      button.type = 'button';
+      button.dataset.recent = String(index);
+      item.append(button);
+      return item;
+    }));
+    dom.drawerEmpty.hidden = nodes.length > 0;
+  }
+
+  function renderDrawer() {
+    dom.drawerTitle.textContent = state.assistantName;
+    dom.drawerInitials.textContent = initials(state.firstName);
+    dom.drawerDraw.hidden = !(state.images && state.images.enabled);
+    dom.drawerVideo.hidden = !state.video.available;
+    const clips = state.video.session ? state.video.session.clips.length : 0;
+    dom.drawerVideoMeta.textContent = state.video.session
+      ? (clips ? clips + ' ' + plural(clips, ['клип', 'клипа', 'клипов']) : 'начат')
+      : '';
+    dom.drawerCode.hidden = state.mode === null;
+    dom.drawerCodeMeta.textContent = state.mode === 'code' ? 'вкл.' : 'выкл.';
+    const pending = (state.reminders.items || []).length;
+    dom.drawerReminders.textContent = pending ? String(pending) : '';
+    dom.drawerReminders.classList.toggle('is-badge', pending > 0);
+    const facts = (state.memory.facts || []).length;
+    dom.drawerMemory.textContent = state.memory.enabled
+      ? (facts ? facts + ' ' + plural(facts, ['факт', 'факта', 'фактов']) : 'вкл.')
+      : 'выкл.';
+    dom.drawerInstructions.hidden = !state.instructions;
+    const instr = state.instructions;
+    dom.drawerInstructionsMeta.textContent = !instr || (!instr.about && !instr.style)
+      ? 'не заданы'
+      : instr.enabled ? 'вкл.' : 'выкл.';
+    renderDrawerRecent();
+  }
+
+  function openDrawer() {
+    if (!dom.drawer.hidden && !state.drawerClosing) return;
+    if (state.finishReveal) state.finishReveal();
+    renderDrawer();
+    if (state.drawerAnim) state.drawerAnim.cancel();
+    state.drawerClosing = false;
+    dom.drawer.getAnimations().forEach((animation) => animation.cancel());
+    dom.drawerBackdrop.getAnimations().forEach((animation) => animation.cancel());
+    dom.drawer.style.transform = '';
+    dom.drawerBackdrop.style.opacity = '';
+    dom.drawerBackdrop.hidden = false;
+    dom.drawer.hidden = false;
+    dom.drawerScroll.scrollTop = 0;
+    dom.input.blur();
+    state.drawerAnim = motion(dom.drawer, [{ transform: 'translateX(-102%)' }, { transform: 'none' }],
+      { duration: 460, easing: 'cubic-bezier(0.2, 1.04, 0.32, 1)' });
+    motion(dom.drawerBackdrop, [{ opacity: 0 }, { opacity: 1 }], { duration: 280, easing: 'ease-out' });
+    dom.drawerBtn.setAttribute('aria-expanded', 'true');
+    if (supports('6.1')) tg.BackButton.show();
+    haptic('impact', 'light');
+    if (finePointer) dom.drawerClose.focus();
+  }
+
+  /* then — что сделать, когда шторка закроется (например, открыть настройки). */
+  function closeDrawer(then) {
+    if (dom.drawer.hidden || state.drawerClosing) {
+      if (typeof then === 'function') then();
+      return;
+    }
+    state.drawerClosing = true;
+    if (supports('6.1')) tg.BackButton.hide();
+    dom.drawerBtn.setAttribute('aria-expanded', 'false');
+    const fromTransform = dom.drawer.style.transform || 'none';
+    const fromOpacity = dom.drawerBackdrop.style.opacity || '1';
+    if (state.drawerAnim) state.drawerAnim.cancel();
+    const out = motion(dom.drawer, [{ transform: fromTransform }, { transform: 'translateX(-102%)' }],
+      { duration: 240, easing: 'cubic-bezier(0.4, 0, 0.9, 0.6)', fill: 'forwards' });
+    const fade = motion(dom.drawerBackdrop, [{ opacity: fromOpacity }, { opacity: 0 }], { duration: 240, fill: 'forwards' });
+    const done = () => {
+      dom.drawer.hidden = true;
+      dom.drawerBackdrop.hidden = true;
+      if (out) out.cancel();
+      if (fade) fade.cancel();
+      dom.drawer.style.transform = '';
+      dom.drawerBackdrop.style.opacity = '';
+      dom.drawer.classList.remove('is-dragging');
+      state.drawerClosing = false;
+      if (typeof then === 'function') then();
+    };
+    if (out) out.onfinish = done;
+    else done();
+  }
+
+  function drawerAction(action) {
+    if (action === 'draw') {
+      closeDrawer(() => {
+        if (!/^нарисуй/i.test(dom.input.value.trim())) dom.input.value = 'Нарисуй ' + dom.input.value.trim();
+        autosize();
+        updateComposer();
+        dom.input.focus();
+        const end = dom.input.value.length;
+        dom.input.setSelectionRange(end, end);
+      });
+    } else if (action === 'video') {
+      closeDrawer(() => startVideo());
+    } else if (action === 'code') {
+      closeDrawer(() => toggleMode());
+    } else if (action === 'reminders' || action === 'memory') {
+      closeDrawer(() => openSheet({ focus: action }));
+    } else if (action === 'instructions') {
+      closeDrawer(() => {
+        openSheet();
+        setTimeout(openInstructionsPage, reducedMotion ? 0 : 320);
+      });
+    } else if (action === 'settings') {
+      closeDrawer(() => openSheet());
+    }
+  }
+
+  function jumpToRecent(index) {
+    const node = state.drawerTargets[index];
+    closeDrawer(() => {
+      if (!node || !node.isConnected) return;
+      node.scrollIntoView({ block: 'center', behavior: reducedMotion ? 'auto' : 'smooth' });
+      node.classList.remove('is-found');
+      void node.offsetWidth;
+      node.classList.add('is-found');
+      setTimeout(() => node.classList.remove('is-found'), 1700);
+    });
+  }
+
+  /* «Новый чат»: ничего не удаляется. Эля начинает с чистого листа, а прошлая переписка
+     остаётся в ленте над разделителем — к ней можно вернуться через «Недавнее». */
+  async function startNewChat() {
+    if (dom.drawerNew.disabled) return;
+    if (state.busy) {
+      showToast('Дождись, пока ' + state.assistantName + ' ответит');
+      return;
+    }
+    dom.drawerNew.disabled = true;
+    let data;
+    try {
+      data = await backend.newChat();
+    } catch (error) {
+      showToast(error.message);
+      haptic('notify', 'error');
+      return;
+    } finally {
+      dom.drawerNew.disabled = false;
+    }
+    closeDrawer(() => {
+      if (data.started) {
+        renderHistory(data.history || []);
+        const marks = dom.messages.querySelectorAll('.chat-break');
+        if (marks.length) marks[marks.length - 1].classList.add('chat-break--new');
+        showToast('Новый чат. Прошлая переписка осталась выше');
+      } else {
+        showToast('Это уже новый чат');
+      }
+      haptic('notify', 'success');
+      if (finePointer) dom.input.focus();
+    });
+  }
+
+  /* Шторку можно смахнуть влево. Вертикальная прокрутка внутри работает как обычно. */
+  function bindDrawerDrag() {
+    let pointer = null;
+    let startX = 0;
+    let startY = 0;
+    let lastX = 0;
+    let lastTime = 0;
+    let velocity = 0;
+    let width = 0;
+    let dragging = false;
+
+    dom.drawer.addEventListener('pointerdown', (event) => {
+      if (event.pointerType === 'mouse' && event.button !== 0) return;
+      pointer = event.pointerId;
+      startX = lastX = event.clientX;
+      startY = event.clientY;
+      lastTime = event.timeStamp;
+      velocity = 0;
+      dragging = false;
+      state.drawerDragged = false;
+      width = dom.drawer.offsetWidth;
+    });
+
+    dom.drawer.addEventListener('pointermove', (event) => {
+      if (event.pointerId !== pointer) return;
+      const dx = event.clientX - startX;
+      const dy = event.clientY - startY;
+      if (!dragging) {
+        if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) {
+          pointer = null; // это прокрутка списка
+          return;
+        }
+        if (dx > -10 || Math.abs(dx) < Math.abs(dy)) return;
+        dragging = true;
+        state.drawerDragged = true;
+        if (state.drawerAnim) state.drawerAnim.cancel();
+        dom.drawer.classList.add('is-dragging');
+        try {
+          dom.drawer.setPointerCapture(event.pointerId);
+        } catch (error) { /* указатель уже ушёл */ }
+      }
+      const offset = Math.min(0, dx);
+      dom.drawer.style.transform = 'translateX(' + offset + 'px)';
+      dom.drawerBackdrop.style.opacity = String(Math.max(0, 1 + offset / width));
+      const dt = event.timeStamp - lastTime;
+      if (dt > 0) velocity = (event.clientX - lastX) / dt;
+      lastX = event.clientX;
+      lastTime = event.timeStamp;
+    });
+
+    const up = (event) => {
+      if (event.pointerId !== pointer) return;
+      pointer = null;
+      if (!dragging) return;
+      dragging = false;
+      dom.drawer.classList.remove('is-dragging');
+      const dx = event.clientX - startX;
+      if (dx < -Math.min(120, width * 0.3) || (dx < -10 && velocity < -0.5)) {
+        haptic('impact', 'light');
+        closeDrawer();
+        return;
+      }
+      // Не дотянули — шторка пружинит обратно.
+      const fromTransform = dom.drawer.style.transform || 'none';
+      const fromOpacity = dom.drawerBackdrop.style.opacity || '1';
+      dom.drawer.style.transform = '';
+      dom.drawerBackdrop.style.opacity = '';
+      motion(dom.drawer, [{ transform: fromTransform }, { transform: 'none' }], { duration: 420, easing: SPRING });
+      motion(dom.drawerBackdrop, [{ opacity: fromOpacity }, { opacity: 1 }], { duration: 260, easing: 'ease-out' });
+    };
+    dom.drawer.addEventListener('pointerup', up);
+    dom.drawer.addEventListener('pointercancel', up);
+  }
+
+  function bindDrawer() {
+    bindDrawerDrag();
+    dom.drawerBtn.addEventListener('click', openDrawer);
+    dom.drawerClose.addEventListener('click', () => closeDrawer());
+    dom.drawerBackdrop.addEventListener('click', () => closeDrawer());
+    dom.drawer.addEventListener('click', (event) => {
+      if (state.drawerDragged) {
+        // Это был свайп, а не нажатие.
+        state.drawerDragged = false;
+        return;
+      }
+      const item = event.target.closest('[data-drawer]');
+      if (item) {
+        drawerAction(item.dataset.drawer);
+        return;
+      }
+      const recent = event.target.closest('[data-recent]');
+      if (recent) jumpToRecent(Number(recent.dataset.recent));
+    });
+    dom.drawerNew.addEventListener('click', startNewChat);
+    dom.drawerMe.addEventListener('click', () => closeDrawer(() => openSheet()));
   }
 
   /* ---------- Загрузка и синхронизация ---------- */
@@ -2703,6 +3184,9 @@
     state.maxLength = (data.limits && data.limits.max_text_length) || 4000;
     state.voice = Boolean(data.voice);
     state.vision = Boolean(data.vision);
+    state.images = data.images || { enabled: false };
+    state.search = Boolean(data.search);
+    if (!state.search && state.searchNext) setSearchNext(false);
     if (data.preferences) state.preferences = data.preferences;
     if (data.memory) state.memory = Object.assign({}, state.memory, data.memory);
     if (data.reminders) state.reminders = Object.assign({}, state.reminders, data.reminders);
@@ -2763,7 +3247,7 @@
 
   /* Сообщения, отправленные тем временем в чате с ботом, подтягиваются при возврате. */
   async function sync() {
-    if (dom.app.hidden || state.busy || state.finishReveal || Date.now() - state.syncedAt < 5000) return;
+    if (dom.app.hidden || state.busy || state.finishReveal || !dom.drawer.hidden || Date.now() - state.syncedAt < 5000) return;
     state.syncedAt = Date.now();
     let data;
     try {
@@ -2786,7 +3270,7 @@
     const history = data.history || [];
     const signature = historySignature(history);
     if (signature !== state.signature && !state.notice) {
-      if (state.signature === '' && history.length === dom.messages.querySelectorAll('.msg').length) {
+      if (state.signature === '' && history.length === dom.messages.querySelectorAll('.msg, .chat-break').length) {
         state.signature = signature; // лента уже показывает то же самое
       } else {
         renderHistory(history);
@@ -2818,6 +3302,12 @@
     dom.send.addEventListener('click', submit);
     dom.mic.addEventListener('click', startRecording);
     dom.attach.addEventListener('click', () => dom.fileInput.click());
+    dom.searchToggle.addEventListener('mousedown', (event) => event.preventDefault());
+    dom.searchToggle.addEventListener('click', () => {
+      setSearchNext(!state.searchNext);
+      haptic('selection');
+      if (state.searchNext) showToast('🌐 Поищу ответ в интернете и приложу ссылки на источники');
+    });
     dom.fileInput.addEventListener('change', () => {
       const file = dom.fileInput.files && dom.fileInput.files[0];
       dom.fileInput.value = ''; // чтобы тот же файл можно было выбрать ещё раз
@@ -2873,6 +3363,7 @@
     bindSheetDrag();
     dom.scrollDown.addEventListener('click', () => scrollToBottom(true));
 
+    bindDrawer();
     dom.menuBtn.addEventListener('click', () => openSheet());
     dom.bellBtn.addEventListener('click', () => openSheet({ focus: 'reminders' }));
     dom.reminderForm.addEventListener('submit', (event) => {
@@ -2904,7 +3395,8 @@
     dom.backdrop.addEventListener('click', closeSheet);
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') {
-        if (state.sheetPage === 'instructions') leaveInstructionsPage();
+        if (!dom.drawer.hidden) closeDrawer();
+        else if (state.sheetPage === 'instructions') leaveInstructionsPage();
         else closeSheet();
       }
     });
@@ -3032,7 +3524,13 @@
       tg.expand();
       if (supports('7.7')) tg.disableVerticalSwipes(); // прокрутка ленты не должна сворачивать приложение
       // Кнопка «Назад» Telegram: из инструкций — к настройкам, из настроек — закрыть.
-      if (supports('6.1')) tg.BackButton.onClick(() => (state.sheetPage === 'instructions' ? leaveInstructionsPage() : closeSheet()));
+      if (supports('6.1')) {
+        tg.BackButton.onClick(() => {
+          if (!dom.drawer.hidden) closeDrawer();
+          else if (state.sheetPage === 'instructions') leaveInstructionsPage();
+          else closeSheet();
+        });
+      }
       tg.onEvent('themeChanged', () => applyTheme({ x: window.innerWidth / 2, y: 0 }));
     } else {
       const scheme = window.matchMedia('(prefers-color-scheme: light)');

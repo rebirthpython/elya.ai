@@ -271,7 +271,7 @@ async def test_mode_is_stored_per_user(db):
 
 def _service(db, provider, **settings_overrides):
     settings = bot_settings(**settings_overrides)
-    memory = MemoryManager(MessageRepository(db, store_limit=500), history_limit=30)
+    memory = MemoryManager(MessageRepository(db), history_limit=30)
     modes = ModeStore(db)
     client = AIClient([provider], max_tokens=settings.max_output_tokens, temperature=settings.temperature)
     reminders = Reminders(db, client, clock=lambda: datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc))
@@ -358,7 +358,7 @@ async def bot_env(db):
     provider = CodeProvider()
     usage = UsageTracker(db, 100)
     ai_client = AIClient([provider], max_tokens=256, temperature=0.5, usage=usage)
-    memory = MemoryManager(MessageRepository(db, store_limit=500), history_limit=30)
+    memory = MemoryManager(MessageRepository(db), history_limit=30)
     modes = ModeStore(db)
     session = DocumentSession()
     bot = Bot(token="42:TEST", session=session)
@@ -559,7 +559,7 @@ async def web_env(db):
     settings = web_settings(allowed_user_ids=frozenset({OWNER_ID, 222}))
     usage = UsageTracker(db, 100)
     ai_client = AIClient([provider], max_tokens=256, temperature=0.5, usage=usage)
-    memory = MemoryManager(MessageRepository(db, store_limit=500), history_limit=30)
+    memory = MemoryManager(MessageRepository(db), history_limit=30)
     preferences = PreferencesStore(db)
     long_memory = LongTermMemory(db)
     reminders = Reminders(db)
