@@ -1,4 +1,5 @@
-"""Рисование: /draw и просьбы вроде «нарисуй кота в шляпе» в обычном чате."""
+"""Рисование и правка картинок: /draw, /edit, «нарисуй кота в шляпе», фото с подписью
+«убери фон», ответ на картинку «сделай её зимней» и кнопка «Изменить» под картинкой."""
 
 from __future__ import annotations
 
@@ -14,7 +15,8 @@ from aiogram.utils.chat_action import ChatActionSender
 
 from bot.keyboards.draw import DrawCallback, drawing_keyboard
 from services.drawing import Drawing, DrawingService
-from services.imagegen import ImageGenerationError, ImageLimitError
+from services.imagegen import ImageGenerationError, ImageLimitError, SourceImageError
+from services.vision import MAX_IMAGE_BYTES
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,21 @@ ASK_TEXT = (
     "Можно и без команды — просто напиши «нарисуй …». /cancel — отмена."
 )
 FORGOTTEN_TEXT = "Эту картинку я уже не помню 🙈 Напиши просьбу ещё раз — нарисую заново."
+EDIT_NOT_CONFIGURED_TEXT = (
+    "✏️ Редактировать картинки я пока не умею: владельцу бота нужно подключить Cloudflare "
+    "Workers AI (CLOUDFLARE_ACCOUNT_ID и CLOUDFLARE_API_TOKEN) — его модель FLUX.2 правит "
+    "картинки бесплатно. Подробности — в README, раздел «Картинки»."
+)
+EDIT_HOW_TEXT = (
+    "✏️ Пришли фото с подписью, что изменить, — например, «убери людей на заднем плане» "
+    "или «сделай в стиле аниме». Можно ответить на любую картинку в чате или написать "
+    "<code>/edit добавь коту шляпу</code> — тогда я изменю последнюю картинку."
+)
+EDIT_ASK_TEXT = (
+    "✏️ Напиши, что изменить на этой картинке, — например, «сделай фон синим» или "
+    "«добавь коту шляпу»."
+)
+BAD_SOURCE_TEXT = "Не получилось открыть картинку. Пришли её как фото (JPEG, PNG или WebP)."
 FAILURE_TEXTS = {
     "rejected": (
         "🙈 Сервис картинок отказался это рисовать — возможно, сработал его фильтр. "
@@ -64,13 +81,15 @@ def failure_text(exc: ImageGenerationError | ImageLimitError) -> str:
     return FAILURE_TEXTS[exc.kind]
 
 
-async def deliver_drawing(bot: Bot, chat_id: int, drawing: Drawing, *, caption: str | None = None) -> None:
+async def deliver_drawing(
+    bot: Bot, chat_id: int, drawing: Drawing, *, caption: str | None = None, edit_enabled: bool = False
+) -> None:
     """Картинка с подписью и кнопкой «Ещё вариант». Если Telegram не принял её как фото
     (например, из-за пропорций), она уходит файлом. Ошибки Telegram пробрасываются."""
     image = drawing.image
     name = f"elya-{drawing.id}.{image.extension}"
     caption = caption or drawing.caption
-    markup = drawing_keyboard(drawing.id)
+    markup = drawing_keyboard(drawing.id, editable=edit_enabled)
     try:
         await bot.send_photo(
             chat_id, BufferedInputFile(image.data, filename=name), caption=caption, reply_markup=markup
@@ -97,8 +116,86 @@ async def draw_and_send(
     except (ImageGenerationError, ImageLimitError) as exc:
         await message.answer(failure_text(exc))
         return True
-    await deliver_drawing(bot, message.chat.id, result)
+    await deliver_drawing(bot, message.chat.id, result, edit_enabled=drawing.can_edit)
     return True
+
+
+async def edit_and_send(
+    message: Message,
+    bot: Bot,
+    drawing: DrawingService,
+    text: str,
+    image: bytes,
+    *,
+    explicit: bool,
+    request: str | None = None,
+) -> bool:
+    """Правка картинки по просьбе. True — обработано (картинка или понятная ошибка);
+    False — это не просьба изменить картинку."""
+    user_id = message.from_user.id
+    try:
+        async with ChatActionSender.upload_photo(bot=bot, chat_id=message.chat.id):
+            plan = await drawing.plan_edit(user_id, text, explicit=explicit)
+            if plan is None:
+                return False
+            result = await drawing.edit(user_id, plan, image, request=request)
+    except SourceImageError:
+        await message.answer(BAD_SOURCE_TEXT)
+        return True
+    except (ImageGenerationError, ImageLimitError) as exc:
+        await message.answer(failure_text(exc))
+        return True
+    await deliver_drawing(bot, message.chat.id, result, edit_enabled=True)
+    return True
+
+
+def _largest_photo(source: Message):
+    """Фото из сообщения (самый крупный размер до ~1600 px) или картинка-файл; None — нет."""
+    if source.photo:
+        sizes = sorted(source.photo, key=lambda s: s.width * s.height)
+        fitting = [s for s in sizes if max(s.width, s.height) <= 1600]
+        return fitting[-1] if fitting else sizes[0]
+    document = source.document
+    if document and (document.mime_type or "").startswith("image/") and (document.file_size or 0) <= MAX_IMAGE_BYTES:
+        return document
+    return None
+
+
+async def replied_image(message: Message, bot: Bot) -> bytes | None:
+    """Картинка из сообщения, на которое ответили; None — ответили не на картинку."""
+    reply = message.reply_to_message
+    file = _largest_photo(reply) if reply is not None else None
+    if file is None:
+        return None
+    content = await bot.download(file)
+    return content.getvalue() if content else None
+
+
+async def maybe_edit(message: Message, bot: Bot, drawing: DrawingService | None, text: str) -> bool:
+    """Обычное сообщение: если это просьба изменить картинку (ответом на неё или сразу
+    после неё) — правим и возвращаем True."""
+    if drawing is None or not drawing.can_edit or not drawing.looks_like_edit(text):
+        return False
+    user_id = message.from_user.id
+    image = await replied_image(message, bot) or drawing.last_image(user_id)
+    if image is None:
+        return False
+    return await edit_and_send(message, bot, drawing, text, image, explicit=False)
+
+
+async def cmd_edit(
+    message: Message, command: CommandObject, bot: Bot, drawing: DrawingService | None = None
+) -> None:
+    """/edit что изменить — правка картинки, на которую ответили, или последней."""
+    if drawing is None or not drawing.can_edit:
+        await message.answer(EDIT_NOT_CONFIGURED_TEXT)
+        return
+    text = (command.args or "").strip()
+    image = await replied_image(message, bot) or drawing.last_image(message.from_user.id)
+    if not text or image is None:
+        await message.answer(EDIT_HOW_TEXT, parse_mode="HTML")
+        return
+    await edit_and_send(message, bot, drawing, text, image, explicit=True)
 
 
 async def maybe_draw(message: Message, bot: Bot, drawing: DrawingService | None, text: str) -> bool:
@@ -157,12 +254,37 @@ async def on_draw_action(
     if result is None:
         await message.answer(FORGOTTEN_TEXT)
         return
-    await deliver_drawing(bot, message.chat.id, result)
+    await deliver_drawing(bot, message.chat.id, result, edit_enabled=drawing.can_edit)
+
+
+async def on_edit_action(
+    callback: CallbackQuery,
+    callback_data: DrawCallback,
+    bot: Bot,
+    drawing: DrawingService | None = None,
+) -> None:
+    """«✏️ Изменить» под картинкой: следующая просьба будет об этой картинке."""
+    if drawing is None or not drawing.can_edit or not isinstance(callback.message, Message):
+        await callback.answer()
+        return
+    user_id = callback.from_user.id
+    if not drawing.select(user_id, callback_data.id):
+        # Бот перезапускался — берём картинку прямо из сообщения.
+        file = _largest_photo(callback.message)
+        content = await bot.download(file) if file is not None else None
+        if content is None:
+            await callback.answer("Эту картинку я уже не найду", show_alert=True)
+            return
+        drawing.remember_image(user_id, content.getvalue())
+    await callback.answer("Что изменить?")
+    await callback.message.answer(EDIT_ASK_TEXT)
 
 
 def create_router() -> Router:
     router = Router(name="draw")
     router.message.register(cmd_draw, Command("draw"))
+    router.message.register(cmd_edit, Command("edit"))
     router.message.register(on_description, DrawStates.waiting, F.text, ~F.text.startswith("/"))
     router.callback_query.register(on_draw_action, DrawCallback.filter(F.action == "again"))
+    router.callback_query.register(on_edit_action, DrawCallback.filter(F.action == "edit"))
     return router

@@ -64,6 +64,7 @@ BOT_COMMANDS = [
     BotCommand(command="video", description="Монтаж видео"),
     BotCommand(command="code", description="Режим кода: пишу и разбираю программы"),
     BotCommand(command="draw", description="Нарисовать картинку"),
+    BotCommand(command="edit", description="Изменить картинку: убрать фон, добавить, перекрасить"),
     BotCommand(command="search", description="Найти в интернете со ссылками на источники"),
     BotCommand(command="new", description="Новый чат без старой переписки"),
     BotCommand(command="chats", description="Мои чаты: вернуться к прошлому"),

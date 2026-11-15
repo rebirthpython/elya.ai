@@ -540,6 +540,7 @@
       return response.blob();
     },
     drawAgain: (id) => request('api/draw/again', { id }),
+    drawSelect: (id) => request('api/draw/select', { id }),
   };
 
   /* Ошибка из ответа сервера (JSON с полем error) или по статусу. */
@@ -799,7 +800,7 @@
           voice: true,
           vision: true,
           video: { available: true, upload_limit_mb: 100, session: videoView() },
-          images: { enabled: true, used: 0, limit: 50 },
+          images: { enabled: true, edit: true, used: 0, limit: 50 },
           documents: docs.slice(),
           chat: chatsView().chat,
           chats: chatsView().chats,
@@ -861,6 +862,10 @@
       },
       async photo(text) {
         await sleep(1200);
+        if (/убер|удали|замени|перекрас|добавь|сделай|измени/i.test(text || '')) {
+          drawingId += 1;
+          return demoDrawing('📷 Фото: ' + text, drawingId);
+        }
         used += 1;
         const content = 'Вижу фото! 📷 В демо-режиме я не смотрю картинки по-настоящему, а в Telegram модель опишет, что на нём' +
           (text ? ', и ответит на вопрос: «' + text + '»' : '') + '.';
@@ -946,6 +951,10 @@
         await sleep(150);
         memory.facts = [];
         return memoryView();
+      },
+      async drawSelect(id) {
+        await sleep(100);
+        return { selected: id };
       },
       async drawAgain(id) {
         await sleep(1500);
@@ -1317,6 +1326,27 @@
     return button;
   }
 
+  /* «Изменить»: следующая просьба («сделай фон синим») правит эту картинку. */
+  function editChip(id) {
+    const button = el('button', 'chip-btn');
+    button.type = 'button';
+    button.append(el('span', '', '✏️ Изменить'));
+    button.addEventListener('click', () => selectForEdit(id));
+    return button;
+  }
+
+  async function selectForEdit(id) {
+    try {
+      await backend.drawSelect(id);
+    } catch (error) {
+      showToast(error.message);
+      return;
+    }
+    dom.input.placeholder = 'Что изменить на картинке? Например: сделай фон синим';
+    haptic('select');
+    dom.input.focus();
+  }
+
   function addMessage(message, options) {
     const fresh = Boolean(options && options.fresh);
     addDay(message.ts, fresh);
@@ -1350,6 +1380,7 @@
         if (message.content) bubble.append(window.ElyaMarkdown.render(message.content));
         if (message.sent_to_chat) bubble.append(el('p', 'bubble__note', 'Картинка есть и в чате с ботом — там её можно сохранить.'));
         if (message.drawing_id) meta.append(againChip(message.drawing_id));
+        if (message.drawing_id && state.images && state.images.edit) meta.append(editChip(message.drawing_id));
       } else {
         meta.append(copyChip(message.content, 'Копировать'));
         if (!(options && options.reveal)) bubble.append(window.ElyaMarkdown.render(message.content));
@@ -1914,7 +1945,9 @@
     dom.attachment.classList.remove('is-leaving');
     dom.attachment.hidden = false;
     if (state.searchNext) setSearchNext(false);
-    dom.input.placeholder = 'Подпись или вопрос к фото…';
+    dom.input.placeholder = state.images && state.images.edit
+      ? 'Вопрос к фото или что изменить…'
+      : 'Подпись или вопрос к фото…';
     haptic('impact', 'light');
     updateComposer();
     if (finePointer) dom.input.focus();

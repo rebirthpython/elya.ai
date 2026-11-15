@@ -36,13 +36,14 @@ from services.chat import ChatService
 from services.code_stats import project_code_lines
 from services.documents import MAX_DOCUMENT_BYTES, MAX_DOCUMENTS, DocumentError, parse_document
 from services.drawing import Drawing, DrawingService, history_text
-from services.imagegen import ImageGenerationError, ImageLimitError
+from services.imagegen import ImageGenerationError, ImageLimitError, SourceImageError
 from services.instructions import MAX_INSTRUCTION_LENGTH, InstructionsStore
 from services.longterm import MAX_FACT_LENGTH, MAX_FACTS, LongTermMemory, MemoryFullError
 from services.modes import CODE, DEFAULT_MODE, MODES, ModeStore
 from services.preferences import PreferencesStore
 from services.speech import SpeechError, SpeechToText
 from services.vision import MAX_IMAGE_BYTES, NO_VISION_TEXT, ImageError, to_data_url
+from services.vision import history_text as photo_history_text
 from services.reminders import (
     MAX_AHEAD,
     MAX_PENDING,
@@ -424,6 +425,7 @@ async def _images_payload(drawing: DrawingService | None) -> dict[str, Any]:
     usage = drawing.generator.usage
     return {
         "enabled": True,
+        "edit": drawing.can_edit,
         "used": await usage.used_today() if usage else 0,
         "limit": usage.daily_limit if usage else 0,
     }
@@ -448,7 +450,11 @@ async def _deliver_to_chat(app: web.Application, user_id: int, result: Drawing) 
     if bot is None:
         return False
     try:
-        await deliver_drawing(bot, user_id, result, caption=f"{result.caption} (из приложения)")
+        drawing: DrawingService | None = app[DRAWING]
+        await deliver_drawing(
+            bot, user_id, result, caption=f"{result.caption} (из приложения)",
+            edit_enabled=drawing is not None and drawing.can_edit,
+        )
     except TelegramAPIError as exc:
         logger.warning("Could not send the picture to the chat: %s", exc)
         return False
@@ -487,8 +493,13 @@ async def _try_draw(request: web.Request, user: WebAppUser, text: str) -> dict[s
             return _error(503, "images_off", IMAGES_OFF_TEXT)
         if not text:
             return _error(400, "bad_request", "Напиши после /draw, что нарисовать.")
-    elif drawing is None or not drawing.enabled or not drawing.looks_like_request(text):
+    elif command.lower().partition("@")[0] == "/edit":
+        return await _try_edit(request, user, rest.strip(), explicit=True)
+    elif drawing is None or not drawing.enabled:
         return None
+    elif not drawing.looks_like_request(text):
+        # «Сделай фон синим» сразу после картинки — правка последней картинки.
+        return await _try_edit(request, user, text)
     plan = await drawing.plan(user.id, text, explicit=explicit)
     if plan is None:
         return None
@@ -497,6 +508,60 @@ async def _try_draw(request: web.Request, user: WebAppUser, text: str) -> dict[s
     except (ImageGenerationError, ImageLimitError) as exc:
         return _error(*_image_error(exc))
     return await _drawing_payload(request.app, result, text=history_text(plan), user_id=user.id)
+
+
+EDIT_OFF_TEXT = (
+    "Редактировать картинки пока нельзя: владельцу бота нужно подключить Cloudflare Workers AI "
+    "(CLOUDFLARE_ACCOUNT_ID и CLOUDFLARE_API_TOKEN)."
+)
+
+
+async def _try_edit(
+    request: web.Request,
+    user: WebAppUser,
+    text: str,
+    *,
+    image: bytes | None = None,
+    explicit: bool = False,
+    stored: str | None = None,
+) -> dict[str, Any] | web.Response | None:
+    """Правка картинки: присланной (image) или последней. None — это не просьба о правке
+    (или картинки нет) и сообщение уходит в обычный диалог."""
+    drawing: DrawingService | None = request.app[DRAWING]
+    if drawing is None or not drawing.can_edit:
+        return _error(503, "edit_off", EDIT_OFF_TEXT) if explicit else None
+    if not explicit and not drawing.looks_like_edit(text):
+        return None
+    source = image if image is not None else drawing.last_image(user.id)
+    if source is None:
+        if explicit:
+            return _error(400, "no_image", "Сначала прикрепи картинку 📎 или выбери «✏️ Изменить» под картинкой.")
+        return None
+    if explicit and not text:
+        return _error(400, "bad_request", "Напиши после /edit, что изменить.")
+    plan = await drawing.plan_edit(user.id, text, explicit=explicit)
+    if plan is None:
+        return None
+    try:
+        result = await drawing.edit(user.id, plan, source, request=stored)
+    except SourceImageError:
+        return _error(415, "bad_image", "Не получилось открыть картинку: нужен JPEG, PNG или WebP.")
+    except (ImageGenerationError, ImageLimitError) as exc:
+        return _error(*_image_error(exc))
+    return await _drawing_payload(request.app, result, text=history_text(plan), user_id=user.id)
+
+
+async def post_draw_select(request: web.Request) -> web.Response:
+    """{"id": N} — «✏️ Изменить» под картинкой: следующая просьба будет об этой картинке."""
+    user: WebAppUser = request[_USER_KEY]
+    drawing: DrawingService | None = request.app[DRAWING]
+    payload = await _read_json(request)
+    drawing_id = payload.get("id") if payload else None
+    if drawing is None or not drawing.can_edit:
+        return _error(503, "edit_off", EDIT_OFF_TEXT)
+    if not isinstance(drawing_id, int) or isinstance(drawing_id, bool) or not drawing.select(user.id, drawing_id):
+        return _error(410, "forgotten", "Эту картинку я уже не помню. Прикрепи её 📎 заново.")
+    return web.json_response({"selected": drawing_id})
 
 
 async def post_draw_again(request: web.Request) -> web.Response:
@@ -577,6 +642,18 @@ async def post_photo(request: web.Request) -> web.Response:
         data_url = to_data_url(image)
     except ImageError:
         return _error(415, "bad_image", "Не получилось открыть картинку: нужен JPEG, PNG или WebP.")
+    drawing: DrawingService | None = request.app[DRAWING]
+    if drawing is not None and drawing.can_edit:
+        # «Убери фон» следующим сообщением — тоже об этом фото.
+        drawing.remember_image(user.id, image)
+        if text and drawing.looks_like_edit(text):
+            if (limited := _rate_limited(request.app, user)) is not None:
+                return limited
+            edited = await _try_edit(request, user, text, image=image, stored=photo_history_text(text))
+            if isinstance(edited, web.Response):
+                return edited
+            if edited is not None:
+                return web.json_response(edited)
     return await _answer(request, user, text, fields.get("model"), images=(data_url,))
 
 
@@ -1111,6 +1188,7 @@ def create_web_app(
     app.router.add_post("/api/document", post_document)
     app.router.add_post("/api/documents/delete", post_documents_delete)
     app.router.add_post("/api/draw/again", post_draw_again)
+    app.router.add_post("/api/draw/select", post_draw_select)
     video_api.add_routes(app)
     app.router.add_static("/assets/", WEBAPP_DIR / "assets")
     return app

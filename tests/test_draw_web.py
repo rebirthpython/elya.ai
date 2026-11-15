@@ -91,7 +91,7 @@ def _image_of(reply) -> bytes:
 async def test_state_reports_images(env):
     client, _, _ = await env["make"](image_limit=20)
     state = await (await client.get("/api/state", headers=auth())).json()
-    assert state["images"] == {"enabled": True, "used": 0, "limit": 20}
+    assert state["images"] == {"enabled": True, "edit": False, "used": 0, "limit": 20}
 
     client, _, _ = await env["make"](images=False)
     state = await (await client.get("/api/state", headers=auth())).json()

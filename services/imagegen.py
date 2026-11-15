@@ -1,10 +1,12 @@
-"""Генерация картинок по текстовому описанию: сервисы-рисовальщики и перебор по приоритету.
+"""Генерация и правка картинок: сервисы-рисовальщики и перебор по приоритету.
 
 Поддерживаются два вида API:
 - Cloudflare Workers AI — POST /accounts/{id}/ai/run/{model}; ответ — JSON с картинкой
-  в base64 ({"result": {"image": "..."}}) или сама картинка, в зависимости от модели;
+  в base64 ({"result": {"image": "..."}}) или сама картинка, в зависимости от модели.
+  Правка — FLUX.2 [klein]: multipart с prompt и исходником в input_image_0;
 - OpenAI-совместимый POST {base_url}/images/generations (Pollinations, OpenAI и другие);
   ответ — {"data": [{"b64_json": "..."}]} или {"data": [{"url": "..."}]}.
+  Правка — POST {base_url}/images/edits (multipart: model, prompt, image).
 
 Как и с текстовыми моделями, если сервис упёрся в лимит или недоступен, пробуется следующий,
 а упёршийся временно пропускается.
@@ -14,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import io
 import logging
 import random
 import time
@@ -126,11 +129,84 @@ def _error_detail(response: httpx.Response) -> str:
     return str(data)[:300]
 
 
+# Исходник для правки: Cloudflare FLUX.2 принимает картинки меньше 512×512,
+# OpenAI-совместимым сервисам хватает 1024 по длинной стороне.
+CLOUDFLARE_SOURCE_SIDE = 511
+SOURCE_SIDE = 1024
+MAX_SOURCE_BYTES = 20 * 1024 * 1024
+
+
+class SourceImageError(ValueError):
+    """Присланный файл не открывается как картинка."""
+
+
+@dataclass(frozen=True, slots=True)
+class SourceImage:
+    """Картинка для правки, уже повёрнутая по EXIF и сжатая в JPEG."""
+
+    data: bytes  # не больше SOURCE_SIDE по длинной стороне
+    width: int
+    height: int
+
+    def scaled(self, side: int) -> bytes:
+        """JPEG не больше side по длинной стороне."""
+        if max(self.width, self.height) <= side:
+            return self.data
+        return _encode(_open(self.data), side)
+
+    def output_size(self, longest: int = 1024) -> tuple[int, int]:
+        """Размер результата с теми же пропорциями: длинная сторона longest, кратно 16."""
+        scale = longest / max(self.width, self.height)
+        width = max(256, min(1920, round(self.width * scale / 16) * 16))
+        height = max(256, min(1920, round(self.height * scale / 16) * 16))
+        return width, height
+
+
+def _open(data: bytes):
+    from PIL import Image, ImageOps
+
+    try:
+        image = Image.open(io.BytesIO(data))
+        image = ImageOps.exif_transpose(image)
+        image.load()
+    except Exception as exc:  # noqa: BLE001 — Pillow бросает разные ошибки на битых файлах
+        raise SourceImageError("not an image") from exc
+    if image.mode in ("RGBA", "LA", "P"):
+        # Прозрачность — на белый фон: JPEG её не хранит, а сервисам так понятнее.
+        image = image.convert("RGBA")
+        background = Image.new("RGB", image.size, (255, 255, 255))
+        background.paste(image, mask=image.getchannel("A"))
+        return background
+    return image.convert("RGB")
+
+
+def _encode(image, side: int) -> bytes:
+    from PIL import Image
+
+    image = image.copy()
+    image.thumbnail((side, side), Image.Resampling.LANCZOS)
+    out = io.BytesIO()
+    image.save(out, format="JPEG", quality=92)
+    return out.getvalue()
+
+
+def prepare_source(data: bytes) -> SourceImage:
+    """Готовит присланную картинку к правке. SourceImageError — это не картинка."""
+    if not data or len(data) > MAX_SOURCE_BYTES:
+        raise SourceImageError("empty or too large")
+    image = _open(data)
+    encoded = _encode(image, SOURCE_SIDE)
+    width, height = image.size
+    scale = min(1.0, SOURCE_SIDE / max(width, height))
+    return SourceImage(data=encoded, width=max(1, round(width * scale)), height=max(1, round(height * scale)))
+
+
 class ImageBackend(ABC):
     def __init__(self, config: ImageProviderConfig, http_client: httpx.AsyncClient) -> None:
         self.name = config.name
         self.title = config.title
         self.model = config.model
+        self.edit_model = config.edit_model
         self._config = config
         self._http = http_client
 
@@ -138,13 +214,22 @@ class ImageBackend(ABC):
     async def generate(self, prompt: str, *, width: int, height: int, seed: int) -> GeneratedImage:
         """Рисует картинку; ошибки — ImageProviderError."""
 
+    async def edit(self, prompt: str, source: SourceImage, *, seed: int) -> GeneratedImage:
+        """Правит картинку по описанию; ошибки — ImageProviderError."""
+        raise self._fail("editing is not supported", "config")
+
     def _fail(self, message: str, kind: str, retry_after: float | None = None) -> ImageProviderError:
         return ImageProviderError(message, provider=self.name, kind=kind, retry_after=retry_after)
 
-    async def _post(self, url: str, payload: dict) -> httpx.Response:
+    async def _post(self, url: str, payload: dict, *, files: dict | None = None) -> httpx.Response:
+        """JSON или, если есть files, multipart (поля payload — текстом)."""
         headers = {"Authorization": f"Bearer {self._config.api_key}"} if self._config.api_key else {}
+        if files is not None:
+            body = {"data": {key: str(value) for key, value in payload.items()}, "files": files}
+        else:
+            body = {"json": payload}
         try:
-            response = await self._http.post(url, json=payload, headers=headers, timeout=REQUEST_TIMEOUT)
+            response = await self._http.post(url, headers=headers, timeout=REQUEST_TIMEOUT, **body)
         except httpx.TimeoutException as exc:
             raise self._fail("timeout", "unavailable") from exc
         except httpx.HTTPError as exc:
@@ -168,21 +253,21 @@ class ImageBackend(ABC):
             return self._fail(message, "rejected")
         return self._fail(message, "unavailable")
 
-    def _image(self, data: bytes) -> GeneratedImage:
+    def _image(self, data: bytes, model: str | None = None) -> GeneratedImage:
         if len(data) > MAX_RESULT_BYTES:
             raise self._fail(f"image is too large ({len(data)} bytes)", "unavailable")
         mime = sniff_image(data)
         if mime is None:
             raise self._fail("response is not an image", "unavailable")
-        return GeneratedImage(data=data, mime=mime, provider=self.title, model=self.model)
+        return GeneratedImage(data=data, mime=mime, provider=self.title, model=model or self.model)
 
-    def _decode(self, encoded: object) -> GeneratedImage:
+    def _decode(self, encoded: object, model: str | None = None) -> GeneratedImage:
         if not isinstance(encoded, str) or not encoded:
             raise self._fail("no image in the response", "unavailable")
         if encoded.startswith("data:"):
             encoded = encoded.partition(",")[2]
         try:
-            return self._image(base64.b64decode(encoded, validate=False))
+            return self._image(base64.b64decode(encoded, validate=False), model)
         except (binascii.Error, ValueError) as exc:
             raise self._fail("bad base64 image", "unavailable") from exc
 
@@ -196,8 +281,21 @@ class CloudflareBackend(ImageBackend):
         if "flux-1-schnell" not in self.model:
             payload.update(width=width, height=height, seed=seed)
         response = await self._post(f"{self._config.base_url}/{self.model}", payload)
+        return self._result(response, self.model)
+
+    async def edit(self, prompt: str, source: SourceImage, *, seed: int) -> GeneratedImage:
+        """FLUX.2 [klein]/[dev]: multipart, исходник — input_image_0 (меньше 512×512)."""
+        if not self.edit_model:
+            raise self._fail("editing is not configured", "config")
+        width, height = source.output_size()
+        fields = {"prompt": prompt[:2048], "width": width, "height": height, "seed": seed}
+        files = {"input_image_0": ("source.jpg", source.scaled(CLOUDFLARE_SOURCE_SIDE), "image/jpeg")}
+        response = await self._post(f"{self._config.base_url}/{self.edit_model}", fields, files=files)
+        return self._result(response, self.edit_model)
+
+    def _result(self, response: httpx.Response, model: str) -> GeneratedImage:
         if response.headers.get("content-type", "").startswith("image/"):
-            return self._image(response.content)
+            return self._image(response.content, model)
         try:
             data = response.json()
         except ValueError as exc:
@@ -206,7 +304,7 @@ class CloudflareBackend(ImageBackend):
         if isinstance(data, dict) and data.get("success") is False:
             raise self._fail(_error_detail(response), "rejected")
         image = result.get("image") if isinstance(result, dict) else None
-        return self._decode(image)
+        return self._decode(image, model)
 
 
 class OpenAIImagesBackend(ImageBackend):
@@ -222,6 +320,20 @@ class OpenAIImagesBackend(ImageBackend):
         if self._send_seed:
             payload["seed"] = seed
         response = await self._post(f"{self._config.base_url}/images/generations", payload)
+        return await self._result(response, self.model)
+
+    async def edit(self, prompt: str, source: SourceImage, *, seed: int) -> GeneratedImage:
+        """POST {base_url}/images/edits — multipart, как у OpenAI: model, prompt, image."""
+        if not self.edit_model:
+            raise self._fail("editing is not configured", "config")
+        fields: dict = {"model": self.edit_model, "prompt": prompt, "n": 1}
+        if self._send_seed:
+            fields["seed"] = seed
+        files = {"image": ("source.jpg", source.data, "image/jpeg")}
+        response = await self._post(f"{self._config.base_url}/images/edits", fields, files=files)
+        return await self._result(response, self.edit_model)
+
+    async def _result(self, response: httpx.Response, model: str) -> GeneratedImage:
         try:
             data = response.json()
             item = data["data"][0]
@@ -230,19 +342,19 @@ class OpenAIImagesBackend(ImageBackend):
         if not isinstance(item, dict):
             raise self._fail("no image in the response", "unavailable")
         if item.get("b64_json"):
-            return self._decode(item["b64_json"])
+            return self._decode(item["b64_json"], model)
         if isinstance(item.get("url"), str) and item["url"].startswith(("https://", "http://")):
-            return await self._download(item["url"])
+            return await self._download(item["url"], model)
         raise self._fail("no image in the response", "unavailable")
 
-    async def _download(self, url: str) -> GeneratedImage:
+    async def _download(self, url: str, model: str | None = None) -> GeneratedImage:
         try:
             response = await self._http.get(url, timeout=REQUEST_TIMEOUT, follow_redirects=True)
         except httpx.HTTPError as exc:
             raise self._fail(f"download failed: {type(exc).__name__}", "unavailable") from exc
         if response.status_code != 200:
             raise self._fail(f"download failed: HTTP {response.status_code}", "unavailable")
-        return self._image(response.content)
+        return self._image(response.content, model)
 
 
 def build_image_backends(
@@ -286,6 +398,10 @@ class ImageGenerator:
         return [b.title for b in self._backends]
 
     @property
+    def can_edit(self) -> bool:
+        return any(getattr(b, "edit_model", "") for b in self._backends)
+
+    @property
     def usage(self) -> UsageTracker | None:
         return self._usage
 
@@ -293,14 +409,14 @@ class ImageGenerator:
         entry = self._cooldowns.get(name)
         return entry[1] if entry is not None and entry[0] > self._clock() else None
 
-    def _cool_down(self, error: ImageProviderError) -> None:
+    def _cool_down(self, error: ImageProviderError, key: str | None = None) -> None:
         if error.kind == "config":
             delay = self._base_cooldown * 10
         elif error.kind == "rate_limit":
             delay = error.retry_after if error.retry_after is not None else self._base_cooldown * 5
         else:
             return  # сбой или отказ по конкретному описанию — в следующий раз пробуем снова
-        self._cooldowns[error.provider] = (self._clock() + min(delay, self._max_cooldown), error)
+        self._cooldowns[key or error.provider] = (self._clock() + min(delay, self._max_cooldown), error)
 
     async def generate(
         self, prompt: str, *, orientation: str = "square", seed: int | None = None
@@ -330,6 +446,38 @@ class ImageGenerator:
             logger.info(
                 "Image generated: provider=%s model=%s bytes=%d time=%.1fs",
                 backend.name, backend.model, len(image.data), self._clock() - started,
+            )
+            return image
+        raise ImageGenerationError(errors)
+
+    async def edit(self, prompt: str, source: SourceImage, *, seed: int | None = None) -> GeneratedImage:
+        """Правит картинку: сервисы с моделью правки по приоритету. Дневной лимит — общий
+        с рисованием. Паузы у правки свои: лимит рисования не мешает править и наоборот."""
+        backends = [b for b in self._backends if getattr(b, "edit_model", "")]
+        if not backends:
+            raise ImageGenerationError([])
+        if self._usage and not await self._usage.try_consume():
+            raise ImageLimitError(self._usage.daily_limit)
+        seed = seed if seed is not None else random.randint(1, 2_000_000_000)
+        errors: list[ImageProviderError] = []
+        for backend in backends:
+            key = f"{backend.name}:edit"
+            paused = self._paused(key)
+            if paused is not None:
+                errors.append(paused)
+                continue
+            started = self._clock()
+            try:
+                image = await backend.edit(prompt, source, seed=seed)
+            except ImageProviderError as exc:
+                logger.warning("Image edit failed: %s", exc)
+                errors.append(exc)
+                self._cool_down(exc, key)
+                continue
+            self._cooldowns.pop(key, None)
+            logger.info(
+                "Image edited: provider=%s model=%s bytes=%d time=%.1fs",
+                backend.name, backend.edit_model, len(image.data), self._clock() - started,
             )
             return image
         raise ImageGenerationError(errors)

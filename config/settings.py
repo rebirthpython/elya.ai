@@ -42,6 +42,8 @@ class ImageProviderConfig:
 
     kind: "cloudflare" — Workers AI (POST {base_url}/{model});
           "openai" — OpenAI-совместимый POST {base_url}/images/generations.
+    edit_model — модель, которая правит присланную картинку по описанию (Cloudflare:
+    FLUX.2 [klein]; OpenAI-совместимые: POST {base_url}/images/edits); пусто — не умеет.
     """
 
     name: str
@@ -50,6 +52,7 @@ class ImageProviderConfig:
     base_url: str
     api_key: str
     model: str
+    edit_model: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +130,10 @@ class Settings:
     @property
     def images_enabled(self) -> bool:
         return bool(self.image_providers)
+
+    @property
+    def image_editing_enabled(self) -> bool:
+        return any(provider.edit_model for provider in self.image_providers)
 
 
 # Известные провайдеры с OpenAI-совместимым API (POST {base_url}/chat/completions).
@@ -266,18 +273,22 @@ KNOWN_IMAGE_PROVIDERS: dict[str, dict[str, str]] = {
         "kind": "cloudflare",
         # FLUX.1 [schnell]: бесплатно в пределах 10 000 «нейронов» в сутки (~170 картинок).
         "model": "@cf/black-forest-labs/flux-1-schnell",
+        # FLUX.2 [klein] 4B правит картинку по описанию («убери фон», «сделай зимним»).
+        "edit_model": "@cf/black-forest-labs/flux-2-klein-4b",
     },
     "pollinations": {
         "title": "Pollinations",
         "kind": "openai",
         "base_url": "https://gen.pollinations.ai/v1",
         "model": "black-forest-labs/flux.1-schnell",
+        "edit_model": "kontext",
     },
     "custom": {
         "title": "Custom OpenAI-compatible Images API",
         "kind": "openai",
         "base_url": "",
         "model": "",
+        "edit_model": "",
     },
 }
 CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4/accounts"
@@ -467,6 +478,7 @@ def _load_image_provider(name: str) -> ImageProviderConfig | None:
             )
         base_url = f"{CLOUDFLARE_API_BASE}/{account_id}/ai/run"
         model = _get_str("CLOUDFLARE_IMAGE_MODEL", known["model"]) or known["model"]
+        edit_model = _edit_model("CLOUDFLARE_EDIT_MODEL", known["edit_model"])
     elif name == "custom":
         base_url = _get_str("IMAGE_CUSTOM_BASE_URL").rstrip("/")
         api_key = _get_str("IMAGE_CUSTOM_API_KEY")
@@ -478,6 +490,8 @@ def _load_image_provider(name: str) -> ImageProviderConfig | None:
                 "Для IMAGE_CUSTOM_BASE_URL нужна модель: задайте IMAGE_CUSTOM_MODEL "
                 "(например, gpt-image-1 или black-forest-labs/flux.1-schnell)."
             )
+        # По умолчанию правит та же модель (gpt-image-1 это умеет); «off» — не править.
+        edit_model = _edit_model("IMAGE_CUSTOM_EDIT_MODEL", model)
     else:
         prefix = name.upper()
         api_key = _get_str(f"{prefix}_API_KEY")
@@ -485,6 +499,7 @@ def _load_image_provider(name: str) -> ImageProviderConfig | None:
             return None
         base_url = known["base_url"]
         model = _get_str(f"{prefix}_IMAGE_MODEL", known["model"]) or known["model"]
+        edit_model = _edit_model(f"{prefix}_EDIT_MODEL", known["edit_model"])
     return ImageProviderConfig(
         name=name,
         title=known["title"],
@@ -492,7 +507,14 @@ def _load_image_provider(name: str) -> ImageProviderConfig | None:
         base_url=base_url,
         api_key=api_key,
         model=model,
+        edit_model=edit_model,
     )
+
+
+def _edit_model(variable: str, default: str) -> str:
+    """Модель для правки картинок; «off» — не править через этот сервис."""
+    value = _get_str(variable, default) or default
+    return "" if value.lower() in ("off", "none", "0", "false") else value
 
 
 def _load_image_providers() -> tuple[ImageProviderConfig, ...]:

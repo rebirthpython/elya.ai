@@ -17,7 +17,7 @@ from aiogram.utils.chat_action import ChatActionSender
 from ai.client import AllProvidersFailedError, DailyLimitExceededError, NoVisionModelError
 from ai.providers.base import CompletionResult
 from bot.handlers.documents import receive_document
-from bot.handlers.draw import DrawStates, draw_and_send, maybe_draw
+from bot.handlers.draw import DrawStates, draw_and_send, edit_and_send, maybe_draw, maybe_edit
 from bot.utils.live import LiveMessage
 from bot.utils.text import close_open_fence
 from config.settings import Settings
@@ -35,7 +35,7 @@ from services.modes import CODE, ModeStore
 from services.drawing import DrawingService
 from services.search import SearchStarted
 from services.speech import SpeechError, SpeechToText
-from services.vision import MAX_IMAGE_BYTES, NO_VISION_TEXT, ImageError, to_data_url
+from services.vision import MAX_IMAGE_BYTES, NO_VISION_TEXT, ImageError, history_text, to_data_url
 
 MAX_VOICE_SECONDS = 300
 
@@ -64,6 +64,8 @@ async def handle_text(
         return
     text = message.text.strip()
     if await maybe_draw(message, bot, drawing, text):
+        return
+    if await maybe_edit(message, bot, drawing, text):
         return
     await send_reply(message, bot, chat_service, text)
 
@@ -108,11 +110,16 @@ async def handle_voice(
         return
     if await maybe_draw(message, bot, drawing, text):
         return
+    if await maybe_edit(message, bot, drawing, text):
+        return
     await send_reply(message, bot, chat_service, text)
 
 
-async def handle_photo(message: Message, bot: Bot, chat_service: ChatService) -> None:
-    """Фото (или картинка, отправленная файлом) + подпись → ответ Эли."""
+async def handle_photo(
+    message: Message, bot: Bot, chat_service: ChatService, drawing: DrawingService | None = None
+) -> None:
+    """Фото (или картинка, отправленная файлом) + подпись → ответ Эли, а если в подписи
+    просьба изменить картинку («убери фон») — изменённая картинка."""
     if message.from_user is None:
         return
     if message.photo:
@@ -125,14 +132,24 @@ async def handle_photo(message: Message, bot: Bot, chat_service: ChatService) ->
         if (source.file_size or 0) > MAX_IMAGE_BYTES:
             await message.answer("Картинка слишком большая: я принимаю до 5 МБ.")
             return
+    caption = (message.caption or "").strip()
     try:
         async with ChatActionSender.upload_photo(bot=bot, chat_id=message.chat.id):
             file = await bot.download(source)
-        image = to_data_url(file.getvalue() if file else b"")
+        data = file.getvalue() if file else b""
+        image = to_data_url(data)
     except ImageError:
         await message.answer("Не получилось открыть картинку. Пришли её как фото (JPEG, PNG или WebP).")
         return
-    await send_reply(message, bot, chat_service, (message.caption or "").strip(), images=(image,))
+    if drawing is not None and drawing.can_edit:
+        # «Убери фон» следующим сообщением — тоже об этом фото.
+        drawing.remember_image(message.from_user.id, data)
+        if caption and drawing.looks_like_edit(caption):
+            if await edit_and_send(
+                message, bot, drawing, caption, data, explicit=False, request=history_text(caption)
+            ):
+                return
+    await send_reply(message, bot, chat_service, caption, images=(image,))
 
 
 _CODE_FILE_ERRORS = {
