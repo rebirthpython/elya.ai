@@ -388,6 +388,9 @@ def _load_provider(name: str) -> ProviderConfig | None:
         )
     prefix = name.upper()
     api_key = _get_str(f"{prefix}_API_KEY")
+    if not api_key and name == "cloudflare":
+        # Тот же токен Workers AI, что и для рисования: второй раз вписывать не нужно.
+        api_key = _get_str("CLOUDFLARE_API_TOKEN")
     base_url = _get_str(f"{prefix}_BASE_URL", known["base_url"]).rstrip("/")
     models = tuple(_split_csv(_get_str(f"{prefix}_MODELS", known["models"])))
 

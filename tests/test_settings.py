@@ -205,3 +205,15 @@ def test_speech_language_invalid(monkeypatch, raw):
     monkeypatch.setenv("SPEECH_LANGUAGE", raw)
     with pytest.raises(ConfigError):
         load_settings(env_file=None)
+
+
+def test_cloudflare_chat_reuses_the_image_token(monkeypatch):
+    monkeypatch.setenv("AI_PROVIDERS", "cloudflare")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acc123")
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "cf-token")
+    (cf,) = load_settings(env_file=None).providers
+    assert cf.api_key == "cf-token"
+    assert cf.vision_models == ("@cf/meta/llama-4-scout-17b-16e-instruct",)
+    monkeypatch.setenv("CLOUDFLARE_API_KEY", "chat-key")  # свой ключ для чата важнее
+    (cf,) = load_settings(env_file=None).providers
+    assert cf.api_key == "chat-key"
