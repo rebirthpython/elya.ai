@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Расписание 5 класса</title>
+  <style>
+    :root {
+      --bg: #f4f6fb;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --accent: #3b82f6;
+      --accent-soft: #dbeafe;
+      --border: #e5e7eb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111827;
+        --card: #1f2937;
+        --text: #f3f4f6;
+        --muted: #9ca3af;
+        --accent: #60a5fa;
+        --accent-soft: #1e3a5f;
+        --border: #374151;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px 16px;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+    h1 { margin: 0 0 4px; font-size: 2rem; }
+    header p { margin: 0; color: var(--muted); }
+
+    .days {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .day {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .day.today {
+      border: 2px solid var(--accent);
+      box-shadow: 0 0 0 4px var(--accent-soft);
+    }
+    .day h2 {
+      margin: 0 0 12px;
+      font-size: 1.2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .badge {
+      font-size: 0.75rem;
+      background: var(--accent);
+      color: #fff;
+      padding: 2px 8px;
+      border-radius: 999px;
+    }
+    ol {
+      margin: 0;
+      padding-left: 22px;
+    }
+    li {
+      padding: 6px 0;
+      border-bottom: 1px dashed var(--border);
+    }
+    li:last-child { border-bottom: none; }
+
+    .bells {
+      max-width: 1200px;
+      margin: 32px auto 0;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .bells h2 { margin: 0 0 12px; font-size: 1.2rem; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td {
+      padding: 8px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th { color: var(--muted); font-weight: 600; }
+
+    footer {
+      text-align: center;
+      color: var(--muted);
+      margin-top: 24px;
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>📚 Расписание уроков — 5 класс</h1>
+    <p id="today-text"></p>
+  </header>
+
+  <main class="days">
+    <section class="day" data-day="1">
+      <h2>Понедельник</h2>
+      <ol>
+        <li>Русский язык</li>
+        <li>Математика</li>
+        <li>Литература</li>
+        <li>Английский язык</li>
+        <li>Физкультура</li>
+      </ol>
+    </section>
+
+    <section class="day" data-day="2">
+      <h2>Вторник</h2>
+      <ol>
+        <li>Математика</li>
+        <li>Русский язык</li>
+        <li>История</li>
+        <li>Биология</li>
+        <li>Музыка</li>
+        <li>Технология</li>
+      </ol>
+    </section>
+
+    <section class="day" data-day="3">
+      <h2>Среда</h2>
+      <ol>
+        <li>Русский язык</li>
+        <li>Математика</li>
+        <li>Английский язык</li>
+        <li>География</li>
+        <li>Литература</li>
+        <li>Физкультура</li>
+      </ol>
+    </section>
+
+    <section class="day" data-day="4">
+      <h2>Четверг</h2>
+      <ol>
+        <li>Математика</li>
+        <li>Русский язык</li>
+        <li>История</li>
+        <li>ИЗО</li>
+        <li>Технология</li>
+      </ol>
+    </section>
+
+    <section class="day" data-day="5">
+      <h2>Пятница</h2>
+      <ol>
+        <li>Русский язык</li>
+        <li>Математика</li>
+        <li>Английский язык</li>
+        <li>Литература</li>
+        <li>Физкультура</li>
+      </ol>
+    </section>
+  </main>
+
+  <section class="bells">
+    <h2>🔔 Расписание звонков</h2>
+    <table>
+      <thead>
+        <tr><th>Урок</th><th>Начало</th><th>Конец</th><th>Перемена</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>1</td><td>8:30</td><td>9:10</td><td>10 мин</td></tr>
+        <tr><td>2</td><td>9:20</td><td>10:00</td><td>20 мин</td></tr>
+        <tr><td>3</td><td>10:20</td><td>11:00</td><td>20 мин</td></tr>
+        <tr><td>4</td><td>11:20</td><td>12:00</td><td>10 мин</td></tr>
+        <tr><td>5</td><td>12:10</td><td>12:50</td><td>10 мин</td></tr>
+        <tr><td>6</td><td>13:00</td><td>13:40</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <footer>Хорошей учёбы! ✏️</footer>
+
+  <script>
+    // Подсвечиваем сегодняшний день
+    const days = ["воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"];
+    const now = new Date();
+    const dayNum = now.getDay();
+    const todayCard = document.querySelector('.day[data-day="' + dayNum + '"]');
+
+    if (todayCard) {
+      todayCard.classList.add("today");
+      todayCard.querySelector("h2").insertAdjacentHTML("beforeend", '<span class="badge">сегодня</span>');
+      document.getElementById("today-text").textContent = "Сегодня " + days[dayNum];
+    } else {
+      document.getElementById("today-text").textContent = "Сегодня выходной — отдыхай! 🎉";
+    }
+  </script>
+</body>
+</html>
