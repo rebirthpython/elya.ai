@@ -118,7 +118,7 @@ def create_dispatcher(
 def create_web_search(
     settings: Settings, http_client: httpx.AsyncClient, session_factory
 ) -> WebSearch | None:
-    """Поиск в интернете, если задан ключ хотя бы одного поискового API."""
+    """Поиск в интернете: провайдеры с ключами и DuckDuckGo без ключа."""
     config = settings.search
     if not config.enabled:
         return None

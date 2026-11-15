@@ -30,6 +30,8 @@ from services.preferences import PreferencesStore
 from services.rate_limit import SlidingWindowLimiter
 from services.reminders import Reminders
 from services.search import (
+    BraveProvider,
+    DuckDuckGoProvider,
     MarkerDetector,
     SearchError,
     SearchLimitError,
@@ -38,8 +40,11 @@ from services.search import (
     SearchStarted,
     SerpApiProvider,
     SerperProvider,
+    TavilyProvider,
     WebSearch,
     attach_sources,
+    build_search_providers,
+    needs_fresh_data,
     parse_query,
     results_block,
     strip_markers,
@@ -211,6 +216,108 @@ async def test_network_error_becomes_search_error():
 
     with pytest.raises(SearchError, match="network"):
         await SerpApiProvider("k", mock_http(handler)).search("запрос", language="ru", region="")
+
+
+async def test_tavily_sends_query_and_parses_results():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(200, json={
+            "answer": "без ссылки — не берём",
+            "results": [
+                {"title": "Курс евро", "url": "https://cbr.example/", "content": "100,5 ₽", "published_date": "2026-11-15"},
+                {"title": "Плохая", "url": "ftp://x.example/", "content": "x"},
+            ],
+        })
+
+    results = await TavilyProvider("tv-key", mock_http(handler)).search("курс евро", language="ru", region="")
+    request = seen["request"]
+    assert request.method == "POST" and str(request.url) == "https://api.tavily.com/search"
+    assert request.headers["Authorization"] == "Bearer tv-key"
+    assert json.loads(request.content)["query"] == "курс евро"
+    assert results == [SearchResult("Курс евро", "https://cbr.example/", "100,5 ₽", "2026-11-15")]
+
+
+async def test_brave_sends_query_and_parses_results():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(200, json={"web": {"results": [
+            {"title": "Погода в <strong>Москве</strong>", "url": "https://weather.example/msk",
+             "description": "Сейчас <strong>+2&nbsp;°C</strong> &amp; ветер", "age": "2 hours ago"},
+        ]}})
+
+    results = await BraveProvider("br-key", mock_http(handler)).search("погода москва", language="ru", region="ru")
+    request = seen["request"]
+    assert request.method == "GET" and request.url.host == "api.search.brave.com"
+    assert request.headers["X-Subscription-Token"] == "br-key"
+    assert dict(request.url.params) == {"q": "погода москва", "count": "10", "search_lang": "ru", "country": "RU"}
+    assert results == [
+        SearchResult("Погода в Москве", "https://weather.example/msk", "Сейчас +2 °C & ветер", "2 hours ago")
+    ]
+
+
+DDG_PAGE = """
+<html><body>
+<div class="result results_links results_links_deep result--ad">
+  <a rel="nofollow" class="result__a" href="https://duckduckgo.com/y.js?ad=1">Реклама</a>
+  <a class="result__snippet" href="#">Купи зонт</a>
+</div>
+<div class="result results_links results_links_deep web-result">
+  <h2 class="result__title">
+    <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.gismeteo.ru%2Fweather-moscow-4368%2F&amp;rut=abc">Погода в <b>Москве</b> на сегодня</a>
+  </h2>
+  <a class="result__snippet" href="//duckduckgo.com/l/?uddg=x">Сейчас <b>+2</b> &deg;C, облачно &amp; без осадков</a>
+</div>
+<div class="result results_links web-result">
+  <a rel="nofollow" class="result__a" href="https://yandex.ru/pogoda/moscow">Яндекс Погода</a>
+</div>
+</body></html>
+"""
+
+
+async def test_duckduckgo_parses_html_results_without_a_key():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(200, text=DDG_PAGE)
+
+    results = await DuckDuckGoProvider(http=mock_http(handler)).search("погода москва", language="ru", region="")
+    request = seen["request"]
+    assert request.method == "POST" and request.url.host == "html.duckduckgo.com"
+    form = dict(item.split("=", 1) for item in request.content.decode().split("&"))
+    assert form["kl"] == "ru-ru" and "Mozilla" in request.headers["User-Agent"]
+    assert results == [
+        SearchResult("Погода в Москве на сегодня", "https://www.gismeteo.ru/weather-moscow-4368/", "Сейчас +2 °C, облачно & без осадков"),
+        SearchResult("Яндекс Погода", "https://yandex.ru/pogoda/moscow", ""),
+    ]
+
+
+async def test_duckduckgo_captcha_is_an_error():
+    page = '<html><form id="challenge-form" class="anomaly-modal__form"></form></html>'
+    provider = DuckDuckGoProvider(http=mock_http(lambda request: httpx.Response(200, text=page)))
+    with pytest.raises(SearchError, match="captcha"):
+        await provider.search("x", language="ru", region="")
+    provider = DuckDuckGoProvider(http=mock_http(lambda request: httpx.Response(202, text="")))
+    with pytest.raises(SearchError, match="202"):
+        await provider.search("x", language="ru", region="")
+
+
+def test_duckduckgo_region_code():
+    assert DuckDuckGoProvider.region_code("ru", "") == "ru-ru"
+    assert DuckDuckGoProvider.region_code("ru", "kz") == "kz-ru"
+    assert DuckDuckGoProvider.region_code("en", "") == "wt-wt"
+
+
+def test_build_search_providers_knows_every_configured_name():
+    from config.settings import SEARCH_PROVIDERS, SearchConfig
+
+    config = SearchConfig(providers=tuple((name, "k") for name in SEARCH_PROVIDERS))
+    names = [p.name for p in build_search_providers(config, mock_http(lambda r: httpx.Response(200)))]
+    assert names == list(SEARCH_PROVIDERS)
 
 
 # ---------------------------------------------------------------- WebSearch ----
@@ -413,6 +520,35 @@ async def test_explicit_phrase_asks_the_model_for_a_query(db):
     assert search.queries == ["дата выхода iPhone 18"]
 
 
+@pytest.mark.parametrize(
+    "text",
+    ["посмотри погоду в москве", "Какая погода завтра?", "курс доллара", "последние новости", "кто выиграл вчера?"],
+)
+def test_questions_about_fresh_data_are_recognized(text):
+    assert needs_fresh_data(text)
+
+
+@pytest.mark.parametrize("text", ["погоди минутку", "расскажи про курс лекций", "какие у тебя новости?", "привет"])
+def test_ordinary_questions_do_not_need_fresh_data(text):
+    assert not needs_fresh_data(text)
+
+
+async def test_weather_is_always_searched_even_if_the_model_answers_from_memory(db):
+    ai = ScriptedAI("У меня нет доступа к интернету.", "Сейчас +2 °C [1].")
+    provider = FakeSearch()
+    events = await collect(make_chat(db, ai, provider), "посмотри погоду в москве")
+    assert provider.queries == ["посмотри погоду в москве"]
+    assert SEARCH_FORCE_RULE in ai.systems[0]
+    assert text_of(events) == "Сейчас +2 °C [1]."
+
+
+async def test_weather_is_not_forced_in_manual_mode(db):
+    ai = ScriptedAI("Не знаю.")
+    provider = FakeSearch()
+    await collect(make_chat(db, ai, provider, auto=False), "какая погода?")
+    assert provider.queries == []
+
+
 async def test_failed_search_is_answered_from_memory_with_a_warning(db):
     ai = ScriptedAI("<search>погода в Казани</search>", "Не смогла проверить в интернете, но обычно там холодно.")
     events = await collect(make_chat(db, ai, FakeSearch(error="HTTP 403")), "какая погода в Казани?")
@@ -464,6 +600,7 @@ async def test_ask_returns_the_answer_with_sources(db):
 SEARCH_ENV = [
     "SEARCH_PROVIDERS", "SERPER_API_KEY", "SERPAPI_API_KEY", "SEARCH_AUTO", "SEARCH_LANGUAGE",
     "SEARCH_REGION", "SEARCH_MAX_RESULTS", "SEARCH_DAILY_LIMIT", "AI_PROVIDERS",
+    "TAVILY_API_KEY", "BRAVE_API_KEY", "SEARCH_DUCKDUCKGO",
 ]
 
 
@@ -478,9 +615,31 @@ def search_env(monkeypatch):
     return monkeypatch
 
 
-def test_search_is_off_without_keys(search_env):
+def test_without_keys_duckduckgo_is_used(search_env):
     config = load_settings(env_file=None).search
-    assert not config.enabled and config.auto and config.daily_limit == 100 and config.max_results == 6
+    assert config.providers == (("duckduckgo", ""),)
+    assert config.enabled and config.auto and config.daily_limit == 100 and config.max_results == 6
+
+
+def test_search_can_be_switched_off(search_env):
+    search_env.setenv("SEARCH_DUCKDUCKGO", "false")
+    assert not load_settings(env_file=None).search.enabled
+
+
+def test_duckduckgo_is_the_last_fallback_after_keyed_providers(search_env):
+    # Старый .env со строкой SEARCH_PROVIDERS=serper,serpapi: DuckDuckGo всё равно подключается.
+    search_env.setenv("SEARCH_PROVIDERS", "serper,serpapi")
+    search_env.setenv("TAVILY_API_KEY", "t")
+    assert load_settings(env_file=None).search.providers == (("duckduckgo", ""),)
+    search_env.setenv("SEARCH_PROVIDERS", "duckduckgo,tavily,brave")
+    search_env.setenv("BRAVE_API_KEY", "b")
+    assert load_settings(env_file=None).search.providers == (
+        ("duckduckgo", ""), ("tavily", "t"), ("brave", "b"),
+    )
+    search_env.delenv("SEARCH_PROVIDERS")
+    assert load_settings(env_file=None).search.providers == (
+        ("tavily", "t"), ("brave", "b"), ("duckduckgo", ""),
+    )
 
 
 def test_search_settings(search_env):
@@ -492,7 +651,7 @@ def test_search_settings(search_env):
     search_env.setenv("SEARCH_MAX_RESULTS", "8")
     search_env.setenv("SEARCH_DAILY_LIMIT", "0")
     config = load_settings(env_file=None).search
-    assert config.providers == (("serpapi", "s2"), ("serper", "s1"))
+    assert config.providers == (("serpapi", "s2"), ("serper", "s1"), ("duckduckgo", ""))
     assert (config.auto, config.region, config.language, config.max_results, config.daily_limit) == (
         False, "ru", "ru", 8, 0,
     )
@@ -500,7 +659,7 @@ def test_search_settings(search_env):
 
 def test_provider_without_key_is_skipped(search_env):
     search_env.setenv("SERPAPI_API_KEY", "s2")
-    assert load_settings(env_file=None).search.providers == (("serpapi", "s2"),)
+    assert load_settings(env_file=None).search.providers == (("serpapi", "s2"), ("duckduckgo", ""))
 
 
 @pytest.mark.parametrize(

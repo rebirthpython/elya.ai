@@ -123,7 +123,7 @@ async def handle_photo(message: Message, bot: Bot, chat_service: ChatService) ->
 async def cmd_search(
     message: Message, command: CommandObject, bot: Bot, chat_service: ChatService
 ) -> None:
-    """/search запрос — ответ по свежим результатам Google со ссылками на источники."""
+    """/search запрос — ответ по свежим результатам поиска со ссылками на источники."""
     if message.from_user is None:
         return
     if not chat_service.search_enabled:

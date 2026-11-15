@@ -39,6 +39,7 @@ from services.search import (
     SearchStarted,
     WebSearch,
     attach_sources,
+    needs_fresh_data,
     results_block,
     strip_markers,
     strip_sources,
@@ -239,7 +240,9 @@ class ChatService:
             return None
         if search or wants_search(text):
             return "force"
-        return "auto" if self._search.auto else None
+        if not self._search.auto:
+            return None
+        return "force" if needs_fresh_data(text) else "auto"
 
     async def _find(self, query: str) -> list[SearchResult]:
         """Результаты поиска; при ошибке — пустой список (Эля ответит без них и предупредит)."""

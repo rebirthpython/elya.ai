@@ -47,7 +47,7 @@ def _privacy_note(ai_client: AIClient, web_search: WebSearch | None = None) -> s
 
 
 def _search_start(web_search: WebSearch) -> str:
-    when = "когда нужны свежие сведения, я загляну в Google" if web_search.auto else "загляну в Google"
+    when = "когда нужны свежие сведения, я загляну в интернет" if web_search.auto else "загляну в интернет"
     return (
         f"🔎 Могу поискать в интернете: {when} и приложу ссылки на источники. "
         "Попроси «погугли …» или используй /search.\n\n"
@@ -102,7 +102,7 @@ async def cmd_help(
     if web_search:
         search_limit = str(web_search.daily_limit) if web_search.daily_limit else "∞"
         search_stats = f"🔎 Поисков в интернете сегодня: {await web_search.used_today()} из {search_limit}\n"
-        search_line = "🔎 Искать в интернете (Google) и давать ссылки на источники\n"
+        search_line = "🔎 Искать в интернете и давать ссылки на источники\n"
     else:
         search_stats = search_line = ""
     await message.answer(

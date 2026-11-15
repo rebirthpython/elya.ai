@@ -43,7 +43,7 @@ class ImageProviderConfig:
 
 @dataclass(frozen=True, slots=True)
 class SearchConfig:
-    """Поиск в интернете (выдача Google через Serper.dev или SerpApi)."""
+    """Поиск в интернете: Serper.dev, SerpApi, Tavily, Brave (по ключу) и DuckDuckGo (без ключа)."""
 
     # Пары (провайдер, API-ключ) в порядке приоритета; пусто — поиск выключен.
     providers: tuple[tuple[str, str], ...] = ()
@@ -334,16 +334,25 @@ def _load_image_providers() -> tuple[ImageProviderConfig, ...]:
     )
 
 
-# Провайдеры поиска: имя → переменная с ключом.
+# Провайдеры поиска: имя → переменная с ключом ("" — ключ не нужен).
 SEARCH_PROVIDERS: dict[str, str] = {
     "serper": "SERPER_API_KEY",
     "serpapi": "SERPAPI_API_KEY",
+    "tavily": "TAVILY_API_KEY",
+    "brave": "BRAVE_API_KEY",
+    "duckduckgo": "",
 }
 
 
 def _load_search() -> SearchConfig:
-    """Поиск включается, когда задан ключ хотя бы одного провайдера из SEARCH_PROVIDERS."""
+    """Провайдеры из SEARCH_PROVIDERS, у которых есть ключ, в порядке приоритета.
+
+    DuckDuckGo работает без ключа; при SEARCH_DUCKDUCKGO=true (по умолчанию) он добавляется
+    последним запасным вариантом, даже если его нет в SEARCH_PROVIDERS, поэтому поиск
+    работает и без регистрации в платных сервисах.
+    """
     names = _split_csv(_get_str("SEARCH_PROVIDERS", ",".join(SEARCH_PROVIDERS)).lower())
+    duckduckgo = _get_bool("SEARCH_DUCKDUCKGO", True)
     providers: list[tuple[str, str]] = []
     for name in dict.fromkeys(names):
         if name not in SEARCH_PROVIDERS:
@@ -351,8 +360,13 @@ def _load_search() -> SearchConfig:
                 f"SEARCH_PROVIDERS: неизвестный провайдер поиска {name!r}. "
                 f"Доступны: {', '.join(SEARCH_PROVIDERS)}"
             )
-        if key := _get_str(SEARCH_PROVIDERS[name]):
+        if not SEARCH_PROVIDERS[name]:
+            if duckduckgo:
+                providers.append((name, ""))
+        elif key := _get_str(SEARCH_PROVIDERS[name]):
             providers.append((name, key))
+    if duckduckgo and "duckduckgo" not in names:
+        providers.append(("duckduckgo", ""))
     max_results = _get_int("SEARCH_MAX_RESULTS", 6, minimum=1)
     if max_results > 10:
         raise ConfigError(f"SEARCH_MAX_RESULTS должно быть от 1 до 10, получено: {max_results}")

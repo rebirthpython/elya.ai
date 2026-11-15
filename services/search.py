@@ -1,22 +1,29 @@
-"""Поиск в интернете (выдача Google) и ссылки на источники в ответах Эли.
+"""Поиск в интернете и ссылки на источники в ответах Эли.
 
 Модель сама решает, нужен ли поиск: вместо ответа она выводит одну строку
-<search>запрос</search>. Бот ищет запрос в Google через внешний API, передаёт модели
+<search>запрос</search>. Бот ищет запрос через внешний API, передаёт модели
 пронумерованные результаты, а к её ответу со сносками [1], [2] добавляет список
-источников со ссылками. Собственный API поиска Google (Custom Search JSON API) закрыт
-для новых пользователей и отключается 1 января 2027 года, поэтому выдача Google
-берётся у сервисов Serper.dev и SerpApi; провайдеры перебираются по приоритету.
+источников со ссылками. Провайдеры перебираются по приоритету:
+
+- Serper.dev и SerpApi — выдача Google (нужен ключ). Собственный API поиска Google
+  (Custom Search JSON API) закрыт для новых пользователей и отключается 1 января 2027 года;
+- Tavily — поисковый API для ИИ-ассистентов (нужен ключ);
+- Brave Search API — собственный индекс Brave (нужен ключ);
+- DuckDuckGo — HTML-версия выдачи, работает без ключа и подключена по умолчанию,
+  чтобы поиск был и без регистрации где-либо.
 """
 
 from __future__ import annotations
 
+import html
 import logging
 import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from urllib.parse import quote, urlsplit
+from html.parser import HTMLParser
+from urllib.parse import parse_qs, quote, urlsplit
 
 import httpx
 
@@ -48,6 +55,17 @@ _SEARCH_REQUEST_RE = re.compile(
     rf"|\b{_VERB}\b[^.!?\n]{{0,60}}?\b{_PLACE}\b|\b{_PLACE}\b[^.!?\n]{{0,60}}?\b{_VERB}\b"
     r"|\bссылк\w*\s+на\s+источник|\bс\s+(?:источниками|ссылками)\b|\bисточник\w*\s+со\s+ссылк"
     r"|\b(?:дай|скинь|пришли|кинь)\w*\s+(?:мне\s+)?(?:ссылк|источник)",
+    re.IGNORECASE,
+)
+
+# Вопросы, ответ на которые без интернета заведомо устарел: погода, курсы, свежие новости.
+# Лёгкие модели не всегда сами решают поискать, поэтому тут поиск обязателен.
+_FRESH_DATA_RE = re.compile(
+    r"\bпогод(?:а|ы|е|у|ой|н\w*)\b|\bweather\b"
+    r"|\bкурс\w*\s+(?:доллар|евро|рубл|юан|тенге|гривн|валют|биткоин|bitcoin|btc|крипт|акци)"
+    r"|\b(?:последн|свеж|главн|сегодняшн)\w*\s+новост"
+    r"|\bчто\s+(?:сейчас\s+)?происходит\s+в\b"
+    r"|\bсч[её]т\s+(?:в\s+)?матч|\bкто\s+(?:выиграл|победил)\b",
     re.IGNORECASE,
 )
 
@@ -91,8 +109,12 @@ class SearchStarted:
 # ------------------------------------------------------------------ провайдеры ----
 
 
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
 def _clean(value: object, limit: int) -> str:
-    text = " ".join(str(value or "").split())
+    # Некоторые API (Brave) выделяют слова запроса тегами <strong> и экранируют символы.
+    text = " ".join(html.unescape(_TAG_RE.sub("", str(value or ""))).split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
@@ -116,16 +138,20 @@ class SearchProvider(ABC):
 
     @abstractmethod
     async def search(self, query: str, *, language: str, region: str) -> list[SearchResult]:
-        """До 10 результатов выдачи Google; ошибки — SearchError."""
+        """До 10 результатов поиска; ошибки — SearchError."""
         raise NotImplementedError
 
-    async def _send(self, method: str, url: str, **kwargs) -> dict:
+    async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
         try:
             response = await self._http.request(method, url, timeout=REQUEST_TIMEOUT, **kwargs)
         except httpx.HTTPError as exc:
             raise SearchError(f"{self.name}: network error {type(exc).__name__}") from exc
         if response.status_code != 200:
             raise SearchError(f"{self.name}: HTTP {response.status_code} {response.text[:200]}")
+        return response
+
+    async def _send(self, method: str, url: str, **kwargs) -> dict:
+        response = await self._request(method, url, **kwargs)
         try:
             data = response.json()
         except ValueError as exc:
@@ -212,9 +238,165 @@ class SerpApiProvider(SearchProvider):
         return [item for item in found if item is not None]
 
 
+class TavilyProvider(SearchProvider):
+    """Поиск Tavily: https://tavily.com (1 000 бесплатных запросов в месяц, без карты)."""
+
+    URL = "https://api.tavily.com/search"
+
+    def __init__(self, api_key: str, http: httpx.AsyncClient) -> None:
+        super().__init__("tavily", "Tavily", http)
+        self._api_key = api_key
+
+    async def search(self, query: str, *, language: str, region: str) -> list[SearchResult]:
+        payload = {"query": query, "max_results": 10, "search_depth": "basic"}
+        data = await self._send(
+            "POST", self.URL, json=payload, headers={"Authorization": f"Bearer {self._api_key}"}
+        )
+        found = [
+            _result(item.get("title"), item.get("url"), item.get("content"), item.get("published_date"))
+            for item in data.get("results") or []
+            if isinstance(item, dict)
+        ]
+        return [item for item in found if item is not None]
+
+
+class BraveProvider(SearchProvider):
+    """Brave Search API: https://brave.com/search/api (бесплатный кредит каждый месяц)."""
+
+    URL = "https://api.search.brave.com/res/v1/web/search"
+
+    def __init__(self, api_key: str, http: httpx.AsyncClient) -> None:
+        super().__init__("brave", "Brave Search", http)
+        self._api_key = api_key
+
+    async def search(self, query: str, *, language: str, region: str) -> list[SearchResult]:
+        params = {"q": query, "count": "10"}
+        if language:
+            params["search_lang"] = language
+        if region:
+            params["country"] = region.upper()
+        data = await self._send(
+            "GET",
+            self.URL,
+            params=params,
+            headers={"X-Subscription-Token": self._api_key, "Accept": "application/json"},
+        )
+        web = data.get("web") if isinstance(data.get("web"), dict) else {}
+        found = [
+            _result(item.get("title"), item.get("url"), item.get("description"), item.get("age"))
+            for item in web.get("results") or []
+            if isinstance(item, dict)
+        ]
+        return [item for item in found if item is not None]
+
+
+def _duckduckgo_url(href: str) -> str:
+    """Ссылки выдачи ведут через редирект //duckduckgo.com/l/?uddg=<адрес>; достаём адрес."""
+    href = html.unescape(href or "").strip()
+    if href.startswith("//"):
+        href = "https:" + href
+    parts = urlsplit(href)
+    if (parts.hostname or "").endswith("duckduckgo.com") and parts.path.startswith("/l/"):
+        target = parse_qs(parts.query).get("uddg")
+        return target[0] if target else ""
+    return href
+
+
+class _DuckDuckGoParser(HTMLParser):
+    """Разбирает html.duckduckgo.com: блоки .result с заголовком .result__a и .result__snippet.
+    Рекламные блоки (.result--ad) пропускаются."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.items: list[dict[str, str]] = []
+        self._field: str | None = None  # "title" или "snippet" — внутри какого тега текст
+        self._depth = 0  # вложенность тегов внутри текущего поля
+        self._skip = False  # текущий блок — реклама
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        classes = set((dict(attrs).get("class") or "").split())
+        if self._field is not None:
+            self._depth += 1
+            return
+        if tag == "div" and "result" in classes:
+            self._skip = "result--ad" in classes
+            return
+        if self._skip:
+            return
+        if tag == "a" and "result__a" in classes:
+            self.items.append({"title": "", "url": _duckduckgo_url(dict(attrs).get("href") or ""), "snippet": ""})
+            self._field, self._depth = "title", 0
+        elif tag in ("a", "div", "td") and "result__snippet" in classes and self.items:
+            self._field, self._depth = "snippet", 0
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._field is None:
+            return
+        if self._depth:
+            self._depth -= 1
+        else:
+            self._field = None
+
+    def handle_data(self, data: str) -> None:
+        if self._field is not None and self.items:
+            self.items[-1][self._field] += data
+
+
+class DuckDuckGoProvider(SearchProvider):
+    """Выдача DuckDuckGo без ключа: HTML-версия https://html.duckduckgo.com.
+
+    Официального API у выдачи нет, поэтому при частых запросах DuckDuckGo может
+    временно показывать проверку «вы не робот» — тогда поиск сообщает об ошибке,
+    а WebSearch переходит к следующему провайдеру. Для надёжности лучше добавить
+    ключ Tavily, Brave или Serper.
+    """
+
+    URL = "https://html.duckduckgo.com/html/"
+    HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/130.0 Mobile Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml",
+        "Referer": "https://html.duckduckgo.com/",
+    }
+
+    def __init__(self, api_key: str = "", http: httpx.AsyncClient | None = None) -> None:
+        super().__init__("duckduckgo", "DuckDuckGo", http)
+
+    @staticmethod
+    def region_code(language: str, region: str) -> str:
+        """Параметр kl: «ru-ru», «kz-ru», «us-en»…; «wt-wt» — без региона."""
+        if region:
+            return f"{region}-{language or 'en'}"
+        if language == "ru":
+            return "ru-ru"
+        return "wt-wt"
+
+    async def search(self, query: str, *, language: str, region: str) -> list[SearchResult]:
+        response = await self._request(
+            "POST",
+            self.URL,
+            data={"q": query, "kl": self.region_code(language, region)},
+            headers=self.HEADERS,
+        )
+        page = response.text
+        parser = _DuckDuckGoParser()
+        parser.feed(page)
+        parser.close()
+        found = [_result(item["title"], item["url"], item["snippet"]) for item in parser.items]
+        results = [item for item in found if item is not None]
+        if not results and ("anomaly" in page or "captcha" in page.lower()):
+            raise SearchError(f"{self.name}: DuckDuckGo asks for a captcha (too many requests)")
+        return results
+
+
 PROVIDER_CLASSES: dict[str, type[SearchProvider]] = {
     "serper": SerperProvider,
     "serpapi": SerpApiProvider,
+    "tavily": TavilyProvider,
+    "brave": BraveProvider,
+    "duckduckgo": DuckDuckGoProvider,
 }
 
 
@@ -301,6 +483,11 @@ class WebSearch:
 def wants_search(text: str) -> bool:
     """Собеседник прямо просит поискать в интернете или дать источники."""
     return bool(_SEARCH_REQUEST_RE.search(text))
+
+
+def needs_fresh_data(text: str) -> bool:
+    """Вопрос о погоде, курсах или свежих новостях: без поиска ответ будет устаревшим."""
+    return bool(_FRESH_DATA_RE.search(text))
 
 
 def parse_query(text: str) -> str:
@@ -435,7 +622,7 @@ def strip_sources(text: str) -> str:
 
 def results_block(query: str, results: Sequence[SearchResult], today: str) -> str:
     """Результаты поиска для системного промпта."""
-    lines = [f"Результаты поиска в Google по запросу «{query}» (сегодня {today}):"]
+    lines = [f"Результаты поиска в интернете по запросу «{query}» (сегодня {today}):"]
     for number, item in enumerate(results, start=1):
         date = f" ({item.date})" if item.date else ""
         lines.append(f"[{number}] {item.title} — {item.domain}{date}\n{item.snippet or '(без описания)'}")
