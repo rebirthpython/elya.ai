@@ -7,7 +7,7 @@ from config.settings import DEFAULT_PROVIDER_ORDER, KNOWN_PROVIDERS, ConfigError
 
 ENV_KEYS = [
     "BOT_TOKEN", "ALLOWED_USER_IDS", "AI_PROVIDERS", "DAILY_REQUEST_LIMIT", "TEMPERATURE",
-    "WEBAPP_URL", "WEBAPP_HOST", "WEBAPP_PORT", "WEBAPP_AUTH_MAX_AGE",
+    "WEBAPP_URL", "WEBAPP_HOST", "WEBAPP_PORT", "WEBAPP_AUTH_MAX_AGE", "SPEECH_LANGUAGE",
 ]
 KEYLESS = [name for name in DEFAULT_PROVIDER_ORDER.split(",") if KNOWN_PROVIDERS[name].get("keyless")]
 
@@ -184,5 +184,24 @@ def test_code_mode_settings(monkeypatch):
     assert (settings.code_max_output_tokens, settings.code_temperature) == (8192, 0.0)
 
     monkeypatch.setenv("CODE_TEMPERATURE", "5")
+    with pytest.raises(ConfigError):
+        load_settings(env_file=None)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(None, "ru"), ("", "ru"), ("EN", "en"), (" uk ", "uk"), ("auto", ""), ("Auto", "")],
+)
+def test_speech_language(monkeypatch, raw, expected):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    if raw is not None:
+        monkeypatch.setenv("SPEECH_LANGUAGE", raw)
+    assert load_settings(env_file=None).speech_language == expected
+
+
+@pytest.mark.parametrize("raw", ["russian", "r", "ru-RU"])
+def test_speech_language_invalid(monkeypatch, raw):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.setenv("SPEECH_LANGUAGE", raw)
     with pytest.raises(ConfigError):
         load_settings(env_file=None)

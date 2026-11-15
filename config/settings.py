@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -114,6 +115,8 @@ class Settings:
     image_providers: tuple[ImageProviderConfig, ...] = ()
     image_daily_limit: int = 50
     search: SearchConfig = SearchConfig()
+    # Язык голосовых (ISO 639-1); пустая строка — Whisper определяет язык сам
+    speech_language: str = "ru"
 
     @property
     def webapp_enabled(self) -> bool:
@@ -363,6 +366,18 @@ def _load_video_max_side() -> int:
     return side
 
 
+def _load_speech_language() -> str:
+    # Явный язык нужен Whisper: угадывая сам, он путает короткие русские голосовые с английскими.
+    language = (_get_str("SPEECH_LANGUAGE", "ru") or "ru").lower()
+    if language == "auto":
+        return ""
+    if not re.fullmatch(r"[a-z]{2,3}", language):
+        raise ConfigError(
+            f"SPEECH_LANGUAGE должен быть кодом языка (ru, en, uk…) или auto, получено: {language!r}"
+        )
+    return language
+
+
 def _load_provider(name: str) -> ProviderConfig | None:
     """Возвращает конфиг провайдера или None, если он не настроен (нет ключа или адреса)."""
     known = KNOWN_PROVIDERS.get(name)
@@ -593,4 +608,5 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         image_providers=_load_image_providers(),
         image_daily_limit=_get_int("IMAGE_DAILY_LIMIT", 50, minimum=0),
         search=_load_search(),
+        speech_language=_load_speech_language(),
     )

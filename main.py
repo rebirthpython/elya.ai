@@ -200,7 +200,12 @@ async def run(settings: Settings) -> None:
     long_memory = LongTermMemory(session_factory, ai_client)
     reminders = Reminders(session_factory, ai_client)
     speech = (
-        SpeechToText(settings.speech_api_key, http_client, model=settings.speech_model)
+        SpeechToText(
+            settings.speech_api_key,
+            http_client,
+            model=settings.speech_model,
+            language=settings.speech_language,
+        )
         if settings.speech_api_key
         else None
     )

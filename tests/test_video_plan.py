@@ -255,11 +255,12 @@ def test_whisper_hallucinations_are_dropped():
         "segments": [
             {"start": 0, "end": 1.5, "text": " Привет.", "no_speech_prob": 0.01},
             {"start": 5, "end": 7, "text": "Субтитры сделал DimaTorzok", "no_speech_prob": 0.2},
-            {"start": 8, "end": 9, "text": "шум", "no_speech_prob": 0.9},
+            {"start": 8, "end": 9, "text": "шум", "no_speech_prob": 0.9, "avg_logprob": -1.4},
+            {"start": 10, "end": 11, "text": "Тихо, но слова", "no_speech_prob": 0.7, "avg_logprob": -0.3},
         ],
         "words": [{"word": "Привет.", "start": 0.1, "end": 0.9}, {"word": "Субтитры", "start": 5.1, "end": 5.6}],
     }
     transcript = parse_verbose(data)
-    assert transcript.text == "Привет."
-    assert [s.text for s in transcript.segments] == ["Привет."]
+    assert transcript.text == "Привет. Тихо, но слова"  # уверенный текст не выбрасывается
+    assert [s.text for s in transcript.segments] == ["Привет.", "Тихо, но слова"]
     assert [w.text for w in transcript.words] == ["Привет."]
