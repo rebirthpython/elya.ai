@@ -1313,9 +1313,13 @@
   function showTyping() {
     const root = el('article', 'msg msg--assistant msg--new typing');
     const bubble = el('div', 'bubble');
-    const dots = el('span', 'typing__dots');
-    dots.append(el('span'), el('span'), el('span'));
-    bubble.append(dots);
+    // Объёмная звёздочка: свечение + три слоя на разной глубине (см. .typing__spark в CSS).
+    const spark = el('span', 'typing__spark');
+    spark.setAttribute('aria-hidden', 'true');
+    const body = el('span', 'spark-body');
+    body.append(el('span', 'spark spark--back'), el('span', 'spark spark--mid'), el('span', 'spark spark--front'));
+    spark.append(el('span', 'spark-glow'), body);
+    bubble.append(spark);
     bubble.setAttribute('aria-label', state.assistantName + ' печатает');
     root.append(bubble);
     dom.messages.append(root);
@@ -1331,7 +1335,7 @@
       motion(hint, [{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: 350, easing: 'ease-out' });
       motion(bubble, [{ width: from + 'px' }, { width: bubble.offsetWidth + 'px' }], { duration: 450, easing: SPRING });
     };
-    // Если модель долго думает, рядом с точками появляется пояснение.
+    // Если модель долго думает, рядом со звёздочкой появляется пояснение.
     let timers = TYPING_HINTS.map(([delay, text]) => setTimeout(() => setHint(text), delay));
     /* Эля ищет в интернете: показываем запрос, дальше — обычные подсказки заново. */
     root.searching = (query) => {
@@ -2761,9 +2765,9 @@
     dom.input.blur();
 
     state.sheetAnim = motion(dom.sheet, isWide()
-      ? [{ opacity: 0, transform: 'translateY(18px) scale(0.95)' }, { opacity: 1, transform: 'none' }]
-      : [{ transform: 'translateY(100%)' }, { transform: 'none' }],
-    { duration: isWide() ? 420 : 560, easing: 'cubic-bezier(0.2, 1.08, 0.32, 1)' });
+      ? [{ opacity: 0, transform: 'perspective(1200px) translateY(18px) rotateX(16deg) scale(0.95)' }, { opacity: 1, transform: 'none' }]
+      : [{ transform: 'perspective(1400px) translateY(100%) rotateX(24deg)' }, { transform: 'none' }],
+    { duration: isWide() ? 420 : 600, easing: 'cubic-bezier(0.2, 1.08, 0.32, 1)' });
     motion(dom.backdrop, [{ opacity: 0 }, { opacity: 1 }], { duration: 300, easing: 'ease-out' });
 
     // Полоска и число заполняются уже на глазах.
@@ -2813,8 +2817,8 @@
     if (state.sheetAnim) state.sheetAnim.cancel();
 
     const sheetOut = motion(dom.sheet, isWide()
-      ? [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateY(14px) scale(0.96)' }]
-      : [{ transform: fromTransform }, { transform: 'translateY(100%)' }],
+      ? [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'perspective(1200px) translateY(14px) rotateX(-14deg) scale(0.96)' }]
+      : [{ transform: fromTransform }, { transform: 'perspective(1400px) translateY(100%) rotateX(24deg)' }],
     { duration: 260, easing: 'cubic-bezier(0.4, 0, 0.9, 0.6)', fill: 'forwards' });
     const backdropOut = motion(dom.backdrop, [{ opacity: fromOpacity }, { opacity: 0 }], { duration: 260, fill: 'forwards' });
 
@@ -3003,7 +3007,7 @@
     dom.drawer.hidden = false;
     dom.drawerScroll.scrollTop = 0;
     dom.input.blur();
-    state.drawerAnim = motion(dom.drawer, [{ transform: 'translateX(-102%)' }, { transform: 'none' }],
+    state.drawerAnim = motion(dom.drawer, [{ transform: 'perspective(1200px) translateX(-102%) rotateY(32deg)' }, { transform: 'none' }],
       { duration: 460, easing: 'cubic-bezier(0.2, 1.04, 0.32, 1)' });
     motion(dom.drawerBackdrop, [{ opacity: 0 }, { opacity: 1 }], { duration: 280, easing: 'ease-out' });
     dom.drawerBtn.setAttribute('aria-expanded', 'true');
@@ -3024,7 +3028,7 @@
     const fromTransform = dom.drawer.style.transform || 'none';
     const fromOpacity = dom.drawerBackdrop.style.opacity || '1';
     if (state.drawerAnim) state.drawerAnim.cancel();
-    const out = motion(dom.drawer, [{ transform: fromTransform }, { transform: 'translateX(-102%)' }],
+    const out = motion(dom.drawer, [{ transform: fromTransform }, { transform: 'perspective(1200px) translateX(-102%) rotateY(32deg)' }],
       { duration: 240, easing: 'cubic-bezier(0.4, 0, 0.9, 0.6)', fill: 'forwards' });
     const fade = motion(dom.drawerBackdrop, [{ opacity: fromOpacity }, { opacity: 0 }], { duration: 240, fill: 'forwards' });
     const done = () => {
