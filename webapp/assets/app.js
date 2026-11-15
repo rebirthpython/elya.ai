@@ -272,20 +272,35 @@
     return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
   }
 
-  function paintTheme(scheme) {
-    const root = document.documentElement;
-    root.dataset.theme = scheme;
-    const bg = getComputedStyle(root).getPropertyValue('--bg').trim();
-    try {
-      if (supports('6.9')) tg.setHeaderColor(bg);
-      if (supports('6.1')) tg.setBackgroundColor(bg);
-      if (supports('7.10')) tg.setBottomBarColor(bg);
-    } catch (error) { /* старый клиент Telegram */ }
+  let chromeTimer = null;
+
+  /* Цвета шапки и низа Telegram. delay — когда их сменить: их нельзя анимировать,
+     поэтому при плавной смене темы они меняются на середине перехода, а не рывком в начале. */
+  function paintChrome(delay) {
+    clearTimeout(chromeTimer);
+    const run = () => {
+      const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+      try {
+        if (supports('6.9')) tg.setHeaderColor(bg);
+        if (supports('6.1')) tg.setBackgroundColor(bg);
+        if (supports('7.10')) tg.setBottomBarColor(bg);
+      } catch (error) { /* старый клиент Telegram */ }
+    };
+    if (delay) chromeTimer = setTimeout(run, delay);
+    else run();
   }
 
-  let themeFadeTimer = null;
+  function paintTheme(scheme, chromeDelay) {
+    document.documentElement.dataset.theme = scheme;
+    paintChrome(chromeDelay);
+  }
 
-  /* origin — точка {x, y}, из которой расходится новая тема; без неё тема меняется сразу. */
+  const THEME_FADE_MS = 520;
+  let themeFadeTimer = null;
+  let themeTransition = null;
+
+  /* origin — признак смены по действию пользователя: тогда тема перетекает плавно;
+     без него меняется сразу. */
   function applyTheme(origin) {
     const root = document.documentElement;
     const scheme = resolveScheme();
@@ -297,24 +312,31 @@
       return;
     }
 
+    // Быстрое повторное переключение: прошлый переход сразу завершаем.
+    if (themeTransition) {
+      try { themeTransition.skipTransition(); } catch (error) { /* уже закончился */ }
+    }
+
     if (typeof document.startViewTransition === 'function') {
-      const { x, y } = origin;
-      const radius = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y));
-      const transition = document.startViewTransition(() => paintTheme(scheme));
-      transition.ready.then(() => {
-        root.animate(
-          { clipPath: ['circle(0px at ' + x + 'px ' + y + 'px)', 'circle(' + radius + 'px at ' + x + 'px ' + y + 'px)'] },
-          { duration: 700, easing: 'cubic-bezier(0.4, 0, 0.2, 1)', pseudoElement: '::view-transition-new(root)' }
-        );
-      }).catch(() => {});
+      // Старый и новый кадры плавно растворяются друг в друге. Анимируется только
+      // прозрачность снимков — это делает видеокарта, без перерисовки страницы.
+      // Собственные CSS-переходы цветов на время смены выключены, иначе внутри
+      // нового кадра они догоняли бы тему ещё раз и давали рывок.
+      root.classList.add('theme-switching');
+      const transition = document.startViewTransition(() => paintTheme(scheme, THEME_FADE_MS / 2));
+      themeTransition = transition;
+      transition.finished.finally(() => {
+        if (themeTransition === transition) themeTransition = null;
+        root.classList.remove('theme-switching');
+      });
       return;
     }
 
     // Без View Transitions цвета просто плавно перетекают.
     root.classList.add('theme-fade');
-    paintTheme(scheme);
+    paintTheme(scheme, THEME_FADE_MS / 2);
     clearTimeout(themeFadeTimer);
-    themeFadeTimer = setTimeout(() => root.classList.remove('theme-fade'), 700);
+    themeFadeTimer = setTimeout(() => root.classList.remove('theme-fade'), THEME_FADE_MS + 80);
   }
 
   /* ---------- Сервер ---------- */

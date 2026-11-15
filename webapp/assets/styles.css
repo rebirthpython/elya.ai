@@ -50,10 +50,12 @@
   --danger: #ff7b8a;
   --danger-bg: rgba(255, 123, 138, 0.12);
   --code-bg: #15111d;
-  --glow-a: rgba(255, 143, 112, 0.22);
-  --glow-b: rgba(155, 107, 255, 0.24);
-  --glow-c: rgba(52, 224, 201, 0.13);
-  --glow-d: rgba(92, 184, 255, 0.14);
+  --glow-a: rgba(255, 143, 112, 0.34);
+  --glow-b: rgba(155, 107, 255, 0.38);
+  --glow-c: rgba(52, 224, 201, 0.24);
+  --glow-d: rgba(92, 184, 255, 0.28);
+  --glow-e: rgba(255, 95, 158, 0.26);
+  --sheet-tint: 0.36;
   --shadow-pop: 0 18px 48px -12px rgba(0, 0, 0, 0.7);
   --shadow-bubble: 0 10px 30px -18px rgba(0, 0, 0, 0.9);
   --focus: rgba(255, 95, 158, 0.55);
@@ -88,10 +90,12 @@
   --danger: #d12f4a;
   --danger-bg: rgba(209, 47, 74, 0.08);
   --code-bg: #f6efec;
-  --glow-a: rgba(255, 127, 92, 0.22);
-  --glow-b: rgba(132, 85, 245, 0.17);
-  --glow-c: rgba(18, 165, 148, 0.12);
-  --glow-d: rgba(43, 139, 224, 0.12);
+  --glow-a: rgba(255, 127, 92, 0.32);
+  --glow-b: rgba(132, 85, 245, 0.26);
+  --glow-c: rgba(18, 165, 148, 0.2);
+  --glow-d: rgba(43, 139, 224, 0.22);
+  --glow-e: rgba(242, 80, 143, 0.2);
+  --sheet-tint: 0.34;
   --shadow-pop: 0 18px 48px -14px rgba(74, 40, 90, 0.28);
   --shadow-bubble: 0 10px 28px -18px rgba(74, 40, 90, 0.4);
   --focus: rgba(242, 80, 143, 0.45);
@@ -205,7 +209,7 @@ svg {
   to { transform: scale(1); opacity: 0; }
 }
 
-/* ---------- Фон: медленное «северное сияние» ---------- */
+/* ---------- Фон: медленное переливающееся «северное сияние» ---------- */
 
 .backdrop-art {
   position: fixed;
@@ -213,6 +217,28 @@ svg {
   z-index: 0;
   overflow: hidden;
   pointer-events: none;
+  /* Оттенки всего сияния медленно плывут по кругу палитры */
+  animation: hue-flow 22s ease-in-out infinite alternate;
+  will-change: filter;
+}
+
+@keyframes hue-flow {
+  from { filter: hue-rotate(-30deg) saturate(1.15); }
+  to { filter: hue-rotate(40deg) saturate(1.15); }
+}
+
+/* Розовое пятно в центре: связывает тёплый верх и холодный низ */
+.glow--e {
+  top: 20vmax;
+  left: -40vmax;
+  width: 100vmax;
+  height: 100vmax;
+  background: radial-gradient(closest-side, var(--glow-e), transparent);
+  animation: drift-e 27s ease-in-out infinite alternate;
+}
+
+@keyframes drift-e {
+  to { transform: translate3d(30vmax, -16vmax, 0) scale(1.12); }
 }
 
 .glow {
@@ -2087,7 +2113,79 @@ body.is-thinking .glow--think {
   border-radius: 28px 28px 0 0;
   background: var(--surface);
   box-shadow: var(--shadow-pop);
+  overflow: hidden;
+  isolation: isolate;
   will-change: transform;
+}
+
+/* Переливающийся градиент панели: огромный конический круг медленно вращается
+   под содержимым. Анимируется только transform — вращение идёт на видеокарте. */
+.sheet::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: -40vmax; /* центр круга высоко над панелью: видна плавная дуга цветов */
+  left: 50%;
+  width: 260vmax;
+  height: 260vmax;
+  margin: -130vmax 0 0 -130vmax;
+  background: conic-gradient(from 0deg, var(--coral), var(--rose), var(--violet), var(--sky), var(--teal), var(--sky), var(--violet), var(--rose), var(--coral));
+  opacity: var(--sheet-tint);
+  pointer-events: none;
+  animation: sheet-spin 18s linear infinite;
+}
+
+/* Мягкая вуаль сверху: гасит центр круга и держит текст читаемым */
+.sheet::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(120% 70% at 50% 0%, color-mix(in srgb, var(--surface) 30%, transparent), transparent 70%),
+    linear-gradient(180deg, transparent 0%, color-mix(in srgb, var(--surface) 35%, transparent) 100%);
+  pointer-events: none;
+}
+
+/* Карточки внутри панели слегка прозрачные, чтобы перелив просвечивал */
+.sheet {
+  --surface-2: rgba(42, 35, 55, 0.74);
+}
+
+:root[data-theme="light"] .sheet {
+  --surface-2: rgba(245, 237, 234, 0.72);
+}
+
+@keyframes sheet-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Версия приложения внизу настроек */
+.app-version {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  margin: 26px 0 4px;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+.app-version__name {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  background: var(--grad);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: version-shine 6s ease-in-out infinite alternate;
+}
+
+@keyframes version-shine {
+  to { background-position: 100% 0; }
 }
 
 .sheet__grip {
@@ -3091,11 +3189,39 @@ body.is-thinking .glow--think {
 
 /* ---------- Плавная смена темы ---------- */
 
-/* Круг новой темы расходится от нажатой кнопки (View Transitions) */
+/* Старый и новый кадры растворяются друг в друге (View Transitions).
+   Только opacity — анимация идёт на видеокарте и не дёргается. */
+::view-transition-group(root) {
+  animation-duration: 0.52s;
+}
+
 ::view-transition-old(root),
 ::view-transition-new(root) {
-  animation: none;
   mix-blend-mode: normal;
+  animation-duration: 0.52s;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Старый кадр стоит как есть, новый проявляется поверх: без провала яркости */
+::view-transition-old(root) {
+  animation: none;
+}
+
+::view-transition-new(root) {
+  animation-name: theme-in;
+}
+
+@keyframes theme-in {
+  from { opacity: 0; }
+}
+
+/* На время смены темы собственные переходы цветов выключены: новый кадр сразу
+   в новых цветах, а плавность даёт растворение кадров */
+.theme-switching,
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+  transition: none !important;
 }
 
 /* Запасной вариант для старых WebView: цвета перетекают */
@@ -3104,12 +3230,12 @@ body.is-thinking .glow--think {
 .theme-fade *::before,
 .theme-fade *::after {
   transition:
-    background-color 0.6s ease,
-    color 0.6s ease,
-    border-color 0.6s ease,
-    box-shadow 0.6s ease,
-    fill 0.6s ease,
-    stroke 0.6s ease !important;
+    background-color 0.5s ease,
+    color 0.5s ease,
+    border-color 0.5s ease,
+    box-shadow 0.5s ease,
+    fill 0.5s ease,
+    stroke 0.5s ease !important;
 }
 
 /* ---------- Всплывающее уведомление ---------- */
