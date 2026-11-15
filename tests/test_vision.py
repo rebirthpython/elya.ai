@@ -143,7 +143,7 @@ def test_vision_models_defaults_and_overrides(clean_env):
     gemini, groq, openrouter = load_settings(env_file=None).providers
     assert gemini.vision_models == gemini.models  # «*» — все модели Gemini
     assert groq.vision_models == ("meta-llama/llama-4-scout-17b-16e-instruct",)
-    assert openrouter.vision_models == ()
+    assert openrouter.vision_models == ("google/gemma-3-27b-it:free", "openrouter/free")
 
     clean_env.setenv("GEMINI_VISION_MODELS", "-")
     clean_env.setenv("OPENROUTER_VISION_MODELS", "qwen/qwen2.5-vl:free, x/y")

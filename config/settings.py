@@ -71,6 +71,9 @@ KNOWN_PROVIDERS: dict[str, dict[str, str]] = {
         "title": "OpenRouter",
         "base_url": "https://openrouter.ai/api/v1",
         "models": "",
+        # Бесплатная мультимодальная модель; openrouter/free сам выбирает модель,
+        # которая умеет смотреть картинки, если первую уберут из бесплатных.
+        "vision": "google/gemma-3-27b-it:free,openrouter/free",
     },
     "groq": {
         "title": "Groq",
@@ -82,6 +85,7 @@ KNOWN_PROVIDERS: dict[str, dict[str, str]] = {
         "title": "Mistral AI",
         "base_url": "https://api.mistral.ai/v1",
         "models": "mistral-small-latest",
+        "vision": "mistral-small-latest",  # Mistral Small 3.1+ понимает картинки
     },
     "custom": {
         "title": "Custom OpenAI-compatible API",
