@@ -7,7 +7,7 @@ ENV_KEYS = [
     "OPENROUTER_API_KEY", "OPENROUTER_MODELS", "GROQ_API_KEY", "GROQ_MODELS",
     "CUSTOM_BASE_URL", "CUSTOM_API_KEY", "CUSTOM_MODELS", "DAILY_REQUEST_LIMIT", "TEMPERATURE",
     "MISTRAL_API_KEY", "MISTRAL_MODELS", "WEBAPP_URL", "WEBAPP_HOST", "WEBAPP_PORT",
-    "WEBAPP_AUTH_MAX_AGE",
+    "WEBAPP_AUTH_MAX_AGE", "SPEECH_LANGUAGE",
 ]
 
 
@@ -82,3 +82,22 @@ def test_mistral_provider_has_default_model(monkeypatch):
     provider = load_settings(env_file=None).providers[0]
     assert provider.base_url == "https://api.mistral.ai/v1"
     assert provider.models == ("mistral-small-latest",)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(None, "ru"), ("", "ru"), ("EN", "en"), (" uk ", "uk"), ("auto", ""), ("Auto", "")],
+)
+def test_speech_language(monkeypatch, raw, expected):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    if raw is not None:
+        monkeypatch.setenv("SPEECH_LANGUAGE", raw)
+    assert load_settings(env_file=None).speech_language == expected
+
+
+@pytest.mark.parametrize("raw", ["russian", "r", "ru-RU"])
+def test_speech_language_invalid(monkeypatch, raw):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.setenv("SPEECH_LANGUAGE", raw)
+    with pytest.raises(ConfigError):
+        load_settings(env_file=None)

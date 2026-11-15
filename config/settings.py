@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -52,6 +53,8 @@ class Settings:
     # Голосовые: ключ Groq (тот же, что для провайдера groq) и модель распознавания
     speech_api_key: str = ""
     speech_model: str = "whisper-large-v3-turbo"
+    # Язык голосовых (ISO 639-1); пустая строка — Whisper определяет язык сам
+    speech_language: str = "ru"
 
     @property
     def webapp_enabled(self) -> bool:
@@ -158,6 +161,18 @@ def _load_webapp_port() -> int:
     return port
 
 
+def _load_speech_language() -> str:
+    # Явный язык нужен Whisper: угадывая сам, он путает короткие русские голосовые с английскими.
+    language = (_get_str("SPEECH_LANGUAGE", "ru") or "ru").lower()
+    if language == "auto":
+        return ""
+    if not re.fullmatch(r"[a-z]{2,3}", language):
+        raise ConfigError(
+            f"SPEECH_LANGUAGE должен быть кодом языка (ru, en, uk…) или auto, получено: {language!r}"
+        )
+    return language
+
+
 def _load_provider(name: str) -> ProviderConfig | None:
     """Возвращает конфиг провайдера или None, если для него не задан ключ."""
     known = KNOWN_PROVIDERS.get(name)
@@ -253,4 +268,5 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         webapp_auth_max_age=_get_int("WEBAPP_AUTH_MAX_AGE", 86400, minimum=60),
         speech_api_key=_get_str("GROQ_API_KEY"),
         speech_model=_get_str("SPEECH_MODEL", "whisper-large-v3-turbo") or "whisper-large-v3-turbo",
+        speech_language=_load_speech_language(),
     )
