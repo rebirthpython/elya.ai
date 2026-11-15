@@ -82,3 +82,22 @@ def test_mistral_provider_has_default_model(monkeypatch):
     provider = load_settings(env_file=None).providers[0]
     assert provider.base_url == "https://api.mistral.ai/v1"
     assert provider.models == ("mistral-small-latest",)
+
+
+def test_video_settings(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+    for key in ("VIDEO_MAX_CLIPS", "VIDEO_MAX_SECONDS", "VIDEO_MAX_SIDE", "VIDEO_TIMEOUT", "VIDEO_WORKDIR",
+                "FFMPEG_PATH", "FFPROBE_PATH"):
+        monkeypatch.delenv(key, raising=False)
+    settings = load_settings(env_file=None)
+    assert (settings.video_max_clips, settings.video_max_seconds, settings.video_max_side) == (10, 600, 1920)
+    assert settings.ffmpeg_path == "ffmpeg" and settings.video_workdir == ""
+
+    monkeypatch.setenv("VIDEO_MAX_SIDE", "1280")
+    monkeypatch.setenv("FFMPEG_PATH", "/opt/ffmpeg/bin/ffmpeg")
+    settings = load_settings(env_file=None)
+    assert settings.video_max_side == 1280 and settings.ffmpeg_path == "/opt/ffmpeg/bin/ffmpeg"
+
+    monkeypatch.setenv("VIDEO_MAX_SIDE", "8000")
+    with pytest.raises(ConfigError, match="VIDEO_MAX_SIDE"):
+        load_settings(env_file=None)

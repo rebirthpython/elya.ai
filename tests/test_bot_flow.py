@@ -539,7 +539,7 @@ async def test_photo_errors(env):
 async def test_other_documents_are_still_unsupported(env):
     dp, downloaded = _photo_dispatcher(env)
     await dp.feed_update(env["bot"], _photo_update(document={"mime_type": "application/pdf", "file_size": 1000}))
-    assert "Стикеры, видео и другие файлы" in env["session"].sent_texts()[-1] and downloaded == []
+    assert "Стикеры и другие файлы" in env["session"].sent_texts()[-1] and downloaded == []
 
 
 async def test_photo_from_stranger_is_ignored(env):

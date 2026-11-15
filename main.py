@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import tempfile
+from pathlib import Path
 
 import httpx
 from aiogram import Bot, Dispatcher
@@ -20,6 +22,7 @@ from ai.client import AIClient
 from ai.providers import build_providers
 from bot.handlers import get_routers
 from bot.handlers.study import StudyStates
+from bot.handlers.video import VideoStates
 from bot.middlewares.access import AccessMiddleware
 from bot.middlewares.throttling import ThrottlingMiddleware
 from config.settings import ConfigError, Settings, load_settings
@@ -41,6 +44,8 @@ from services.preferences import PreferencesStore
 from services.rate_limit import SlidingWindowLimiter
 from services.usage import UsageTracker
 from study.pipeline import StudyService
+from video.ffmpeg import FFmpeg
+from video.service import VideoService
 from web.server import create_web_app, start_web_server
 
 logger = logging.getLogger("assistant")
@@ -49,6 +54,7 @@ BOT_COMMANDS = [
     BotCommand(command="start", description="Запуск и приветствие"),
     BotCommand(command="notes", description="Конспект или сокращение лекции"),
     BotCommand(command="slides", description="Презентация с анимациями"),
+    BotCommand(command="video", description="Монтаж видео"),
     BotCommand(command="help", description="Что я умею"),
     BotCommand(command="reminders", description="Мои напоминания"),
     BotCommand(command="timezone", description="Часовой пояс для напоминаний"),
@@ -72,6 +78,7 @@ def create_dispatcher(
     reminders: Reminders | None = None,
     speech: SpeechToText | None = None,
     instructions: InstructionsStore | None = None,
+    video: VideoService | None = None,
 ) -> Dispatcher:
     """chat_service и limiter передаются снаружи, когда их делит с ботом Mini App."""
     dp = Dispatcher(storage=MemoryStorage())
@@ -83,6 +90,7 @@ def create_dispatcher(
     dp["reminders"] = reminders
     dp["instructions"] = instructions
     dp["speech"] = speech
+    dp["video"] = video
     dp["chat_service"] = chat_service or ChatService(
         settings, ai_client, memory, instructions=instructions
     )
@@ -94,11 +102,13 @@ def create_dispatcher(
     )
 
     dp.update.outer_middleware(AccessMiddleware(settings.allowed_user_ids))
-    # Пока бот собирает материал для конспекта, к модели запросов нет — частоту не ограничиваем.
+    # Пока бот собирает материал для конспекта или клипы альбома, частоту не ограничиваем:
+    # Telegram присылает их пачкой. Запросы к модели при монтаже идут по одному (пока работает
+    # предыдущий, новые просьбы не принимаются), а дневной лимит действует как обычно.
     dp.message.middleware(
         ThrottlingMiddleware(
             limiter or SlidingWindowLimiter(settings.rate_limit_per_minute),
-            exempt_states=frozenset({StudyStates.collecting.state}),
+            exempt_states=frozenset({StudyStates.collecting.state, VideoStates.session.state}),
         )
     )
     dp.include_routers(*get_routers())
@@ -163,6 +173,18 @@ async def run(settings: Settings) -> None:
         else None
     )
     instructions = InstructionsStore(session_factory)
+    video = VideoService(
+        ai_client,
+        FFmpeg(settings.ffmpeg_path, settings.ffprobe_path, timeout=settings.video_timeout),
+        workdir=Path(settings.video_workdir or Path(tempfile.gettempdir()) / "elya-video"),
+        speech=speech,
+        assistant_name=settings.assistant_name,
+        max_clips=settings.video_max_clips,
+        max_seconds=settings.video_max_seconds,
+        max_side=settings.video_max_side,
+    )
+    await video.start()
+    logger.info("Video editing: %s", video.status)
     chat_service = ChatService(
         settings, ai_client, memory, preferences, long_memory, reminders, instructions=instructions
     )
@@ -180,6 +202,7 @@ async def run(settings: Settings) -> None:
         reminders=reminders,
         speech=speech,
         instructions=instructions,
+        video=video,
     )
     web_runner = None
     scheduler_task = None

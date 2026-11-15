@@ -52,6 +52,14 @@ class Settings:
     # Голосовые: ключ Groq (тот же, что для провайдера groq) и модель распознавания
     speech_api_key: str = ""
     speech_model: str = "whisper-large-v3-turbo"
+    # Монтаж видео (нужен ffmpeg). Пустой video_workdir — временная папка системы.
+    video_workdir: str = ""
+    video_max_clips: int = 10
+    video_max_seconds: int = 600
+    video_max_side: int = 1920
+    video_timeout: float = 900.0
+    ffmpeg_path: str = "ffmpeg"
+    ffprobe_path: str = "ffprobe"
 
     @property
     def webapp_enabled(self) -> bool:
@@ -158,6 +166,13 @@ def _load_webapp_port() -> int:
     return port
 
 
+def _load_video_max_side() -> int:
+    side = _get_int("VIDEO_MAX_SIDE", 1920, minimum=240)
+    if side > 3840:
+        raise ConfigError(f"VIDEO_MAX_SIDE должно быть не больше 3840, получено: {side}")
+    return side
+
+
 def _load_provider(name: str) -> ProviderConfig | None:
     """Возвращает конфиг провайдера или None, если для него не задан ключ."""
     known = KNOWN_PROVIDERS.get(name)
@@ -253,4 +268,11 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         webapp_auth_max_age=_get_int("WEBAPP_AUTH_MAX_AGE", 86400, minimum=60),
         speech_api_key=_get_str("GROQ_API_KEY"),
         speech_model=_get_str("SPEECH_MODEL", "whisper-large-v3-turbo") or "whisper-large-v3-turbo",
+        video_workdir=_get_str("VIDEO_WORKDIR"),
+        video_max_clips=_get_int("VIDEO_MAX_CLIPS", 10, minimum=1),
+        video_max_seconds=_get_int("VIDEO_MAX_SECONDS", 600, minimum=10),
+        video_max_side=_load_video_max_side(),
+        video_timeout=_get_float("VIDEO_TIMEOUT", 900.0, minimum=30.0, maximum=7200.0),
+        ffmpeg_path=_get_str("FFMPEG_PATH", "ffmpeg") or "ffmpeg",
+        ffprobe_path=_get_str("FFPROBE_PATH", "ffprobe") or "ffprobe",
     )

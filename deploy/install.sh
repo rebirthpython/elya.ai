@@ -79,6 +79,14 @@ except ConfigError as exc:
     sys.exit(f"Ошибка в .env: {exc}")
 PY
 
+step "Монтаж видео (ffmpeg)"
+if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
+    echo "ffmpeg найден: $(ffmpeg -hide_banner -version | head -n1)"
+else
+    echo "ВНИМАНИЕ: ffmpeg не установлен — бот будет работать, но без монтажа видео (/video)." \
+        "Установить: sudo apt install ffmpeg fonts-dejavu-core и перезапустить бота." >&2
+fi
+
 step "Автозапуск после перезагрузки сервера (loginctl enable-linger)"
 if [[ "$(loginctl show-user "$USER_NAME" --property=Linger --value 2>/dev/null || true)" != yes ]]; then
     loginctl enable-linger "$USER_NAME" 2>/dev/null ||
