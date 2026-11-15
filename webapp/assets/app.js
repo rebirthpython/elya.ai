@@ -74,6 +74,9 @@
     sheetBody: $('sheet-body'),
     sheetBack: $('sheet-back'),
     sheetTitle: $('sheet-title'),
+    codeBlock: $('code-block'),
+    codeToggle: $('code-toggle'),
+    codeSub: $('code-sub'),
     instructionsBlock: $('instructions-block'),
     openInstructions: $('open-instructions'),
     instructionsSummary: $('instructions-summary'),
@@ -142,6 +145,7 @@
     recording: null,
     transcribing: false,
     reminders: { timezone: null, items: [], max: 50, max_text: 300 },
+    mode: null, // 'chat' | 'code'; null — сервер не знает о режимах
     instructions: null,
     instructionsEdited: false, // пользователь правил поля и ещё не сохранил
     sheetPage: 'main',
@@ -379,6 +383,7 @@
     clear: () => request('api/clear', {}),
     savePreferences: (patch) => request('api/preferences', patch),
     saveInstructions: (patch) => request('api/instructions', patch),
+    setMode: (mode) => request('api/mode', { mode }),
     memorySet: (enabled) => request('api/memory', { enabled }),
     memoryAdd: (text) => request('api/memory/add', { text }),
     memoryDelete: (id) => request('api/memory/delete', { id }),
@@ -417,6 +422,7 @@
     let turn = 0;
     let preferences = { style: 'friendly', verbosity: 'normal' };
     let instructions = { about: '', style: '', enabled: true, max_length: 1500 };
+    let mode = 'chat';
     let memory = { enabled: false, facts: [], max_facts: 50, max_fact_length: 200 };
     let factId = 0;
     let reminders = { timezone: null, items: [], max: 50, max_text: 300 };
@@ -438,7 +444,8 @@
           ],
           providers: ['Google Gemini API', 'OpenRouter', 'Groq'],
           usage: { used, limit: 300 },
-          limits: { max_text_length: 4000 },
+          limits: { max_text_length: mode === 'code' ? 16000 : 4000 },
+          mode,
           preferences: Object.assign({}, preferences),
           instructions: Object.assign({}, instructions),
           memory: memoryView(),
@@ -469,6 +476,11 @@
         await sleep(250);
         preferences = Object.assign({}, preferences, patch);
         return { preferences: Object.assign({}, preferences) };
+      },
+      async setMode(next) {
+        await sleep(200);
+        mode = next;
+        return { mode, limits: { max_text_length: mode === 'code' ? 16000 : 4000 } };
       },
       async memorySet(enabled) {
         await sleep(200);
@@ -670,7 +682,11 @@
   }
 
   function setStatus(kind) {
-    const labels = { online: 'на связи', typing: 'печатает…', offline: 'нет связи' };
+    const labels = {
+      online: state.mode === 'code' ? 'режим кода' : 'на связи',
+      typing: state.mode === 'code' ? 'пишет код…' : 'печатает…',
+      offline: 'нет связи',
+    };
     if (dom.status.dataset.state !== kind) {
       motion(dom.statusLabel, [
         { opacity: 0, transform: 'translateY(6px)' },
@@ -1218,7 +1234,7 @@
   function clearAttachment(instant, keepUrl) {
     const current = state.attachment;
     state.attachment = null;
-    dom.input.placeholder = 'Напиши сообщение…';
+    dom.input.placeholder = inputPlaceholder();
     if (current && !keepUrl) URL.revokeObjectURL(current.url);
     if (dom.attachment.hidden) return updateComposer();
     if (instant || reducedMotion) {
@@ -1495,6 +1511,47 @@
   }
 
   /* ---------- Инструкции ---------- */
+
+  /* ---------- Режим кода ---------- */
+
+  function inputPlaceholder() {
+    return state.mode === 'code' ? 'Опиши задачу или вставь код…' : 'Напиши сообщение…';
+  }
+
+  function renderMode() {
+    const on = state.mode === 'code';
+    dom.codeBlock.hidden = state.mode === null;
+    dom.codeToggle.setAttribute('aria-checked', String(on));
+    dom.codeSub.textContent = on ? 'Включён: отвечаю как программист' : 'Выключен';
+    dom.input.maxLength = state.maxLength;
+    if (!state.attachment) dom.input.placeholder = inputPlaceholder();
+    if (!state.busy) setStatus(dom.status.dataset.state === 'offline' ? 'offline' : 'online');
+    updateComposer();
+  }
+
+  /* Ответ сервера: режим и лимит длины сообщения, который от него зависит. */
+  function takeMode(data) {
+    state.mode = data.mode === undefined ? null : data.mode;
+    if (data.limits && data.limits.max_text_length) state.maxLength = data.limits.max_text_length;
+    renderMode();
+  }
+
+  async function toggleMode() {
+    const previous = state.mode;
+    const next = previous === 'code' ? 'chat' : 'code';
+    state.mode = next;
+    renderMode();
+    haptic('select');
+    try {
+      takeMode(await backend.setMode(next));
+      showToast(next === 'code' ? 'Режим кода включён' : 'Обычный режим');
+    } catch (error) {
+      state.mode = previous;
+      renderMode();
+      showToast(error.message);
+      haptic('notify', 'error');
+    }
+  }
 
   function renderInstructionsSummary() {
     const data = state.instructions;
@@ -2147,6 +2204,7 @@
     if (data.memory) state.memory = Object.assign({}, state.memory, data.memory);
     if (data.reminders) state.reminders = Object.assign({}, state.reminders, data.reminders);
     state.instructions = data.instructions || null;
+    state.mode = data.mode === undefined ? null : data.mode;
     renderInstructionsSummary();
     if (data.preference_options) state.preferenceOptions = data.preference_options;
     state.syncedAt = Date.now();
@@ -2158,7 +2216,7 @@
     document.title = name;
     dom.assistantName.textContent = name;
     dom.welcomeName.textContent = name;
-    dom.input.maxLength = state.maxLength;
+    renderMode();
     dom.hint.textContent = name + ' — ИИ и может ошибаться. Важное лучше перепроверить.';
     document.querySelectorAll('.orb__letter').forEach((node) => {
       node.textContent = name.charAt(0).toUpperCase();
@@ -2211,6 +2269,8 @@
     }
     if (state.busy || state.finishReveal) return;
     state.usage = data.usage || state.usage;
+    // Режим могли переключить в чате с ботом командой /code.
+    if (data.mode !== undefined && data.mode !== state.mode && dom.sheet.hidden) takeMode(data);
     if (data.memory && dom.sheet.hidden) state.memory = Object.assign({}, state.memory, data.memory);
     if (data.reminders && dom.sheet.hidden) {
       state.reminders = Object.assign({}, state.reminders, data.reminders);
@@ -2337,6 +2397,7 @@
       }
     });
 
+    dom.codeToggle.addEventListener('click', toggleMode);
     dom.memoryToggle.addEventListener('click', toggleMemory);
     dom.factForm.addEventListener('submit', (event) => {
       event.preventDefault();

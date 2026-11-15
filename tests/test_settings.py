@@ -82,3 +82,21 @@ def test_mistral_provider_has_default_model(monkeypatch):
     provider = load_settings(env_file=None).providers[0]
     assert provider.base_url == "https://api.mistral.ai/v1"
     assert provider.models == ("mistral-small-latest",)
+
+
+def test_code_mode_settings(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+    for key in ("CODE_MAX_OUTPUT_TOKENS", "CODE_TEMPERATURE", "CODE_HISTORY_MAX_CHARS", "CODE_MAX_FILE_CHARS"):
+        monkeypatch.delenv(key, raising=False)
+    settings = load_settings(env_file=None)
+    assert (settings.code_max_output_tokens, settings.code_temperature) == (4096, 0.2)
+    assert (settings.code_history_max_chars, settings.code_max_file_chars) == (40000, 30000)
+
+    monkeypatch.setenv("CODE_MAX_OUTPUT_TOKENS", "8192")
+    monkeypatch.setenv("CODE_TEMPERATURE", "0")
+    settings = load_settings(env_file=None)
+    assert (settings.code_max_output_tokens, settings.code_temperature) == (8192, 0.0)
+
+    monkeypatch.setenv("CODE_TEMPERATURE", "5")
+    with pytest.raises(ConfigError):
+        load_settings(env_file=None)

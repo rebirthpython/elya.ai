@@ -16,13 +16,19 @@ from ai.prompts import build_system_prompt
 from ai.providers.base import CompletionResult
 from config.settings import Settings
 from memory.manager import MemoryManager
+from services.code import CodeFile, file_message
 from services.instructions import InstructionsStore
 from services.longterm import LongTermMemory
+from services.modes import CODE, DEFAULT_MODE, ModeStore
 from services.preferences import Preferences, PreferencesStore
 from services.reminders import Reminders
 from services.vision import DEFAULT_QUESTION, history_text
 
 logger = logging.getLogger(__name__)
+
+# В режиме кода «напомни» может встретиться во вставленном коде, поэтому просьбой
+# о напоминании считается только короткое сообщение без блоков кода.
+_CODE_REMINDER_MAX_CHARS = 300
 
 
 class ChatService:
@@ -36,6 +42,7 @@ class ChatService:
         reminders: Reminders | None = None,
         *,
         instructions: InstructionsStore | None = None,
+        modes: ModeStore | None = None,
     ) -> None:
         self._settings = settings
         self._ai = ai_client
@@ -44,6 +51,7 @@ class ChatService:
         self._long_memory = long_memory
         self._reminders = reminders
         self._instructions = instructions
+        self._modes = modes
         self._background: set[asyncio.Task] = set()
         # Сообщения одного пользователя обрабатываются строго по очереди,
         # чтобы история диалога сохранялась в правильном порядке.
@@ -57,12 +65,13 @@ class ChatService:
         user_name: str | None = None,
         prefer: tuple[str, str] | None = None,
         images: tuple[str, ...] = (),
+        file: CodeFile | None = None,
     ) -> CompletionResult:
         """Отвечает на сообщение и сохраняет обмен. Ошибки ИИ (AIError) пробрасываются,
         история при этом не меняется."""
         result: CompletionResult | None = None
         async for event in self.ask_stream(
-            user_id, user_text, user_name=user_name, prefer=prefer, images=images
+            user_id, user_text, user_name=user_name, prefer=prefer, images=images, file=file
         ):
             if isinstance(event, CompletionResult):
                 result = event
@@ -77,17 +86,29 @@ class ChatService:
         user_name: str | None = None,
         prefer: tuple[str, str] | None = None,
         images: tuple[str, ...] = (),
+        file: CodeFile | None = None,
     ) -> AsyncIterator[str | CompletionResult]:
         """Как ask(), но по частям: строки — новый текст ответа по мере генерации,
         последним — CompletionResult. Обмен сохраняется в историю, только когда ответ
-        пришёл целиком; если поток прервали, история не меняется."""
+        пришёл целиком; если поток прервали, история не меняется.
+
+        file — присланный файл с кодом: его текст вместе с подписью уходит модели
+        и сохраняется в истории, чтобы о файле можно было спрашивать дальше."""
         settings = self._settings
-        # С фото: модель получает подпись (или вопрос по умолчанию), а в историю
-        # попадает пометка «📷 Фото: подпись» — сама картинка не хранится.
-        question = user_text.strip() or (DEFAULT_QUESTION if images else "")
-        stored_text = history_text(user_text) if images else user_text
+        if file is not None:
+            question = stored_text = file_message(file, user_text)
+        else:
+            # С фото: модель получает подпись (или вопрос по умолчанию), а в историю
+            # попадает пометка «📷 Фото: подпись» — сама картинка не хранится.
+            question = user_text.strip() or (DEFAULT_QUESTION if images else "")
+            stored_text = history_text(user_text) if images else user_text
         async with self._locks[user_id]:
-            if self._reminders is not None and not images:
+            mode = await self._modes.get(user_id) if self._modes else DEFAULT_MODE
+            coding = mode == CODE
+            looks_like_code = coding and (
+                len(user_text) > _CODE_REMINDER_MAX_CHARS or "```" in user_text
+            )
+            if self._reminders is not None and not images and file is None and not looks_like_code:
                 # Просьба «напомни …» обрабатывается кодом, а не моделью: так Эля не может
                 # пообещать напоминание, которого нет. Ошибки ИИ (AIError) идут как обычно.
                 handled = await self._reminders.handle_chat_request(user_id, user_text)
@@ -109,15 +130,26 @@ class ChatService:
                     verbosity=prefs.verbosity,
                     memory=recall.prompt_block() if recall else "",
                     instructions=custom.prompt_block() if custom else "",
+                    mode=mode,
                 ),
                 history,
                 question,
                 max_messages=settings.history_max_messages,
-                max_chars=settings.history_max_chars,
+                # Код и присланные файлы длиннее обычных реплик — им нужно больше места.
+                max_chars=settings.code_history_max_chars if coding else settings.history_max_chars,
                 images=images,
             )
             result: CompletionResult | None = None
-            async for event in self._ai.stream(context, prefer=prefer):
+            # В режиме кода ответ длиннее и точнее: больше токенов, ниже температура.
+            options = (
+                {
+                    "temperature": settings.code_temperature,
+                    "max_tokens": max(settings.code_max_output_tokens, settings.max_output_tokens),
+                }
+                if coding
+                else {}
+            )
+            async for event in self._ai.stream(context, prefer=prefer, **options):
                 if isinstance(event, CompletionResult):
                     result = event
                 else:

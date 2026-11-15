@@ -29,6 +29,7 @@ from memory.manager import MemoryManager
 from services.chat import ChatService
 from services.instructions import MAX_INSTRUCTION_LENGTH, InstructionsStore
 from services.longterm import MAX_FACT_LENGTH, MAX_FACTS, LongTermMemory, MemoryFullError
+from services.modes import CODE, DEFAULT_MODE, MODES, ModeStore
 from services.preferences import PreferencesStore
 from services.speech import SpeechError, SpeechToText
 from services.vision import MAX_IMAGE_BYTES, NO_VISION_TEXT, ImageError, to_data_url
@@ -49,7 +50,9 @@ logger = logging.getLogger(__name__)
 
 WEBAPP_DIR = Path(__file__).resolve().parent.parent / "webapp"
 MAX_TEXT_LENGTH = 4000
-MAX_BODY_BYTES = 64 * 1024
+# В режиме кода в сообщение вставляют целые файлы, поэтому лимит выше.
+MAX_CODE_TEXT_LENGTH = 16000
+MAX_BODY_BYTES = 160 * 1024
 TIMELINE_LIMIT = 100
 
 SETTINGS = web.AppKey("settings", Settings)
@@ -63,6 +66,7 @@ LONG_MEMORY = web.AppKey("long_memory", LongTermMemory)
 REMINDERS = web.AppKey("reminders", Reminders)
 INSTRUCTIONS = web.AppKey("instructions", object)
 SPEECH = web.AppKey("speech", object)
+MODES_STORE = web.AppKey("modes", object)
 
 MAX_VOICE_BYTES = 5 * 1024 * 1024
 # Что умеет записывать браузер телефона → расширение файла для Whisper
@@ -248,12 +252,47 @@ async def post_instructions(request: web.Request) -> web.Response:
     return web.json_response(await _instructions_payload(store, user.id))
 
 
+async def _mode(app: web.Application, user_id: int) -> str:
+    store: ModeStore | None = app[MODES_STORE]
+    return await store.get(user_id) if store is not None else DEFAULT_MODE
+
+
+def _text_limit(mode: str) -> int:
+    return MAX_CODE_TEXT_LENGTH if mode == CODE else MAX_TEXT_LENGTH
+
+
+async def _check_text(request: web.Request, user: WebAppUser, text: Any) -> str | web.Response:
+    """Текст сообщения или готовый ответ с ошибкой."""
+    if not isinstance(text, str) or not text.strip():
+        return _error(400, "bad_request", "Пустое сообщение.")
+    text = text.strip()
+    limit = _text_limit(await _mode(request.app, user.id))
+    if len(text) > limit:
+        return _error(400, "too_long", f"Сообщение длиннее {limit} символов — сократи его.")
+    return text
+
+
+async def post_mode(request: web.Request) -> web.Response:
+    """{"mode": "code" | "chat"} — включает и выключает режим кода (как /code в боте)."""
+    user: WebAppUser = request[_USER_KEY]
+    store: ModeStore | None = request.app[MODES_STORE]
+    if store is None:
+        return _error(503, "unavailable", "Режим кода сейчас недоступен.")
+    payload = await _read_json(request)
+    mode = payload.get("mode") if payload else None
+    if not isinstance(mode, str) or mode not in MODES:
+        return _error(400, "bad_request", "Такого режима нет.")
+    await store.set(user.id, mode)
+    return web.json_response({"mode": mode, "limits": {"max_text_length": _text_limit(mode)}})
+
+
 async def get_state(request: web.Request) -> web.Response:
     """Всё, что нужно интерфейсу при открытии: имя, история, модели, счётчики."""
     app = request.app
     user: WebAppUser = request[_USER_KEY]
     usage = app[USAGE]
     timeline = await app[MEMORY].get_timeline(user.id, TIMELINE_LIMIT)
+    mode = await _mode(app, user.id)
     return web.json_response(
         {
             "assistant": {"name": app[SETTINGS].assistant_name},
@@ -265,7 +304,9 @@ async def get_state(request: web.Request) -> web.Response:
             ],
             "providers": app[AI_CLIENT].provider_titles,
             "usage": {"used": await usage.used_today(), "limit": usage.daily_limit},
-            "limits": {"max_text_length": MAX_TEXT_LENGTH},
+            "limits": {"max_text_length": _text_limit(mode)},
+            # None — режим кода на сервере не подключён, переключатель не показывается.
+            "mode": mode if app[MODES_STORE] is not None else None,
             "voice": app[SPEECH] is not None,
             "vision": app[AI_CLIENT].has_vision,
             "preferences": (await app[PREFERENCES].get(user.id)).as_dict(),
@@ -280,14 +321,9 @@ async def get_state(request: web.Request) -> web.Response:
 async def post_chat(request: web.Request) -> web.Response:
     user: WebAppUser = request[_USER_KEY]
     payload = await _read_json(request)
-    text = payload.get("text") if payload else None
-    if not isinstance(text, str) or not text.strip():
-        return _error(400, "bad_request", "Пустое сообщение.")
-    text = text.strip()
-    if len(text) > MAX_TEXT_LENGTH:
-        return _error(
-            400, "too_long", f"Сообщение длиннее {MAX_TEXT_LENGTH} символов — сократи его."
-        )
+    text = await _check_text(request, user, payload.get("text") if payload else None)
+    if isinstance(text, web.Response):
+        return text
     return await _answer(request, user, text, payload.get("model"))
 
 
@@ -410,14 +446,9 @@ async def post_chat_stream(request: web.Request) -> web.StreamResponse:
     app = request.app
     user: WebAppUser = request[_USER_KEY]
     payload = await _read_json(request)
-    text = payload.get("text") if payload else None
-    if not isinstance(text, str) or not text.strip():
-        return _error(400, "bad_request", "Пустое сообщение.")
-    text = text.strip()
-    if len(text) > MAX_TEXT_LENGTH:
-        return _error(
-            400, "too_long", f"Сообщение длиннее {MAX_TEXT_LENGTH} символов — сократи его."
-        )
+    text = await _check_text(request, user, payload.get("text") if payload else None)
+    if isinstance(text, web.Response):
+        return text
     if (limited := _rate_limited(app, user)) is not None:
         return limited
 
@@ -649,6 +680,7 @@ def create_web_app(
     reminders: Reminders,
     speech: SpeechToText | None = None,
     instructions: InstructionsStore | None = None,
+    modes: ModeStore | None = None,
 ) -> web.Application:
     app = web.Application(
         middlewares=[security_headers, api_guard], client_max_size=MAX_BODY_BYTES
@@ -664,6 +696,7 @@ def create_web_app(
     app[REMINDERS] = reminders
     app[SPEECH] = speech
     app[INSTRUCTIONS] = instructions
+    app[MODES_STORE] = modes
 
     app.router.add_get("/", index)
     app.router.add_get("/healthz", health)
@@ -673,6 +706,7 @@ def create_web_app(
     app.router.add_post("/api/clear", post_clear)
     app.router.add_post("/api/preferences", post_preferences)
     app.router.add_post("/api/instructions", post_instructions)
+    app.router.add_post("/api/mode", post_mode)
     app.router.add_post("/api/memory", post_memory)
     app.router.add_post("/api/memory/add", post_memory_add)
     app.router.add_post("/api/memory/delete", post_memory_delete)

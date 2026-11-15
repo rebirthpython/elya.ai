@@ -5,7 +5,7 @@ from __future__ import annotations
 import html
 import re
 
-_FENCE_RE = re.compile(r"```(?:[\w+#.-]*\n)?(.*?)```", re.DOTALL)
+_FENCE_RE = re.compile(r"```(?:([\w+#.-]*)\n)?(.*?)```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 _LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)\"<>]+)\)")
 _HEADER_RE = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
@@ -22,6 +22,14 @@ def _escape(text: str) -> str:
     return html.escape(text, quote=False)
 
 
+def _code_block(language: str | None, code: str) -> str:
+    """Блок кода; с языком Telegram подсвечивает синтаксис и подписывает блок."""
+    body = _escape(code.strip("\n"))
+    if language:
+        return f'<pre><code class="language-{_escape(language.lower())}">{body}</code></pre>'
+    return f"<pre>{body}</pre>"
+
+
 def markdown_to_html(text: str) -> str:
     """Поддерживает ```код```, `код`, **жирный**, *курсив*, ~~зачёркнутый~~,
     заголовки, списки и ссылки. Всё остальное экранируется."""
@@ -32,7 +40,7 @@ def markdown_to_html(text: str) -> str:
         return f"\x00{len(stash) - 1}\x00"
 
     text = text.replace("\x00", "")
-    text = _FENCE_RE.sub(lambda m: keep(f"<pre>{_escape(m.group(1).strip(chr(10)))}</pre>"), text)
+    text = _FENCE_RE.sub(lambda m: keep(_code_block(m.group(1), m.group(2))), text)
     text = _INLINE_CODE_RE.sub(lambda m: keep(f"<code>{_escape(m.group(1))}</code>"), text)
     text = _escape(text)
     text = _LINK_RE.sub(lambda m: keep(f'<a href="{m.group(2)}">{m.group(1)}</a>'), text)
