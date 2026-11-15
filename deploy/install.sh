@@ -67,6 +67,7 @@ if [[ ! -f .env ]]; then
     cp .env.example .env
     chmod 600 .env
     die "создан .env из шаблона. Заполни в нём BOT_TOKEN, ALLOWED_USER_IDS, GEMINI_API_KEY" \
+        "(и ключи других бесплатных провайдеров — чем больше, тем лучше)" \
         "и запусти установку ещё раз"
 fi
 "$VENV_DIR/bin/python" - <<'PY' || die "исправь .env и запусти установку ещё раз"

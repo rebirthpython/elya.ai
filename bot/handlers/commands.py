@@ -1,4 +1,4 @@
-"""Команды: /start, /help, /code, /clear, /cancel и неизвестные команды."""
+"""Команды: /start, /help, /code, /models, /clear, /cancel и неизвестные команды."""
 
 from __future__ import annotations
 
@@ -132,6 +132,7 @@ async def cmd_help(
         "/search — найти в интернете и ответить со ссылками на источники\n"
         "/start — приветствие\n"
         "/help — эта справка\n"
+        "/models — какие нейросети подключены\n"
         "/reminders — мои напоминания (ставятся фразой «напомни завтра в 9 …»)\n"
         "/timezone — часовой пояс для напоминаний\n"
         "/instructions — твои инструкции для меня (как в ChatGPT)\n"
@@ -145,6 +146,47 @@ async def cmd_help(
         "<i>Скоро: долговременная память, настройки стиля, напоминания, голосовые и фото.</i>",
         parse_mode=ParseMode.HTML,
     )
+
+
+# Telegram принимает до 4096 символов в сообщении; оставляем запас на разметку.
+_MODELS_CHUNK = 3800
+
+
+def _models_blocks(ai_client: AIClient) -> list[str]:
+    total = len(ai_client.available_models)
+    providers = ai_client.providers
+    blocks = [
+        f"🧠 <b>Подключённые нейросети:</b> {total} у {len(providers)} провайдеров.\n"
+        "Порядок — это приоритет: если модель недоступна или упёрлась в лимит, "
+        "отвечает следующая. 🖼 — понимает фото, ⏸ — временно пропускается после ошибки."
+    ]
+    for provider in providers:
+        provider_paused = ai_client.is_paused(provider.name)
+        lines = [f"<b>{escape(provider.title)}</b>" + (" ⏸" if provider_paused else "")]
+        for model in provider.models:
+            paused = not provider_paused and ai_client.is_paused(provider.name, model)
+            vision = " 🖼" if model in provider.vision_models else ""
+            lines.append(f"{'⏸' if paused else '•'} <code>{escape(model)}</code>{vision}")
+        photo_only = [m for m in provider.vision_models if m not in provider.models]
+        if photo_only:
+            lines.append("🖼 для фото: " + ", ".join(f"<code>{escape(m)}</code>" for m in photo_only))
+        blocks.append("\n".join(lines))
+    blocks.append(
+        "<i>Чтобы подключить ещё, впиши бесплатный ключ провайдера в .env "
+        "и перезапусти бота — список с ссылками есть в .env.example.</i>"
+    )
+    return blocks
+
+
+async def cmd_models(message: Message, ai_client: AIClient) -> None:
+    chunks: list[str] = []
+    for block in _models_blocks(ai_client):
+        if chunks and len(chunks[-1]) + len(block) + 2 <= _MODELS_CHUNK:
+            chunks[-1] += "\n\n" + block
+        else:
+            chunks.append(block)
+    for chunk in chunks:
+        await message.answer(chunk, parse_mode=ParseMode.HTML)
 
 
 _MEMORY_OFF = (
@@ -393,6 +435,7 @@ def create_router() -> Router:
     router.message.register(cmd_start, CommandStart())
     router.message.register(cmd_help, Command("help"))
     router.message.register(cmd_code, Command("code"))
+    router.message.register(cmd_models, Command("models"))
     router.message.register(cmd_instructions, Command("instructions"))
     router.message.register(cmd_memory, Command("memory"))
     router.message.register(cmd_forget, Command("forget"))

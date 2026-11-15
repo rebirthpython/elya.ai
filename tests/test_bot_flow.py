@@ -151,6 +151,21 @@ async def test_start_shows_greeting_and_privacy(env):
     assert "Привет, Аня!" in text and "Эля" in text and "Echo AI" in text
 
 
+async def test_models_command_lists_connected_models(env):
+    dp = env["make"]()
+    await dp.feed_update(env["bot"], _message_update("/models"))
+    text = env["session"].sent_texts()[0]
+    assert "1 у 1 провайдеров" in text
+    assert "<b>Echo AI</b>" in text and "<code>echo-1</code>" in text
+    assert env["provider"].received == []  # список не тратит запросы к ИИ
+
+
+async def test_models_command_is_blocked_for_strangers(env):
+    dp = env["make"]()
+    await dp.feed_update(env["bot"], _message_update("/models", user_id=STRANGER_ID))
+    assert env["session"].requests == []
+
+
 async def test_start_has_no_app_button_when_mini_app_is_off(env):
     dp = env["make"]()
     await dp.feed_update(env["bot"], _message_update("/start"))

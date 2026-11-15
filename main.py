@@ -64,6 +64,7 @@ BOT_COMMANDS = [
     BotCommand(command="draw", description="Нарисовать картинку"),
     BotCommand(command="search", description="Найти в интернете со ссылками на источники"),
     BotCommand(command="help", description="Что я умею"),
+    BotCommand(command="models", description="Подключённые нейросети"),
     BotCommand(command="reminders", description="Мои напоминания"),
     BotCommand(command="timezone", description="Часовой пояс для напоминаний"),
     BotCommand(command="instructions", description="Мои инструкции для Эли"),
@@ -327,6 +328,7 @@ async def run(settings: Settings) -> None:
             await asyncio.gather(scheduler_task, return_exceptions=True)
         if web_runner is not None:
             await web_runner.cleanup()
+        await ai_client.aclose()
         await http_client.aclose()
         await bot.session.close()
         await engine.dispose()
