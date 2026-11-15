@@ -39,6 +39,13 @@
     attachment: $('attachment'),
     attachmentImg: $('attachment-img'),
     attachmentRemove: $('attachment-remove'),
+    attachmentFile: $('attachment-file'),
+    attachmentIcon: $('attachment-icon'),
+    attachmentName: $('attachment-name'),
+    attachmentSize: $('attachment-size'),
+    videoBar: $('video-bar'),
+    videoBarText: $('video-bar-text'),
+    videoDone: $('video-done'),
     mic: $('mic'),
     recorder: $('recorder'),
     recCancel: $('rec-cancel'),
@@ -142,6 +149,8 @@
     voice: false,
     vision: false,
     attachment: null,
+    // Монтаж видео: available — есть ffmpeg на сервере; session — идёт монтаж (общий с чатом бота).
+    video: { available: false, uploadLimitMb: 100, session: null, working: false },
     recording: null,
     transcribing: false,
     reminders: { timezone: null, items: [], max: 50, max_text: 300 },
@@ -399,7 +408,114 @@
     },
     reminderAdd: (text, when, repeat) => request('api/reminders/add', { text, when, repeat }),
     reminderDelete: (id) => request('api/reminders/delete', { id }),
+    videoStart: () => request('api/video/start', {}),
+    videoUpload: (file, onProgress) => uploadFile('api/video/upload', file, onProgress),
+    videoEdit: (text, onProgress) => streamEvents('api/video/edit', { text }, onProgress),
+    videoAction(action, value, onProgress) {
+      if (action === 'done') return request('api/video/action', { action });
+      return streamEvents('api/video/action', { action, value }, onProgress);
+    },
+    async videoResult(name) {
+      let response;
+      try {
+        response = await fetch('api/video/result/' + encodeURIComponent(name), {
+          headers: { Authorization: 'tma ' + tg.initData },
+        });
+      } catch (error) {
+        throw new ApiError('network', 'Нет связи с сервером. Видео есть в чате с ботом.');
+      }
+      if (!response.ok) throw new ApiError('http_' + response.status, 'Этого варианта уже нет — он в чате с ботом.', response.status);
+      return response.blob();
+    },
   };
+
+  /* Ошибка из ответа сервера (JSON с полем error) или по статусу. */
+  async function responseError(response) {
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (error) { /* не JSON */ }
+    const info = (data && data.error) || {};
+    return new ApiError(info.code || 'http_' + response.status,
+      info.message || 'Сервер ответил ошибкой. Попробуй ещё раз чуть позже.', response.status);
+  }
+
+  /* Долгая операция с ходом работы построчно (NDJSON): progress … ping … done.
+     onProgress получает текст этапа; возвращается событие done. */
+  async function streamEvents(path, body, onProgress) {
+    let response;
+    try {
+      response = await fetch(path, {
+        method: 'POST',
+        headers: { Authorization: 'tma ' + tg.initData, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      throw new ApiError('network', 'Нет связи с сервером. Проверь интернет и попробуй ещё раз.');
+    }
+    if (!response.ok || !response.body || !window.TextDecoder) throw await responseError(response);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let result = null;
+    const handle = (line) => {
+      if (!line.trim()) return;
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch (error) {
+        return;
+      }
+      if (event.type === 'progress' && event.text) onProgress(event.text);
+      else if (event.type === 'done') result = event;
+    };
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let newline;
+        while ((newline = buffer.indexOf('\n')) !== -1) {
+          handle(buffer.slice(0, newline));
+          buffer = buffer.slice(newline + 1);
+        }
+      }
+      handle(buffer + decoder.decode());
+    } catch (error) {
+      throw new ApiError('network', 'Связь прервалась. Монтаж продолжится — готовое видео придёт в чат с ботом.');
+    }
+    if (!result) throw new ApiError('network', 'Связь прервалась. Монтаж продолжится — готовое видео придёт в чат с ботом.');
+    return result;
+  }
+
+  /* Загрузка файла с процентами (у fetch их нет). */
+  function uploadFile(path, file, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const form = new FormData();
+      form.append('file', file, file.name || 'video.mp4');
+      xhr.open('POST', path);
+      xhr.setRequestHeader('Authorization', 'tma ' + tg.initData);
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)));
+      };
+      xhr.onerror = () => reject(new ApiError('network', 'Не получилось загрузить файл: нет связи. Попробуй ещё раз.'));
+      xhr.onload = () => {
+        let data = null;
+        try {
+          data = JSON.parse(xhr.responseText);
+        } catch (error) { /* не JSON */ }
+        if (xhr.status >= 200 && xhr.status < 300 && data) {
+          resolve(data);
+          return;
+        }
+        const info = (data && data.error) || {};
+        reject(new ApiError(info.code || 'http_' + xhr.status,
+          info.message || 'Сервер не принял файл. Попробуй ещё раз.', xhr.status));
+      };
+      xhr.send(form);
+    });
+  }
 
   /* Демо-режим: тот же интерфейс, но без сервера и настоящей модели. */
   const demo = (function () {
@@ -429,6 +545,54 @@
     let reminderId = 0;
     const remindersView = () => JSON.parse(JSON.stringify(reminders));
     const memoryView = () => JSON.parse(JSON.stringify(memory));
+    // Монтаж в демо: настоящего ffmpeg нет, видео не загружается, обложка рисуется на холсте.
+    let video = null;
+    const videoView = () => {
+      if (!video) return null;
+      const actions = [
+        { action: 'quick', value: 'pauses', label: video.flags.pauses ? '🗣 Вернуть паузы' : '🤐 Убрать паузы' },
+        { action: 'quick', value: 'subs', label: video.flags.subs ? '💬 Без субтитров' : '💬 Субтитры' },
+        { action: 'quick', value: 'vertical', label: video.flags.vertical ? '🖥 Исходный формат' : '📱 Вертикально 9:16' },
+        { action: 'quick', value: 'circle', label: '⭕ Кружочек' },
+      ];
+      if (video.history.length > 1) actions.push({ action: 'undo', value: '', label: '↩️ Отменить' });
+      return { clips: video.clips.slice(), music: null, has_result: video.rendered, busy: false, actions };
+    };
+    const demoPanel = () => '📥 **Клипы**\n' + video.clips.map((clip, i) => (i + 1) + ') ' + clip.label).join('\n') +
+      '\n\nНажми кнопку или напиши своими словами — например, _«обрежь первые 5 секунд»_ или _«сделай вертикально и добавь субтитры»_.';
+    function demoPoster(vertical) {
+      const canvas = document.createElement('canvas');
+      canvas.width = vertical ? 270 : 480;
+      canvas.height = vertical ? 480 : 270;
+      const ctx = canvas.getContext('2d');
+      const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+      gradient.addColorStop(0, '#ff8f70');
+      gradient.addColorStop(0.5, '#ff5f9e');
+      gradient.addColorStop(1, '#9b6bff');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      ctx.font = 'bold 26px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Демо-видео', canvas.width / 2, canvas.height / 2);
+      return canvas.toDataURL('image/jpeg', 0.8);
+    }
+    async function demoRender(lines, onProgress) {
+      const steps = ['🤔 Думаю, как смонтировать…', '🎞 Готовлю фрагменты: 1 из 3', '🎞 Готовлю фрагменты: 3 из 3', '🎬 Собираю видео…'];
+      for (const step of steps) {
+        onProgress(step);
+        await sleep(650);
+      }
+      video.history.push(Object.assign({}, video.flags));
+      video.rendered = true;
+      const text = '🎬 **Готово** · 0:23 · ' + (video.flags.vertical ? '720×1280' : '1280×720') + '\n\n' + lines.join('\n') +
+        '\n\nФайл — в чате с ботом. Что поправить? Напиши, например, «ускорь в 1,5 раза».';
+      return {
+        outcome: { text, error: false, rendered: true, kind: 'video', duration: 23.4, width: 720, height: 1280,
+          result: 'result-demo.mp4', poster: demoPoster(video.flags.vertical) },
+        session: videoView(),
+      };
+    }
 
     return {
       async state() {
@@ -452,6 +616,7 @@
           reminders: remindersView(),
           voice: true,
           vision: true,
+          video: { available: true, upload_limit_mb: 100, session: videoView() },
           preference_options: {
             style: [
               { id: 'friendly', title: 'Дружелюбный', description: 'Тепло, с лёгким юмором' },
@@ -513,6 +678,59 @@
       async voice() {
         await sleep(700);
         return { text: 'Привет! Это голосовое в демо-режиме' };
+      },
+      async videoStart() {
+        await sleep(250);
+        if (video) return { message: demoPanel(), session: videoView() };
+        video = { clips: [], flags: { pauses: false, subs: false, vertical: false }, history: [], rendered: false };
+        return {
+          message: '🎬 **Монтаж видео**\n\nПрикрепи видео скрепкой 📎 и напиши, что сделать:\n- _обрежь первые 5 секунд и ускорь в 1,5 раза_\n- _убери паузы и добавь субтитры_\n- _сделай вертикально для Reels и подпиши «Лето 2026»_',
+          session: videoView(),
+        };
+      },
+      async videoUpload(file, onProgress) {
+        for (let pct = 12; pct < 100; pct += 29) {
+          onProgress(pct);
+          await sleep(220);
+        }
+        if (!video) video = { clips: [], flags: { pauses: false, subs: false, vertical: false }, history: [], rendered: false };
+        video.clips.push({ duration: 14.2, label: '0:14, вертикальное' });
+        return { message: demoPanel(), session: videoView() };
+      },
+      async videoEdit(text, onProgress) {
+        used += 1;
+        const lines = [];
+        if (/ускор/i.test(text)) lines.push('✂️ Фрагмент: целиком ×1.5');
+        if (/обреж/i.test(text)) lines.push('✂️ Фрагмент: 0:05–0:14');
+        if (/вертик|рилс|reels/i.test(text)) {
+          video.flags.vertical = true;
+          lines.push('📐 Формат вертикальный 9:16, размытый фон');
+        }
+        if (/субтитр/i.test(text)) {
+          video.flags.subs = true;
+          lines.push('💬 Субтитры из речи');
+        }
+        if (!lines.length) lines.push('🎨 Фильтр: сочные цвета');
+        return demoRender(lines, onProgress);
+      },
+      async videoAction(action, value, onProgress) {
+        if (action === 'done') {
+          await sleep(200);
+          video = null;
+          return { message: '✅ Монтаж закончен, файлы удалила. Захочешь ещё — просто пришли видео 🎬', session: null };
+        }
+        if (action === 'undo') {
+          video.flags = video.history.length > 1 ? video.history[video.history.length - 2] : { pauses: false, subs: false, vertical: false };
+          video.history.pop();
+          return demoRender(['↩️ Вернула прошлый вариант'], onProgress);
+        }
+        const names = { pauses: '🤐 Паузы вырезаны (−0:04)', subs: '💬 Субтитры из речи', vertical: '📐 Формат вертикальный 9:16, размытый фон', circle: '⭕ Кружок' };
+        if (value in video.flags) video.flags[value] = !video.flags[value];
+        return demoRender([names[value] || '✨ Готово'], onProgress);
+      },
+      async videoResult() {
+        await sleep(200);
+        throw new ApiError('demo', 'В демо-режиме видео не настоящее — в Telegram здесь включится плеер.');
       },
       async setTimezone(tz) {
         reminders.timezone = tz;
@@ -684,7 +902,7 @@
   function setStatus(kind) {
     const labels = {
       online: state.mode === 'code' ? 'режим кода' : 'на связи',
-      typing: state.mode === 'code' ? 'пишет код…' : 'печатает…',
+      typing: state.video.working ? 'монтирую…' : state.mode === 'code' ? 'пишет код…' : 'печатает…',
       offline: 'нет связи',
     };
     if (dom.status.dataset.state !== kind) {
@@ -782,6 +1000,9 @@
       }
       meta.append(copyChip(message.content, 'Копировать'));
       if (!(options && options.reveal)) bubble.append(window.ElyaMarkdown.render(message.content));
+    } else if (options && options.file) {
+      bubble.append(el('span', 'bubble__file', options.file.icon + ' ' + options.file.name));
+      if (message.content) bubble.append(el('span', 'bubble__caption', message.content));
     } else if (options && options.image) {
       const photo = el('img', 'bubble__photo');
       photo.src = options.image;
@@ -1037,7 +1258,7 @@
     const length = dom.input.value.length;
     const empty = !dom.input.value.trim() && !state.attachment;
     dom.send.disabled = state.recording ? false : state.busy || state.transcribing || empty;
-    dom.composerBox.classList.toggle('can-attach', state.vision);
+    dom.composerBox.classList.toggle('can-attach', state.vision || state.video.available);
     dom.attach.disabled = state.busy;
     dom.composerBox.classList.toggle(
       'has-mic',
@@ -1105,6 +1326,19 @@
 
   async function send(rawText, failedItem, origin, attachment) {
     const text = String(rawText).trim();
+    if (!failedItem && !attachment && !state.busy && text) {
+      // /video и всё, что пишут во время монтажа, — монтажёру, а не в обычный чат.
+      const command = text.toLowerCase();
+      if (/^\/video(@\w+)?(\s|$)/.test(command)) {
+        startVideo();
+        return;
+      }
+      if (state.video.session) {
+        if (/^\/(cancel|done)(@\w+)?$/.test(command)) finishVideo();
+        else sendVideo(text, null);
+        return;
+      }
+    }
     if ((!text && !attachment) || state.busy) return;
 
     if (state.finishReveal) state.finishReveal();
@@ -1220,8 +1454,10 @@
       return;
     }
     clearAttachment(true);
-    state.attachment = { blob, url: URL.createObjectURL(blob) };
+    state.attachment = { kind: 'photo', blob, url: URL.createObjectURL(blob) };
     dom.attachmentImg.src = state.attachment.url;
+    dom.attachmentImg.hidden = false;
+    dom.attachmentFile.hidden = true;
     dom.attachment.classList.remove('is-leaving');
     dom.attachment.hidden = false;
     dom.input.placeholder = 'Подпись или вопрос к фото…';
@@ -1235,7 +1471,7 @@
     const current = state.attachment;
     state.attachment = null;
     dom.input.placeholder = inputPlaceholder();
-    if (current && !keepUrl) URL.revokeObjectURL(current.url);
+    if (current && current.url && !keepUrl) URL.revokeObjectURL(current.url);
     if (dom.attachment.hidden) return updateComposer();
     if (instant || reducedMotion) {
       dom.attachment.hidden = true;
@@ -1247,6 +1483,271 @@
       }, 220);
     }
     updateComposer();
+  }
+
+  /* ---------- Монтаж видео ---------- */
+
+  function plural(n, one, few, many) {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return one;
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+    return many;
+  }
+
+  function formatSize(bytes) {
+    const mb = bytes / 1024 / 1024;
+    if (mb >= 1) return (mb >= 10 ? Math.round(mb) : mb.toFixed(1).replace('.', ',')) + ' МБ';
+    return Math.max(1, Math.round(bytes / 1024)) + ' КБ';
+  }
+
+  function applyVideo(info) {
+    const data = info || {};
+    state.video.available = Boolean(data.available);
+    if (data.upload_limit_mb) state.video.uploadLimitMb = data.upload_limit_mb;
+    setVideoSession(state.video.available ? data.session : null);
+  }
+
+  function setVideoSession(session) {
+    state.video.session = session || null;
+    renderVideoBar();
+  }
+
+  /* Плашка над полем ввода, пока идёт монтаж: сколько клипов и кнопка «Готово». */
+  function renderVideoBar() {
+    const session = state.video.session;
+    dom.videoBar.hidden = !session;
+    if (session) {
+      const count = session.clips.length;
+      let text = 'Монтаж';
+      text += count ? ' · ' + count + ' ' + plural(count, 'клип', 'клипа', 'клипов') : ' · жду видео';
+      if (session.music) text += ' · 🎵';
+      dom.videoBarText.textContent = text;
+    }
+    const accept = [];
+    if (state.vision) accept.push('image/*');
+    if (state.video.available) accept.push('video/*', 'audio/*');
+    dom.fileInput.accept = accept.join(',') || 'image/*';
+    if (!state.attachment) dom.input.placeholder = inputPlaceholder();
+    updateComposer();
+  }
+
+  function pickFile(file) {
+    if (!file) return;
+    if (/^(video|audio)\//.test(file.type)) pickMedia(file);
+    else pickPhoto(file);
+  }
+
+  function pickMedia(file) {
+    if (!state.video.available) {
+      showToast('Монтаж видео сейчас недоступен: на сервере нет ffmpeg.');
+      return;
+    }
+    if (file.size > state.video.uploadLimitMb * 1024 * 1024) {
+      showToast('Файл больше ' + state.video.uploadLimitMb + ' МБ — выбери покороче.');
+      return;
+    }
+    const music = /^audio\//.test(file.type);
+    clearAttachment(true);
+    state.attachment = { kind: music ? 'music' : 'video', file, name: file.name || (music ? 'Музыка' : 'Видео') };
+    dom.attachmentImg.hidden = true;
+    dom.attachmentFile.hidden = false;
+    dom.attachmentIcon.textContent = music ? '🎵' : '🎬';
+    dom.attachmentName.textContent = state.attachment.name;
+    dom.attachmentSize.textContent = formatSize(file.size);
+    dom.attachment.classList.remove('is-leaving');
+    dom.attachment.hidden = false;
+    dom.input.placeholder = music ? 'Что сделать с музыкой? Можно не писать' : 'Что сделать с видео? Можно не писать';
+    haptic('impact', 'light');
+    updateComposer();
+    if (finePointer) dom.input.focus();
+  }
+
+  /* Пузырь Эли, в котором виден ход монтажа; потом в нём же результат. */
+  function addVideoBubble(text) {
+    addDay(nowTs(), true);
+    const root = el('article', 'msg msg--assistant msg--new msg--video');
+    const bubble = el('div', 'bubble');
+    const status = el('p', 'video-status');
+    const label = el('span', 'video-status__text', text);
+    status.append(el('span', 'video-status__spinner'), label);
+    bubble.append(status);
+    root.append(bubble);
+    dom.messages.append(root);
+    scrollToBottom(true);
+    return {
+      root,
+      bubble,
+      set(next) {
+        label.textContent = next;
+        if (state.stick && !userIsScrolling()) scrollToBottom(false);
+      },
+    };
+  }
+
+  function videoPreview(outcome) {
+    const audio = outcome.kind === 'audio';
+    const box = el('button', 'video-preview' + (audio ? ' video-preview--audio' : '') +
+      (outcome.kind === 'video_note' ? ' video-preview--circle' : ''));
+    box.type = 'button';
+    box.setAttribute('aria-label', audio ? 'Послушать' : 'Посмотреть видео');
+    if (outcome.poster) {
+      const poster = el('img', 'video-preview__poster');
+      poster.src = outcome.poster;
+      poster.alt = '';
+      box.append(poster);
+    }
+    if (!audio && outcome.width && outcome.height) {
+      box.style.aspectRatio = outcome.width + ' / ' + outcome.height;
+      if (outcome.height > outcome.width * 1.1) box.classList.add('video-preview--tall');
+    }
+    const play = el('span', 'video-preview__play');
+    play.append(icon('i-play'));
+    box.append(play);
+    if (audio) box.append(el('span', 'video-preview__label', 'Послушать'));
+    box.addEventListener('click', () => playResult(box, outcome));
+    return box;
+  }
+
+  async function playResult(box, outcome) {
+    if (box.classList.contains('is-loading')) return;
+    box.classList.add('is-loading');
+    try {
+      const blob = await backend.videoResult(outcome.result);
+      const player = el(outcome.kind === 'audio' ? 'audio' : 'video', 'video-player');
+      player.src = URL.createObjectURL(blob);
+      player.controls = true;
+      player.autoplay = true;
+      player.setAttribute('playsinline', '');
+      if (outcome.kind === 'animation') {
+        player.loop = true;
+        player.muted = true;
+      }
+      if (box.style.aspectRatio) player.style.aspectRatio = box.style.aspectRatio;
+      ['video-preview--tall', 'video-preview--circle'].forEach((name) => {
+        if (box.classList.contains(name)) player.classList.add(name);
+      });
+      box.replaceWith(player);
+    } catch (error) {
+      box.classList.remove('is-loading');
+      showToast(error.message);
+    }
+  }
+
+  function hideVideoActions() {
+    dom.messages.querySelectorAll('.video-actions').forEach((node) => node.remove());
+  }
+
+  /* Кнопки быстрых правок — только под последним ответом, как в чате с ботом. */
+  function showVideoActions(root) {
+    hideVideoActions();
+    const session = state.video.session;
+    if (!session || !session.actions || !session.actions.length || !session.clips.length) return;
+    const row = el('div', 'video-actions');
+    session.actions.forEach((item) => {
+      const button = el('button', 'video-action ripple', item.label);
+      button.type = 'button';
+      button.dataset.videoAction = item.action;
+      button.dataset.value = item.value;
+      row.append(button);
+    });
+    const meta = root.querySelector('.msg__meta');
+    if (meta) root.insertBefore(row, meta);
+    else root.append(row);
+  }
+
+  function finishVideoBubble(view, text, outcome) {
+    view.bubble.replaceChildren(window.ElyaMarkdown.render(text));
+    if (outcome && outcome.error) view.root.classList.add('msg--video-error');
+    if (outcome && outcome.result) view.bubble.append(videoPreview(outcome));
+    const meta = el('div', 'msg__meta');
+    const ts = nowTs();
+    const time = el('time', '', timeFormat.format(new Date(ts * 1000)));
+    time.dateTime = new Date(ts * 1000).toISOString();
+    meta.append(time, copyChip(text, 'Копировать'));
+    view.root.append(meta);
+    showVideoActions(view.root);
+    if (state.stick) scrollToBottom(true);
+  }
+
+  /* Общая обвязка: сообщение пользователя, пузырь с ходом работы, результат или ошибка с повтором. */
+  async function videoOp(userText, run, options) {
+    if (state.busy) return;
+    const opts = options || {};
+    if (state.finishReveal) state.finishReveal();
+    clearNotice();
+    state.video.working = true;
+    setBusy(true);
+    haptic('impact', 'light');
+    let item = opts.item || null;
+    if (item) item.root.classList.remove('msg--failed');
+    else if (userText || opts.file) {
+      item = addMessage({ role: 'user', content: userText, ts: nowTs() }, { fresh: true, file: opts.file || null });
+    }
+    updateWelcome();
+    hideVideoActions();
+    const view = addVideoBubble(opts.first || '⏳ Монтирую…');
+    try {
+      const data = await run(view);
+      if ('session' in data) setVideoSession(data.session);
+      finishVideoBubble(view, data.outcome ? data.outcome.text : data.message, data.outcome);
+      haptic('impact', 'soft');
+      if (data.outcome && data.outcome.error) haptic('notify', 'warning');
+    } catch (error) {
+      view.root.remove();
+      haptic('notify', 'error');
+      if (error.status === 401 || error.status === 403) {
+        state.video.working = false;
+        setBusy(false);
+        showLoadError(error, boot);
+        return;
+      }
+      if (error.code === 'no_session') setVideoSession(null);
+      if (error.code === 'network') setStatus('offline');
+      if (item) item.root.classList.add('msg--failed');
+      showNotice(error.message, () => videoOp(userText, run, Object.assign({}, opts, { item })));
+      scrollToBottom(true);
+    } finally {
+      state.video.working = false;
+      if (state.busy) setBusy(false);
+    }
+  }
+
+  function sendVideo(text, attachment) {
+    let uploaded = !attachment;
+    const music = attachment && attachment.kind === 'music';
+    const what = music ? 'музыку' : 'видео';
+    const run = async (view) => {
+      if (!uploaded) {
+        view.set('⏳ Загружаю ' + what + '…');
+        const data = await backend.videoUpload(attachment.file, (pct) => view.set('⏳ Загружаю ' + what + ': ' + pct + '%'));
+        uploaded = true; // при повторе после ошибки файл заново не грузим
+        setVideoSession(data.session);
+        if (!text) return data;
+      }
+      view.set('🤔 Думаю, как смонтировать…');
+      return backend.videoEdit(text, (step) => view.set(step));
+    };
+    videoOp(text, run, {
+      file: attachment ? { icon: music ? '🎵' : '🎬', name: attachment.name } : null,
+      first: attachment ? '⏳ Загружаю ' + what + '…' : '🤔 Думаю, как смонтировать…',
+    });
+  }
+
+  function startVideo() {
+    videoOp('/video', () => backend.videoStart(), { first: '🎬 Готовлю монтаж…' });
+  }
+
+  function finishVideo() {
+    if (!state.video.session || state.busy) return;
+    videoOp('Готово', () => backend.videoAction('done'), { first: 'Заканчиваю монтаж…' });
+  }
+
+  function runVideoAction(action, value, label) {
+    if (state.busy) return;
+    videoOp(label, (view) => backend.videoAction(action, value, (step) => view.set(step)), {
+      first: action === 'undo' ? '↩️ Возвращаю прошлый вариант…' : '⏳ Монтирую…',
+    });
   }
 
   /* ---------- Голосовой ввод ---------- */
@@ -1364,7 +1865,8 @@
       dom.input.value = '';
       autosize();
       clearAttachment(false, true);
-      send(text, null, null, attachment);
+      if (attachment.kind === 'photo') send(text, null, null, attachment);
+      else sendVideo(text.trim(), attachment);
       return;
     }
     if (!text.trim() || state.busy) return;
@@ -1515,6 +2017,7 @@
   /* ---------- Режим кода ---------- */
 
   function inputPlaceholder() {
+    if (state.video.session) return 'Что сделать с видео?';
     return state.mode === 'code' ? 'Опиши задачу или вставь код…' : 'Напиши сообщение…';
   }
 
@@ -2205,6 +2708,7 @@
     if (data.reminders) state.reminders = Object.assign({}, state.reminders, data.reminders);
     state.instructions = data.instructions || null;
     state.mode = data.mode === undefined ? null : data.mode;
+    applyVideo(data.video);
     renderInstructionsSummary();
     if (data.preference_options) state.preferenceOptions = data.preference_options;
     state.syncedAt = Date.now();
@@ -2272,6 +2776,8 @@
     // Режим могли переключить в чате с ботом командой /code.
     if (data.mode !== undefined && data.mode !== state.mode && dom.sheet.hidden) takeMode(data);
     if (data.memory && dom.sheet.hidden) state.memory = Object.assign({}, state.memory, data.memory);
+    // Монтаж могли начать или закончить в чате с ботом.
+    if (data.video) applyVideo(data.video);
     if (data.reminders && dom.sheet.hidden) {
       state.reminders = Object.assign({}, state.reminders, data.reminders);
       updateBell();
@@ -2314,9 +2820,10 @@
     dom.attach.addEventListener('click', () => dom.fileInput.click());
     dom.fileInput.addEventListener('change', () => {
       const file = dom.fileInput.files && dom.fileInput.files[0];
-      dom.fileInput.value = ''; // чтобы то же фото можно было выбрать ещё раз
-      pickPhoto(file);
+      dom.fileInput.value = ''; // чтобы тот же файл можно было выбрать ещё раз
+      pickFile(file);
     });
+    dom.videoDone.addEventListener('click', finishVideo);
     dom.attachmentRemove.addEventListener('click', () => clearAttachment(false));
     dom.recCancel.addEventListener('click', () => stopRecording(true));
 
@@ -2326,6 +2833,11 @@
     });
 
     dom.messages.addEventListener('click', (event) => {
+      const videoAction = event.target.closest('[data-video-action]');
+      if (videoAction) {
+        runVideoAction(videoAction.dataset.videoAction, videoAction.dataset.value || '', videoAction.textContent);
+        return;
+      }
       const copy = event.target.closest('[data-copy]');
       if (copy) {
         onCopyClick(copy);

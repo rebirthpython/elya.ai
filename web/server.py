@@ -44,7 +44,17 @@ from services.reminders import (
 from services.preferences import options as preference_options
 from services.rate_limit import SlidingWindowLimiter
 from services.usage import UsageTracker
+from web import video_api
 from web.auth import InitDataError, extract_init_data, verify_init_data
+from web.common import (
+    LIMITER,
+    SETTINGS,
+    _USER_KEY,
+    _apply_headers,
+    _error,
+    _rate_limited,
+    _read_json,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +65,10 @@ MAX_CODE_TEXT_LENGTH = 16000
 MAX_BODY_BYTES = 160 * 1024
 TIMELINE_LIMIT = 100
 
-SETTINGS = web.AppKey("settings", Settings)
 CHAT = web.AppKey("chat", ChatService)
 MEMORY = web.AppKey("memory", MemoryManager)
 USAGE = web.AppKey("usage", UsageTracker)
 AI_CLIENT = web.AppKey("ai_client", AIClient)
-LIMITER = web.AppKey("limiter", SlidingWindowLimiter)
 PREFERENCES = web.AppKey("preferences", PreferencesStore)
 LONG_MEMORY = web.AppKey("long_memory", LongTermMemory)
 REMINDERS = web.AppKey("reminders", Reminders)
@@ -80,20 +88,6 @@ AUDIO_TYPES = {
     "audio/x-wav": "wav",
 }
 
-_USER_KEY = web.RequestKey("tg_user", WebAppUser)
-
-# Скрипты — только свои и SDK Telegram; ответ модели выводится как текст, но CSP
-# подстраховывает на случай ошибки в разметке.
-_CSP = (
-    "default-src 'none'; "
-    "script-src 'self' https://telegram.org; "
-    "style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data: blob:; "
-    "connect-src 'self'; "
-    "base-uri 'none'; "
-    "form-action 'none'"
-)
-
 _AI_FAILURE_TEXTS = {
     "rate_limit": (
         "Сейчас исчерпан лимит запросов к ИИ-модели: бесплатные тарифы ограничены. "
@@ -105,10 +99,6 @@ _AI_FAILURE_TEXTS = {
     ),
     "unavailable": "ИИ-сервис сейчас не отвечает. Отправь сообщение ещё раз чуть позже.",
 }
-
-
-def _error(status: int, code: str, message: str, **extra: Any) -> web.Response:
-    return web.json_response({"error": {"code": code, "message": message, **extra}}, status=status)
 
 
 def _timestamp(value: datetime) -> int:
@@ -124,16 +114,6 @@ def _serialize(message: Message) -> dict[str, Any]:
         "content": message.content,
         "ts": _timestamp(message.created_at),
     }
-
-
-def _apply_headers(request: web.Request, headers) -> None:
-    headers.setdefault("Content-Security-Policy", _CSP)
-    headers.setdefault("X-Content-Type-Options", "nosniff")
-    headers.setdefault("Referrer-Policy", "no-referrer")
-    # Интерфейс всегда перепроверяется (WebView Telegram кеширует агрессивно),
-    # ответы API не кешируются вовсе.
-    is_api = request.path.startswith("/api/")
-    headers.setdefault("Cache-Control", "no-store" if is_api else "no-cache")
 
 
 @web.middleware
@@ -179,14 +159,6 @@ async def api_guard(request: web.Request, handler) -> web.StreamResponse:
     except Exception:
         logger.exception("Unhandled error in %s %s", request.method, request.path)
         return _error(500, "internal", "Что-то пошло не так. Попробуй ещё раз.")
-
-
-async def _read_json(request: web.Request) -> dict[str, Any] | None:
-    try:
-        data = await request.json()
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
 
 
 def _resolve_model(ai_client: AIClient, model_id: Any) -> tuple[str, str] | None:
@@ -313,6 +285,7 @@ async def get_state(request: web.Request) -> web.Response:
             "instructions": await _instructions_payload(app[INSTRUCTIONS], user.id),
             "memory": await _memory_payload(app[LONG_MEMORY], user.id),
             "reminders": await _reminders_payload(app[REMINDERS], user.id),
+            "video": await video_api.state_payload(app, user.id),
             "preference_options": preference_options(),
         }
     )
@@ -368,19 +341,6 @@ async def post_photo(request: web.Request) -> web.Response:
     except ImageError:
         return _error(415, "bad_image", "Не получилось открыть картинку: нужен JPEG, PNG или WebP.")
     return await _answer(request, user, text, fields.get("model"), images=(data_url,))
-
-
-def _rate_limited(app: web.Application, user: WebAppUser) -> web.Response | None:
-    retry_after = app[LIMITER].hit(user.id)
-    if retry_after is None:
-        return None
-    seconds = max(1, int(retry_after))
-    return _error(
-        429,
-        "rate_limited",
-        f"Слишком много сообщений подряд. Подожди примерно {seconds} сек.",
-        retry_after=seconds,
-    )
 
 
 def _ai_error(exc: AIError) -> tuple[int, str, str]:
@@ -681,7 +641,12 @@ def create_web_app(
     speech: SpeechToText | None = None,
     instructions: InstructionsStore | None = None,
     modes: ModeStore | None = None,
+    *,
+    video: object | None = None,
+    bot: object | None = None,
+    fsm_storage: object | None = None,
 ) -> web.Application:
+    """video, bot и fsm_storage — для монтажа видео: сессия общая с чатом, результат уходит в чат."""
     app = web.Application(
         middlewares=[security_headers, api_guard], client_max_size=MAX_BODY_BYTES
     )
@@ -697,6 +662,9 @@ def create_web_app(
     app[SPEECH] = speech
     app[INSTRUCTIONS] = instructions
     app[MODES_STORE] = modes
+    app[video_api.VIDEO] = video
+    app[video_api.BOT] = bot
+    app[video_api.FSM_STORAGE] = fsm_storage
 
     app.router.add_get("/", index)
     app.router.add_get("/healthz", health)
@@ -715,6 +683,7 @@ def create_web_app(
     app.router.add_post("/api/reminders/delete", post_reminder_delete)
     app.router.add_post("/api/voice", post_voice)
     app.router.add_post("/api/photo", post_photo)
+    video_api.add_routes(app)
     app.router.add_static("/assets/", WEBAPP_DIR / "assets")
     return app
 

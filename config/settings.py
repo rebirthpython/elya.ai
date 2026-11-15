@@ -63,6 +63,7 @@ class Settings:
     video_max_seconds: int = 600
     video_max_side: int = 1920
     video_timeout: float = 900.0
+    video_upload_max_mb: int = 100  # из приложения можно загрузить больше, чем 20 МБ из чата
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"
 
@@ -282,6 +283,7 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         video_max_seconds=_get_int("VIDEO_MAX_SECONDS", 600, minimum=10),
         video_max_side=_load_video_max_side(),
         video_timeout=_get_float("VIDEO_TIMEOUT", 900.0, minimum=30.0, maximum=7200.0),
+        video_upload_max_mb=_get_int("VIDEO_UPLOAD_MAX_MB", 100, minimum=1),
         ffmpeg_path=_get_str("FFMPEG_PATH", "ffmpeg") or "ffmpeg",
         ffprobe_path=_get_str("FFPROBE_PATH", "ffprobe") or "ffprobe",
     )

@@ -426,6 +426,26 @@ class VideoService:
             lines=describe(plan, clips, removed_pauses=removed), notes=notes,
         )
 
+    async def poster(self, ws: Workspace, name: str, *, width: int = 480) -> bytes | None:
+        """Кадр из середины результата (JPEG) — обложка для просмотра в приложении."""
+        path = ws.path(name)
+        if not path.is_file() or path.suffix != ".mp4":
+            return None
+        try:
+            info = await self._ffmpeg.probe(path)
+            out = ws.path("poster.jpg")
+            await self._ffmpeg.run([
+                "-y", "-hide_banner", "-nostdin", "-loglevel", "error",
+                "-ss", f"{min(1.0, info.duration / 2):.2f}", "-i", name, "-frames:v", "1",
+                "-vf", f"scale='min({width},iw)':-2", "-q:v", "5", out.name,
+            ], cwd=ws.root, timeout=60)
+            return out.read_bytes()
+        except (FFmpegError, OSError) as exc:
+            logger.info("Poster failed: %s", exc)
+            return None
+        finally:
+            ws.path("poster.jpg").unlink(missing_ok=True)
+
     async def _subtitles(self, ws: Workspace, plan: EditPlan, pieces: list[Piece], canvas: tuple[int, int],
                          total: float, pieces_list: str, notes: list[str]) -> list:
         # Распознаём уже смонтированный звук: так время субтитров точно совпадает с видео.

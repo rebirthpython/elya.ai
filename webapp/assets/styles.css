@@ -3027,3 +3027,254 @@ body.is-thinking .glow--think {
     display: none;
   }
 }
+
+/* ---------- Монтаж видео ---------- */
+
+/* Плашка над полем ввода, пока идёт монтаж */
+.video-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 2px 8px;
+  padding: 6px 6px 6px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  box-shadow: var(--shadow-bubble);
+  font-size: 14px;
+  animation: attach-in 0.5s var(--spring) both;
+}
+
+.video-bar__icon {
+  font-size: 16px;
+}
+
+.video-bar__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-bar__done {
+  flex: none;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: var(--grad-ink);
+  color: #fff;
+  font-size: 13.5px;
+  font-weight: 600;
+  transition: transform 0.35s var(--spring);
+}
+
+.video-bar__done:active {
+  transform: scale(0.94);
+}
+
+/* Видео или музыка, выбранные скрепкой */
+.attachment__file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(280px, 70vw);
+  padding: 10px 16px 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+}
+
+.attachment__icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  font-size: 20px;
+}
+
+.attachment__meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.attachment__name {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment__size {
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+/* Файл в пузыре сообщения пользователя */
+.bubble__file {
+  display: block;
+  font-weight: 600;
+}
+
+.bubble__caption {
+  display: block;
+  margin-top: 4px;
+}
+
+/* Ход монтажа */
+.video-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  color: var(--text-2);
+}
+
+.video-status__text {
+  animation: fade-in 0.3s ease both;
+}
+
+.video-status__spinner {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--line-strong);
+  border-top-color: var(--rose);
+  border-radius: 50%;
+  animation: video-spin 0.8s linear infinite;
+}
+
+@keyframes video-spin {
+  to { transform: rotate(360deg); }
+}
+
+.msg--video-error .bubble {
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+}
+
+/* Результат: обложка с кнопкой воспроизведения, по нажатию — плеер */
+.video-preview,
+.video-player {
+  display: block;
+  position: relative;
+  width: 100%;
+  max-width: 300px;
+  max-height: 420px;
+  margin-top: 10px;
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--surface-2);
+}
+
+.video-preview {
+  aspect-ratio: 16 / 9;
+  transition: transform 0.35s var(--spring);
+}
+
+.video-preview:active {
+  transform: scale(0.97);
+}
+
+/* Вертикальное видео — узкой карточкой, чтобы не занимало весь экран */
+.video-preview--tall,
+.video-player.video-preview--tall {
+  max-width: 200px;
+}
+
+.video-preview--circle,
+.video-player.video-preview--circle {
+  border-radius: 50%;
+}
+
+.video-preview--audio {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  aspect-ratio: auto;
+  padding: 10px 14px;
+}
+
+.video-preview__poster {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.video-preview__play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  margin: -27px 0 0 -27px;
+  border-radius: 50%;
+  background: rgba(16, 13, 22, 0.55);
+  color: #fff;
+  font-size: 26px;
+  backdrop-filter: blur(6px);
+}
+
+.video-preview--audio .video-preview__play {
+  position: static;
+  width: 40px;
+  height: 40px;
+  margin: 0;
+  background: var(--grad-ink);
+  font-size: 20px;
+}
+
+.video-preview.is-loading .video-preview__play {
+  animation: pulse-play 1s ease-in-out infinite;
+}
+
+@keyframes pulse-play {
+  50% { transform: scale(0.85); opacity: 0.6; }
+}
+
+.video-player {
+  height: auto;
+}
+
+audio.video-player {
+  max-height: none;
+  background: none;
+}
+
+/* Быстрые правки под последним результатом */
+.video-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 2px;
+  animation: fade-in 0.35s ease both;
+}
+
+.video-action {
+  padding: 7px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13.5px;
+  transition: transform 0.35s var(--spring), background 0.2s;
+}
+
+.video-action:active {
+  transform: scale(0.95);
+  background: var(--surface-2);
+}
+
+@media (hover: hover) {
+  .video-action:hover {
+    background: var(--surface-2);
+  }
+}
