@@ -97,6 +97,8 @@ class Settings:
     code_temperature: float = 0.2
     code_history_max_chars: int = 40000
     code_max_file_chars: int = 30000
+    # GitHub: токен для репозиториев (необязательно — можно подключить командой /github).
+    github_repo_token: str = ""
     # Документы (PDF, Word, таблицы): сколько символов фрагментов добавлять к вопросу.
     documents_context_chars: int = 10000
     # Mini App (HTML5-интерфейс внутри Telegram). Пустой webapp_url — Mini App выключен.
@@ -619,6 +621,7 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         code_history_max_chars=_get_int("CODE_HISTORY_MAX_CHARS", 40000, minimum=1000),
         code_max_file_chars=_get_int("CODE_MAX_FILE_CHARS", 30000, minimum=1000),
         documents_context_chars=_get_int("DOCUMENTS_CONTEXT_CHARS", 10000, minimum=2000),
+        github_repo_token=_get_str("GITHUB_REPO_TOKEN"),
         webapp_url=_load_webapp_url(),
         webapp_host=_get_str("WEBAPP_HOST", "0.0.0.0") or "0.0.0.0",
         webapp_port=_load_webapp_port(),

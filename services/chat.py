@@ -35,6 +35,7 @@ from services.artifacts import (
     OutputFile,
     attachments_json,
     build_outputs,
+    named_files,
     wants_document,
     wants_project,
 )
@@ -88,6 +89,7 @@ class ChatService:
         search: WebSearch | None = None,
         documents: DocumentStore | None = None,
         files: FileStore | None = None,
+        github=None,
     ) -> None:
         self._settings = settings
         self._ai = ai_client
@@ -100,6 +102,7 @@ class ChatService:
         self._search = search
         self._documents = documents
         self._files = files
+        self._github = github  # services.github.GitHubService
         self._background: set[asyncio.Task] = set()
         # Сообщения одного пользователя обрабатываются строго по очереди,
         # чтобы история диалога сохранялась в правильном порядке.
@@ -113,6 +116,11 @@ class ChatService:
     def files(self) -> FileStore | None:
         """Готовые файлы к ответам (DOCX, PPTX, ZIP, HTML); None — не сохраняются."""
         return self._files
+
+    @property
+    def github(self):
+        """GitHub (services.github.GitHubService); None — выключен."""
+        return self._github
 
     @property
     def settings(self) -> Settings:
@@ -238,6 +246,12 @@ class ChatService:
             wants_doc = file is None and not images and wants_document(user_text)
             wants_zip = file is None and not images and wants_project(user_text)
             output_rules = (DOCUMENT_RULE if wants_doc else "") + (PROJECT_RULE if wants_zip else "")
+            if self._github is not None and not images:
+                # Подключённый репозиторий: модель знает его файлы и пишет код с путями.
+                try:
+                    output_rules += await asyncio.wait_for(self._github.prompt_block(user_id), 6)
+                except Exception:  # noqa: BLE001 — без GitHub ответ всё равно нужен
+                    logger.warning("GitHub context unavailable", exc_info=True)
 
             def context(rule: str = NO_INTERNET_RULE, results: str = "") -> list[ChatMessage]:
                 return build_context(
@@ -342,6 +356,9 @@ class ChatService:
             stored_files = await self._attach_files(user_id, user_text, result.text, coding)
             if stored_files:
                 result = dataclasses.replace(result, files=tuple(stored_files))
+            push = await self._remember_push(user_id, user_text, result.text)
+            if push is not None:
+                result = dataclasses.replace(result, push=push)
             await self._memory.save_exchange(
                 user_id, stored_text, result.text, chat_id=chat.id,
                 attachments=attachments_json([stored for _, stored in stored_files if stored is not None]),
@@ -369,6 +386,22 @@ class ChatService:
             stored = await self._files.save(user_id, output) if self._files is not None else None
             result.append((output, stored))
         return result
+
+    async def _remember_push(self, user_id: int, request: str, answer: str) -> int | None:
+        """Файлы с путями из ответа — для кнопки «Отправить в GitHub» (если репозиторий выбран)."""
+        if self._github is None:
+            return None
+        files = named_files(answer)
+        if not files:
+            return None
+        try:
+            status = await self._github.status(user_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("GitHub status unavailable", exc_info=True)
+            return None
+        if not status.connected or not status.repo:
+            return None
+        return self._github.remember(user_id, files, request)
 
     def _search_mode(self, text: str, images: tuple[str, ...], search: bool | None) -> str | None:
         """None — без поиска, "auto" — модель решает сама, "force" — искать обязательно."""

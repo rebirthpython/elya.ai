@@ -159,6 +159,11 @@ def _named_blocks(text: str) -> list[tuple[str, str, str]]:
     return result
 
 
+def named_files(text: str) -> list[tuple[str, str]]:
+    """(путь, код) файлов с именами из ответа — для отправки в репозиторий."""
+    return [(path, code.rstrip("\n") + "\n") for path, _, code in _named_blocks(text)]
+
+
 def _html_page(text: str) -> tuple[str, str] | None:
     """(имя, код) полной веб-страницы из ответа; None — её нет."""
     named = {code: path for path, _, code in _named_blocks(text)}

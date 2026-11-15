@@ -26,6 +26,8 @@ class CompletionResult:
     truncated: bool = False
     # Готовые файлы к ответу (services.artifacts.StoredFile) — заполняет ChatService.
     files: tuple = ()
+    # Файлы из ответа, которые можно отправить в GitHub кнопкой (id набора в GitHubService).
+    push: int | None = None
 
 
 class ProviderError(Exception):

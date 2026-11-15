@@ -23,6 +23,7 @@ from aiogram.utils.chat_action import ChatActionSender
 from ai.client import AllProvidersFailedError, DailyLimitExceededError, NoVisionModelError
 from ai.providers.base import CompletionResult
 from bot.handlers.documents import receive_document
+from bot.handlers.github import offer_push
 from bot.handlers.draw import DrawStates, draw_and_send, edit_and_send, maybe_draw, maybe_edit
 from bot.utils.live import LiveMessage
 from bot.utils.text import close_open_fence
@@ -34,6 +35,7 @@ from services.code import (
     CodeFileError,
     attachments,
     looks_like_code,
+    wants_files,
     read_code_file,
 )
 from services.artifacts import OutputFile, wants_presentation
@@ -243,9 +245,12 @@ async def handle_document(
     await send_reply(message, bot, chat_service, (message.caption or "").strip(), file=file)
 
 
-async def _send_code_files(message: Message, text: str) -> None:
-    """Длинные блоки кода из ответа — ещё и файлами: так их удобнее сохранить."""
-    for index, (name, data) in enumerate(attachments(text)):
+async def _send_code_files(message: Message, text: str, request: str = "", skip: frozenset = frozenset()) -> None:
+    """Код из ответа — ещё и файлами: длинный, подписанный именем файла или, если просили
+    «пришли файлом», весь. Так его удобнее сохранить и запустить. skip — имена файлов,
+    которые и так придут (например, страница .html)."""
+    files = [item for item in attachments(text, all_blocks=wants_files(request)) if item[0] not in skip]
+    for index, (name, data) in enumerate(files):
         try:
             await message.answer_document(
                 BufferedInputFile(data, filename=name),
@@ -370,10 +375,12 @@ async def send_reply(
         reply += "\n\n_(ответ обрезан из-за ограничения длины — напиши «продолжи»)_"
     await live.finish(reply)
     files = result.files
-    if not any(output.kind == "zip" for output, _ in files):
-        # Проект уже в архиве — по одному файлы не нужны.
-        await _send_code_files(message, result.text)
+    # Код — файлами (небольшой проект — и файлами, и архивом; большой — только архивом).
+    code_files = attachments(result.text, all_blocks=wants_files(text))
+    if not any(output.kind == "zip" for output, _ in files) or len(code_files) <= 5:
+        await _send_code_files(message, result.text, text, frozenset(output.name for output, _ in files))
     await send_output_files(message, files, chat_service.settings)
+    await offer_push(message, chat_service.github, result.push)
 
 
 async def handle_unsupported(message: Message) -> None:

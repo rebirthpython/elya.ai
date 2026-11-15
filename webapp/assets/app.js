@@ -45,6 +45,16 @@
     attachmentName: $('attachment-name'),
     attachmentSize: $('attachment-size'),
     docsBar: $('docs-bar'),
+    githubBlock: $('github-block'),
+    githubStatus: $('github-status'),
+    githubConnect: $('github-connect'),
+    githubToken: $('github-token'),
+    githubConnectBtn: $('github-connect-btn'),
+    githubRepo: $('github-repo'),
+    githubRepos: $('github-repos'),
+    githubNewName: $('github-new-name'),
+    githubCreate: $('github-create'),
+    githubDisconnect: $('github-disconnect'),
     docsList: $('docs-list'),
     videoBar: $('video-bar'),
     videoBarText: $('video-bar-text'),
@@ -218,6 +228,8 @@
     drawerAnim: null,
     drawerClosing: false,
     preview: null, // открытый предпросмотр HTML
+    github: null, // состояние GitHub; null — выключен на сервере
+    githubRepos: null,
     chat: null, // открытый чат
     chats: [],
     projects: [],
@@ -545,6 +557,7 @@
     drawAgain: (id) => request('api/draw/again', { id }),
     drawSelect: (id) => request('api/draw/select', { id }),
     fileInfo: (token) => request('api/files/info', { token }),
+    github: (body) => request('api/github', body),
   };
 
   /* Ошибка из ответа сервера (JSON с полем error) или по статусу. */
@@ -658,6 +671,7 @@
     let drawingId = 0;
     let docs = [];
     let docId = 0;
+    let github = { connected: false, login: '', repo: '', branch: '', from_env: false };
     // Чаты и проекты в демо: всё в памяти страницы.
     let projects = [
       { id: 1, name: 'Учёба', emoji: '📚', instructions: 'Объясняй понятно и по шагам, с примерами.', mode: '' },
@@ -806,6 +820,7 @@
           video: { available: true, upload_limit_mb: 100, session: videoView() },
           images: { enabled: true, edit: true, used: 0, limit: 50 },
           documents: docs.slice(),
+          github: Object.assign({}, github),
           chat: chatsView().chat,
           chats: chatsView().chats,
           projects: chatsView().projects,
@@ -956,6 +971,18 @@
         memory.facts = [];
         return memoryView();
       },
+      async github(body) {
+        await sleep(400);
+        if (body.action === 'connect') github = { connected: true, login: 'demo-user', repo: '', branch: '', from_env: false };
+        else if (body.action === 'disconnect') github = { connected: false, login: '', repo: '', branch: '', from_env: false };
+        else if (body.action === 'repos') return { repos: ['demo-user/my-telegram-bot', 'demo-user/notes'], github };
+        else if (body.action === 'use') github = Object.assign({}, github, { repo: body.repo, branch: 'main' });
+        else if (body.action === 'create') github = Object.assign({}, github, { repo: 'demo-user/' + body.name, branch: 'main' });
+        else if (body.action === 'push') {
+          return { github, pushed: { repo: github.repo || 'demo-user/my-telegram-bot', files: 3, commit_url: 'https://github.com', tree_url: 'https://github.com' } };
+        }
+        return { github: Object.assign({}, github) };
+      },
       async drawSelect(id) {
         await sleep(100);
         return { selected: id };
@@ -1004,6 +1031,9 @@
         }
         const data = await this.chat(text, model, searching);
         if (data.reply.provider === 'reminders' || data.reply.image) return data;
+        if (/бот/i.test(text) && github.repo) {
+          data.reply.push = { id: 1, files: 3, repo: github.repo };
+        }
         if (/реферат|доклад|в ворд/i.test(text)) {
           data.reply.files = [{ token: 'demo', name: 'Реферат.docx', kind: 'docx', size: 38400, preview: false }];
         } else if (/сайт|страниц|лендинг/i.test(text)) {
@@ -1398,6 +1428,7 @@
         if (!(options && options.reveal)) bubble.append(window.ElyaMarkdown.render(message.content));
       }
       if (message.files && message.files.length) root.append(fileCards(message.files));
+      if (message.push) root.append(pushButton(message.push));
     } else if (options && options.file) {
       bubble.append(el('span', 'bubble__file', options.file.icon + ' ' + options.file.name));
       if (message.content) bubble.append(el('span', 'bubble__caption', message.content));
@@ -1550,10 +1581,117 @@
       meta.insertBefore(model, copy);
     }
     live.view.end(reply.content);
+    if (reply.push) live.item.root.insertBefore(pushButton(reply.push), meta);
     if (reply.files && reply.files.length) {
       live.item.root.insertBefore(fileCards(reply.files), meta);
       if (state.stick) scrollToBottom(true);
     }
+  }
+
+  /* ---------- GitHub ---------- */
+
+  function openExternal(url) {
+    if (IN_TELEGRAM && typeof tg.openLink === 'function') tg.openLink(url);
+    else window.open(url, '_blank', 'noopener');
+  }
+
+  /* «Отправить в GitHub» под ответом с файлами. */
+  function pushButton(push) {
+    const button = el('button', 'push-btn ripple');
+    button.type = 'button';
+    const count = push.files + ' ' + plural(push.files, ['файл', 'файла', 'файлов']);
+    const label = el('span', 'push-btn__label', 'Отправить в GitHub · ' + count + (push.repo ? ' → ' + push.repo : ''));
+    button.append(el('span', 'push-btn__icon', '🐙'), label);
+    button.addEventListener('click', async () => {
+      if (button.classList.contains('is-done')) {
+        openExternal(button.dataset.url);
+        return;
+      }
+      button.disabled = true;
+      button.classList.add('is-loading');
+      try {
+        const data = await backend.github({ action: 'push', id: push.id });
+        state.github = data.github;
+        button.classList.add('is-done');
+        button.dataset.url = data.pushed.commit_url;
+        label.textContent = '✅ В ' + data.pushed.repo + ' · открыть коммит';
+        haptic('notify', 'success');
+      } catch (error) {
+        showToast(error.message);
+        haptic('notify', 'error');
+      } finally {
+        button.disabled = false;
+        button.classList.remove('is-loading');
+      }
+    });
+    return button;
+  }
+
+  function renderGitHub() {
+    const gh = state.github;
+    dom.githubBlock.hidden = gh === null;
+    if (!gh) return;
+    dom.githubConnect.hidden = gh.connected;
+    dom.githubRepo.hidden = !gh.connected;
+    dom.githubDisconnect.hidden = gh.from_env;
+    dom.githubStatus.textContent = !gh.connected ? 'Не подключён'
+      : '✅ ' + (gh.login ? gh.login : 'Подключён') + (gh.repo ? ' · ' + gh.repo + ' (' + (gh.branch || 'main') + ')' : ' · выбери репозиторий');
+    const repos = state.githubRepos || (gh.repo ? [gh.repo] : []);
+    dom.githubRepos.replaceChildren(...repos.map((name) => {
+      const button = el('button', 'repo-chip ripple' + (name === gh.repo ? ' is-on' : ''), name);
+      button.type = 'button';
+      button.dataset.repo = name;
+      return button;
+    }));
+    if (gh.connected && state.githubRepos === null) loadRepos();
+  }
+
+  async function loadRepos() {
+    state.githubRepos = [];
+    try {
+      state.githubRepos = (await backend.github({ action: 'repos' })).repos || [];
+    } catch (error) {
+      showToast(error.message);
+    }
+    renderGitHub();
+  }
+
+  async function githubAction(body, success) {
+    try {
+      const data = await backend.github(body);
+      state.github = data.github;
+      if (body.action !== 'use') state.githubRepos = null;
+      renderGitHub();
+      if (success) showToast(success);
+      haptic('notify', 'success');
+      return true;
+    } catch (error) {
+      showToast(error.message);
+      haptic('notify', 'error');
+      return false;
+    }
+  }
+
+  function bindGitHub() {
+    dom.githubConnectBtn.addEventListener('click', async () => {
+      const token = dom.githubToken.value.trim();
+      if (!token) return;
+      dom.githubConnectBtn.disabled = true;
+      if (await githubAction({ action: 'connect', token }, '🐙 GitHub подключён')) dom.githubToken.value = '';
+      dom.githubConnectBtn.disabled = false;
+    });
+    dom.githubRepos.addEventListener('click', (event) => {
+      const chip = event.target.closest('[data-repo]');
+      if (chip) githubAction({ action: 'use', repo: chip.dataset.repo }, 'Работаем с ' + chip.dataset.repo);
+    });
+    dom.githubCreate.addEventListener('click', async () => {
+      const name = dom.githubNewName.value.trim();
+      if (!name) return;
+      dom.githubCreate.disabled = true;
+      if (await githubAction({ action: 'create', name }, 'Репозиторий создан')) dom.githubNewName.value = '';
+      dom.githubCreate.disabled = false;
+    });
+    dom.githubDisconnect.addEventListener('click', () => githubAction({ action: 'disconnect' }, 'GitHub отключён'));
   }
 
   /* ---------- Готовые файлы: DOCX, PPTX, ZIP, HTML ---------- */
@@ -3237,6 +3375,7 @@
     dom.reminderWhen.min = localInputValue(new Date());
     if (!dom.reminderWhen.value) dom.reminderWhen.value = localInputValue(suggestedReminderTime());
     renderReminders({ stagger: true });
+    renderGitHub();
     resetClearConfirm();
     if (state.sheetAnim) state.sheetAnim.cancel();
     state.sheetClosing = false;
@@ -4163,6 +4302,7 @@
     dom.drawerNew.addEventListener('click', () => startNewChat());
     bindChats();
     bindProjectEditor();
+    bindGitHub();
     dom.drawerMe.addEventListener('click', () => closeDrawer(() => openSheet()));
   }
 
@@ -4188,6 +4328,7 @@
     state.mode = data.mode === undefined ? null : data.mode;
     applyVideo(data.video);
     setDocuments(data.documents === undefined ? null : data.documents);
+    state.github = data.github === undefined ? null : data.github;
     state.chat = data.chat || null;
     state.chats = data.chats || [];
     state.projects = data.projects || [];

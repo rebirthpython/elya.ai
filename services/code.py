@@ -167,21 +167,43 @@ def _hinted_name(text: str, block: CodeBlock) -> str | None:
     return clean_filename(names[-1]) if names else None
 
 
-def attachments(
-    text: str, *, min_lines: int = 50, min_chars: int = 3000, limit: int = 3
-) -> list[tuple[str, bytes]]:
-    """Длинные блоки кода из ответа как файлы (имя, содержимое).
+_FILE_REQUEST_RE = re.compile(
+    r"файл(?:ом|ами|ы)\b|(?:пришли|скинь|отправь|дай|сохрани)(?:те)?\s+(?:\S+\s+){0,2}?(?:файл|как\s+файл)|"
+    r"\bв\s+виде\s+файл|\bas\s+a?\s*files?\b",
+    re.IGNORECASE,
+)
 
-    В чате длинный код режется на несколько сообщений и копировать его неудобно,
-    поэтому такие блоки отправляются ещё и документом.
-    """
+
+def wants_files(request: str) -> bool:
+    """Просят прислать код файлами («пришли файлом», «скинь файлы»)."""
+    return bool(request) and _FILE_REQUEST_RE.search(request) is not None
+
+
+def is_code_name(name: str | None) -> bool:
+    """Имя похоже на файл с кодом или текстом (bot.py, requirements.txt, Dockerfile)."""
+    if not name:
+        return False
+    lower = name.lower()
+    extension = lower.rsplit(".", 1)[-1] if "." in lower else ""
+    return lower in _SPECIAL_NAMES or extension in _CODE_LANGUAGES or extension in _TEXT_LANGUAGES or extension in ("html", "htm", "md")
+
+
+def attachments(
+    text: str, *, min_lines: int = 50, min_chars: int = 3000, limit: int = 5, all_blocks: bool = False
+) -> list[tuple[str, bytes]]:
+    """Блоки кода из ответа как файлы (имя, содержимое): длинные (их неудобно копировать из
+    чата), подписанные именем файла («Файл `bot.py`:») — любой длины, а если all_blocks
+    (просили «пришли файлом») — все."""
     result: list[tuple[str, bytes]] = []
     used: set[str] = set()
     for block in code_blocks(text):
-        if block.code.count("\n") + 1 < min_lines and len(block.code) < min_chars:
+        hinted = _hinted_name(text, block)
+        named = hinted is not None and is_code_name(hinted)
+        long = block.code.count("\n") + 1 >= min_lines or len(block.code) >= min_chars
+        if not (all_blocks or named or long):
             continue
         extension = _EXTENSIONS.get(block.language, "txt")
-        original = name = _hinted_name(text, block) or f"code.{extension}"
+        original = name = hinted if named else f"code.{extension}"
         stem, dot, suffix = original.rpartition(".")
         number = 2
         while name.lower() in used:

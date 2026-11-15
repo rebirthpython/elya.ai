@@ -38,6 +38,7 @@ from memory.manager import MemoryManager
 from memory.repository import MessageRepository
 from services.chat import ChatService
 from services.artifacts import FileStore
+from services.github import GitHubService
 from services.documents import DocumentStore
 from services.drawing import DrawingService
 from services.imagegen import ImageGenerator, build_image_backends
@@ -70,6 +71,8 @@ BOT_COMMANDS = [
     BotCommand(command="new", description="Новый чат без старой переписки"),
     BotCommand(command="chats", description="Мои чаты: вернуться к прошлому"),
     BotCommand(command="projects", description="Проекты: Учёба, Код, Личное…"),
+    BotCommand(command="github", description="GitHub: подключить и отправлять код в репозиторий"),
+    BotCommand(command="push", description="Отправить файлы из ответа в GitHub"),
     BotCommand(command="docs", description="Документы в чате: PDF, Word, таблицы"),
     BotCommand(command="help", description="Что я умею"),
     BotCommand(command="models", description="Подключённые нейросети"),
@@ -256,6 +259,9 @@ async def run(settings: Settings) -> None:
         search=search,
         documents=documents,
         files=FileStore(session_factory),
+        github=GitHubService(
+            session_factory, http_client, secret=settings.bot_token, env_token=settings.github_repo_token
+        ),
     )
     limiter = SlidingWindowLimiter(settings.rate_limit_per_minute)
 

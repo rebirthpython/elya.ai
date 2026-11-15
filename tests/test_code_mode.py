@@ -187,7 +187,7 @@ def test_attachment_takes_the_file_name_written_before_the_block():
     )
     names = [name for name, _ in attachments(text, limit=5)]
     assert names == ["code.py", "index.js", "code_2.py", "code_3.py", "code.go"]
-    assert len(attachments(text)) == 3  # не больше трёх файлов на ответ
+    assert len(attachments(text, limit=3)) == 3  # не больше limit файлов на ответ
 
 
 def test_unfinished_block_is_not_attached():

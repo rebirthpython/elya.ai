@@ -224,3 +224,16 @@ class UserFile(Base):
     mime: Mapped[str] = mapped_column(String(120))
     data: Mapped[bytes] = mapped_column(LargeBinary)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class GitHubAccount(Base):
+    """Подключённый GitHub: токен (зашифрован), логин и выбранный репозиторий."""
+
+    __tablename__ = "github_accounts"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    token: Mapped[str] = mapped_column(Text, default="")
+    login: Mapped[str] = mapped_column(String(100), default="")
+    repo: Mapped[str] = mapped_column(String(200), default="")  # owner/name
+    branch: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

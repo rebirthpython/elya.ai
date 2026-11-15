@@ -332,6 +332,7 @@ async def get_state(request: web.Request) -> web.Response:
             "memory": await _memory_payload(app[LONG_MEMORY], user.id),
             "reminders": await _reminders_payload(app[REMINDERS], user.id),
             "documents": await _documents_payload(app, user.id),
+            "github": (await app[CHAT].github.status(user.id)).as_dict() if app[CHAT].github is not None else None,
             "chat": (await app[MEMORY].chats.active(user.id)).as_dict(),
             "chats": [chat.as_dict() for chat in await app[MEMORY].chats.list(user.id)],
             "projects": [project.as_dict() for project in await app[MEMORY].chats.projects(user.id)],
@@ -692,6 +693,12 @@ async def _reply_payload(app: web.Application, result: CompletionResult) -> dict
     files = [stored.as_dict() for _, stored in result.files if stored is not None]
     if files:
         reply["files"] = files
+    github = app[CHAT].github
+    if result.push is not None and github is not None:
+        bundle = github.bundle_any(result.push)
+        if bundle is not None:
+            status = await github.status(bundle.user_id)
+            reply["push"] = {"id": result.push, "files": len(bundle.files), "repo": status.repo}
     return {
         "reply": reply,
         "usage": {"used": await usage.used_today(), "limit": usage.daily_limit},
@@ -776,6 +783,49 @@ async def get_preview(request: web.Request) -> web.Response:
             "Cache-Control": "private, max-age=3600",
         },
     )
+
+
+async def post_github(request: web.Request) -> web.Response:
+    """GitHub из приложения: {"action": "connect", "token"} | "disconnect" | "repos" |
+    {"action": "use", "repo"} | {"action": "create", "name"} | {"action": "push", "id", "message"?}."""
+    from services.github import GitHubError, commit_message
+
+    user: WebAppUser = request[_USER_KEY]
+    github = request.app[CHAT].github
+    if github is None:
+        return _error(503, "github_off", "GitHub на сервере выключен.")
+    payload = await _read_json(request) or {}
+    action = payload.get("action")
+    result: dict[str, Any] = {}
+    try:
+        if action == "connect" and isinstance(payload.get("token"), str):
+            await github.connect(user.id, payload["token"])
+        elif action == "disconnect":
+            await github.disconnect(user.id)
+        elif action == "repos":
+            result["repos"] = await github.repos(user.id, limit=20)
+        elif action == "use" and isinstance(payload.get("repo"), str):
+            await github.use_repo(user.id, payload["repo"])
+        elif action == "create" and isinstance(payload.get("name"), str):
+            await github.create_repo(user.id, payload["name"], description="Сделано вместе с Элей")
+        elif action == "push" and isinstance(payload.get("id"), int):
+            bundle = github.bundle(user.id, payload["id"])
+            if bundle is None:
+                return _error(410, "forgotten", "Эти файлы я уже не помню — попроси прислать их ещё раз.")
+            message = payload.get("message") if isinstance(payload.get("message"), str) else ""
+            pushed = await github.push(user.id, list(bundle.files), message or commit_message(bundle.title))
+            result["pushed"] = {
+                "repo": pushed.repo, "files": pushed.files, "commit_url": pushed.commit_url, "tree_url": pushed.tree_url,
+            }
+        else:
+            return _error(400, "bad_request", "Некорректный запрос.")
+    except GitHubError as exc:
+        status = {"auth": 401, "not_found": 404, "forbidden": 403, "rate_limit": 429, "unavailable": 503}.get(exc.kind, 400)
+        if status == 401:
+            status = 400  # 401 приложение понимает как «вход через Telegram не удался»
+        return _error(status, f"github_{exc.kind}", str(exc))
+    result["github"] = (await github.status(user.id)).as_dict()
+    return web.json_response(result)
 
 
 async def post_file_info(request: web.Request) -> web.Response:
@@ -1307,6 +1357,7 @@ def create_web_app(
     app.router.add_get("/files/{token}/{name}", get_file)
     app.router.add_get("/preview/{token}", get_preview)
     app.router.add_post("/api/files/info", post_file_info)
+    app.router.add_post("/api/github", post_github)
     app.router.add_get("/api/state", get_state)
     app.router.add_post("/api/chat", post_chat)
     app.router.add_post("/api/chat/stream", post_chat_stream)

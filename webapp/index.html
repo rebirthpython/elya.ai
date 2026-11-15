@@ -303,6 +303,30 @@
         </div>
       </section>
 
+      <section class="block" id="github-block" hidden>
+        <h3 class="block__title">GitHub</h3>
+        <div class="card github">
+          <p class="github__status" id="github-status">Не подключён</p>
+          <div class="github__connect" id="github-connect">
+            <input class="fact-form__input" id="github-token" type="password" autocomplete="off" spellcheck="false"
+                   placeholder="Токен: ghp_… или github_pat_…" aria-label="Токен GitHub">
+            <button class="btn btn--primary ripple" id="github-connect-btn" type="button">Подключить</button>
+          </div>
+          <div class="github__repo" id="github-repo" hidden>
+            <div class="github__repos" id="github-repos"></div>
+            <div class="github__new">
+              <input class="fact-form__input" id="github-new-name" type="text" autocomplete="off" spellcheck="false"
+                     placeholder="Новый репозиторий: my-telegram-bot" aria-label="Имя нового репозитория">
+              <button class="btn btn--ghost ripple" id="github-create" type="button">Создать</button>
+            </div>
+            <button class="row-btn row-btn--danger ripple" id="github-disconnect" type="button">
+              <svg><use href="#i-close"/></svg><span>Отключить GitHub</span>
+            </button>
+          </div>
+        </div>
+        <p class="block__note" id="github-note">Эля отправит написанный код в твой репозиторий одним коммитом — кнопкой под ответом. Токен: <a href="https://github.com/settings/tokens/new?scopes=repo&amp;description=Elya" target="_blank" rel="noopener">classic со scope repo</a> или fine-grained с правами Contents (и Administration — чтобы создавать репозитории). Он хранится на сервере зашифрованным.</p>
+      </section>
+
       <section class="block">
         <h3 class="block__title">Этот чат</h3>
         <div class="danger" id="clear-box">
