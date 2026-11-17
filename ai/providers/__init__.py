@@ -44,5 +44,7 @@ def build_providers(
                 )
             )
         else:
-            providers.append(OpenAICompatibleProvider(api_key=cfg.api_key, **common))
+            providers.append(
+                OpenAICompatibleProvider(api_key=cfg.api_key, reasoning_effort=cfg.reasoning_effort, **common)
+            )
     return providers

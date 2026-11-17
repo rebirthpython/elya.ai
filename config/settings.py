@@ -34,6 +34,9 @@ class ProviderConfig:
     # Только для GigaChat: адрес выдачи токена и область доступа.
     auth_url: str = ""
     scope: str = ""
+    # reasoning_effort для «думающих» моделей (low/medium/high, у Gemini ещё none):
+    # меньше скрытых размышлений — быстрее первое слово. "" — параметр не отправляется.
+    reasoning_effort: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +94,8 @@ class Settings:
     log_level: str
     # Сколько ждать первый кусок ответа от модели, прежде чем перейти к следующей.
     first_token_timeout: float = 20.0
+    # Через сколько секунд молчания модели параллельно запускать следующую (0 — не запускать).
+    hedge_delay: float = 3.0
     # Конспекты и презентации: длина ответа модели и максимальный размер материала.
     study_max_output_tokens: int = 8192
     study_max_input_chars: int = 60000
@@ -154,6 +159,9 @@ class Settings:
 # keyless — работает без ключа (ключ необязателен и только поднимает лимиты).
 # max_tokens — потолок длины ответа на бесплатном тарифе (<NAME>_MAX_TOKENS).
 # {account_id} в base_url подставляется из <NAME>_ACCOUNT_ID.
+# reasoning — reasoning_effort для «думающих» моделей (<NAME>_REASONING_EFFORT, «-» — не слать):
+# скрытые размышления идут до первого слова, поэтому «low» заметно ускоряет ответ. Модели,
+# которые параметр не принимают, один раз отвечают ошибкой, и дальше он им не отправляется.
 # Списки моделей бесплатных тарифов меняются: исчезнувшая модель отвечает 404,
 # AIClient откладывает её на несколько часов и переходит к следующей.
 KNOWN_PROVIDERS: dict[str, dict[str, str]] = {
@@ -162,6 +170,7 @@ KNOWN_PROVIDERS: dict[str, dict[str, str]] = {
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "models": "gemini-flash-latest,gemini-flash-lite-latest",
         "vision": "*",  # все модели Gemini понимают картинки
+        "reasoning": "low",
     },
     "github": {
         "title": "GitHub Models",
@@ -181,11 +190,13 @@ KNOWN_PROVIDERS: dict[str, dict[str, str]] = {
         "base_url": "https://api.groq.com/openai/v1",
         "models": "openai/gpt-oss-120b,qwen/qwen3.8-27b,llama-3.3-70b-versatile,openai/gpt-oss-20b",
         "vision": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "reasoning": "low",
     },
     "cerebras": {
         "title": "Cerebras",
         "base_url": "https://api.cerebras.ai/v1",
         "models": "gpt-oss-120b",
+        "reasoning": "low",
     },
     "openrouter": {
         "title": "OpenRouter",
@@ -199,6 +210,7 @@ KNOWN_PROVIDERS: dict[str, dict[str, str]] = {
         "base_url": "https://integrate.api.nvidia.com/v1",
         "models": "openai/gpt-oss-120b,nvidia/nemotron-3-ultra-550b-a55b,meta/llama-3.3-70b-instruct",
         "vision": "meta/llama-4-maverick-17b-128e-instruct",
+        "reasoning": "low",
     },
     "cloudflare": {
         "title": "Cloudflare Workers AI",
@@ -233,6 +245,7 @@ KNOWN_PROVIDERS: dict[str, dict[str, str]] = {
         "title": "Hugging Face",
         "base_url": "https://router.huggingface.co/v1",
         "models": "openai/gpt-oss-120b,Qwen/Qwen3-235B-A22B-Instruct-2507",
+        "reasoning": "low",
     },
     # ---- Работают без ключа: запасной вариант на крайний случай ----
     "ovh": {
@@ -461,6 +474,7 @@ def _load_provider(name: str) -> ProviderConfig | None:
         raise ConfigError(f"{prefix}_CA_BUNDLE: файл сертификата не найден: {ca_bundle!r}")
 
     kind = known.get("kind", "openai")
+    reasoning = _get_str(f"{prefix}_REASONING_EFFORT", known.get("reasoning", "")).lower()
     return ProviderConfig(
         name=name,
         title=known["title"],
@@ -475,6 +489,7 @@ def _load_provider(name: str) -> ProviderConfig | None:
         ca_bundle=ca_bundle,
         auth_url=_get_str(f"{prefix}_AUTH_URL", known.get("auth_url", "")) if kind == "gigachat" else "",
         scope=_get_str(f"{prefix}_SCOPE", known.get("scope", "")) if kind == "gigachat" else "",
+        reasoning_effort="" if reasoning in ("-", "off", "default") or kind == "gigachat" else reasoning,
     )
 
 
@@ -630,6 +645,7 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         temperature=_get_float("TEMPERATURE", 0.7, minimum=0.0, maximum=2.0),
         request_timeout=_get_float("REQUEST_TIMEOUT", 60.0, minimum=5.0, maximum=600.0),
         first_token_timeout=_get_float("FIRST_TOKEN_TIMEOUT", 20.0, minimum=3.0, maximum=600.0),
+        hedge_delay=_get_float("HEDGE_DELAY", 3.0, minimum=0.0, maximum=600.0),
         rate_limit_per_minute=_get_int("RATE_LIMIT_PER_MINUTE", 10, minimum=1),
         daily_request_limit=_get_int("DAILY_REQUEST_LIMIT", 300, minimum=0),
         log_level=_get_str("LOG_LEVEL", "INFO").upper() or "INFO",

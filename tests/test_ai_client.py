@@ -250,3 +250,98 @@ async def test_stalled_model_is_skipped_after_first_token_timeout():
     assert events[-1].text == "ответ"
     assert provider.calls == ["a1", "a2"]
 
+
+
+class TimedStreamProvider(BaseProvider):
+    """Каждая модель начинает отвечать через заданную паузу."""
+
+    def __init__(self, delays: dict[str, float]):
+        super().__init__("timed", "Timed", tuple(delays))
+        self.delays = delays
+        self.calls: list[str] = []
+        self.cancelled: list[str] = []
+
+    async def complete(self, messages, *, model, max_tokens, temperature):
+        raise AssertionError("streaming only")
+
+    async def stream(self, messages, *, model, max_tokens, temperature):
+        self.calls.append(model)
+        try:
+            await asyncio.sleep(self.delays[model])
+        except asyncio.CancelledError:
+            self.cancelled.append(model)
+            raise
+        yield f"от {model}"
+        yield CompletionResult(text=f"от {model}", provider=self.name, model=model)
+
+
+async def test_slow_model_is_raced_by_the_next_one():
+    provider = TimedStreamProvider({"slow": 5.0, "fast": 0.05})
+    client = AIClient([provider], max_tokens=10, temperature=0.1, hedge_delay=0.1)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    events = [event async for event in client.stream(MESSAGES)]
+    assert loop.time() - started < 1.0
+    assert events[-1].text == "от fast"
+    assert provider.calls == ["slow", "fast"]
+    assert provider.cancelled == ["slow"]
+    # Проигравшая модель не наказывается паузой: она не сломана, просто была медленнее.
+    assert not client.is_paused("timed", "slow")
+
+
+async def test_fast_first_model_does_not_start_a_second_request():
+    provider = TimedStreamProvider({"a": 0.01, "b": 0.01})
+    client = AIClient([provider], max_tokens=10, temperature=0.1, hedge_delay=0.5)
+    events = [event async for event in client.stream(MESSAGES)]
+    assert events[-1].text == "от a"
+    assert provider.calls == ["a"]
+
+
+async def test_hedged_request_prefers_first_model_when_both_answer():
+    provider = TimedStreamProvider({"a": 0.3, "b": 0.25})
+    client = AIClient([provider], max_tokens=10, temperature=0.1, hedge_delay=0.05)
+    events = [event async for event in client.stream(MESSAGES)]
+    # b запущена на 0.05 с позже и отвечает к 0.30 — одновременно с a; выигрывает тот, кто первым.
+    assert events[-1].text in {"от a", "от b"}
+    assert sorted(provider.calls) == ["a", "b"]
+
+
+def _reasoning_provider(handler) -> OpenAICompatibleProvider:
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return OpenAICompatibleProvider(
+        name="test", title="Test", base_url="https://api.test/v1/", api_key="secret",
+        models=("m1",), http_client=client, reasoning_effort="low",
+    )
+
+
+async def test_reasoning_effort_is_sent_and_dropped_when_rejected():
+    bodies = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "reasoning_effort" in body:
+            return httpx.Response(400, json={"error": {"message": "reasoning_effort is not supported with this model"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+
+    provider = _reasoning_provider(handler)
+    result = await provider.complete(MESSAGES, model="m1", max_tokens=10, temperature=0.1)
+    assert result.text == "ok"
+    assert [("reasoning_effort" in b) for b in bodies] == [True, False]
+    # Запомнила: следующий запрос сразу без параметра.
+    events = [e async for e in provider.stream(MESSAGES, model="m1", max_tokens=10, temperature=0.1)]
+    assert events[-1].text == "ok"
+    assert "reasoning_effort" not in bodies[-1]
+
+
+async def test_reasoning_effort_accepted_is_kept():
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+
+    provider = _reasoning_provider(handler)
+    await provider.complete(MESSAGES, model="m1", max_tokens=10, temperature=0.1)
+    await provider.complete(MESSAGES, model="m1", max_tokens=10, temperature=0.1)
+    assert all(b["reasoning_effort"] == "low" for b in bodies)
