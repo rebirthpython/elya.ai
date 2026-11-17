@@ -203,6 +203,7 @@ async def run(settings: Settings) -> None:
         temperature=settings.temperature,
         usage=usage,
         first_token_timeout=settings.first_token_timeout,
+        hedge_delay=settings.hedge_delay,
     )
     chats = ChatStore(session_factory)
     memory = MemoryManager(

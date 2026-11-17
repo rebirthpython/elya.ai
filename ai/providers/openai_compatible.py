@@ -8,6 +8,7 @@ OpenRouter, NVIDIA, Cloudflare, Ollama и др.).
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import AsyncIterator
 from typing import Any
@@ -30,6 +31,8 @@ from ai.providers.base import (
     RateLimitError,
     RegionNotSupportedError,
 )
+
+logger = logging.getLogger(__name__)
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _REGION_MARKERS = (
@@ -127,17 +130,45 @@ class OpenAICompatibleProvider(BaseProvider):
         vision_models: tuple[str, ...] = (),
         max_output_tokens: int = 0,
         owns_client: bool = False,
+        reasoning_effort: str = "",
     ) -> None:
         super().__init__(name, title, models, vision_models, max_output_tokens)
         self._url = f"{base_url.rstrip('/')}/chat/completions"
         self._api_key = api_key
         self._http = http_client
+        # Меньше скрытых размышлений — раньше первое слово ответа.
+        self._reasoning_effort = reasoning_effort
+        # Модели, которые отклонили reasoning_effort: им он больше не отправляется.
+        self._no_reasoning: set[str] = set()
         # Свой клиент (например, со своим корневым сертификатом) закрывается вместе с провайдером.
         self._owns_client = owns_client
 
     async def aclose(self) -> None:
         if self._owns_client:
             await self._http.aclose()
+
+    def _payload(
+        self, messages: list[ChatMessage], model: str, max_tokens: int, temperature: float, *, stream: bool
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [_wire_message(m) for m in messages],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if stream:
+            payload["stream"] = True
+        if self._reasoning_effort and model not in self._no_reasoning:
+            payload["reasoning_effort"] = self._reasoning_effort
+        return payload
+
+    def _drop_reasoning(self, payload: dict[str, Any], status: int, detail: str, model: str) -> bool:
+        """Модель не принимает reasoning_effort: запомнить и повторить запрос без него."""
+        if "reasoning_effort" not in payload or status not in (400, 422) or "reasoning" not in detail.lower():
+            return False
+        logger.info("%s/%s does not accept reasoning_effort, retrying without it", self.name, model)
+        self._no_reasoning.add(model)
+        return True
 
     async def _headers(self, model: str) -> dict[str, str]:
         """Заголовки авторизации запроса; провайдеры с токенами переопределяют."""
@@ -165,26 +196,23 @@ class OpenAICompatibleProvider(BaseProvider):
         max_tokens: int,
         temperature: float,
     ) -> CompletionResult:
-        payload = {
-            "model": model,
-            "messages": [_wire_message(m) for m in messages],
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }
         headers = await self._headers(model)
+        while True:
+            payload = self._payload(messages, model, max_tokens, temperature, stream=False)
+            try:
+                response = await self._http.post(self._url, json=payload, headers=headers)
+            except httpx.HTTPError as exc:
+                raise self._network_error(exc, model) from exc
 
-        try:
-            response = await self._http.post(self._url, json=payload, headers=headers)
-        except httpx.HTTPError as exc:
-            raise self._network_error(exc, model) from exc
-
-        try:
-            data = response.json()
-        except ValueError:
-            data = None
-
-        if response.status_code != 200:
+            try:
+                data = response.json()
+            except ValueError:
+                data = None
+            if response.status_code == 200:
+                break
             detail, _ = _error_detail(data) if data is not None else (response.text[:300], None)
+            if self._drop_reasoning(payload, response.status_code, detail, model):
+                continue
             raise self._classify(
                 response.status_code,
                 detail,
@@ -210,80 +238,78 @@ class OpenAICompatibleProvider(BaseProvider):
         temperature: float,
     ) -> AsyncIterator[str | CompletionResult]:
         """Потоковый ответ (stream: true, Server-Sent Events): куски текста, затем итог."""
-        payload = {
-            "model": model,
-            "messages": [_wire_message(m) for m in messages],
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "stream": True,
-        }
         headers = await self._headers(model)
         raw_parts: list[str] = []
         shown = ""
         finish_reason = None
         served_model = model
         try:
-            async with self._http.stream("POST", self._url, json=payload, headers=headers) as response:
-                if response.status_code != 200:
-                    body = await response.aread()
-                    try:
-                        data = json.loads(body)
-                    except ValueError:
-                        data = None
-                    detail = _error_detail(data)[0] if data is not None else body[:300].decode("utf-8", "replace")
-                    raise self._classify(
-                        response.status_code,
-                        detail,
-                        model,
-                        retry_after=_parse_retry_after(response.headers.get("retry-after")),
-                    )
-                if "text/event-stream" not in response.headers.get("content-type", ""):
-                    # Сервер проигнорировал stream — пришёл обычный JSON-ответ.
-                    try:
-                        data = json.loads(await response.aread())
-                    except ValueError as exc:
-                        raise BadResponseError("response is not JSON", provider=self.name, model=model) from exc
-                    if not isinstance(data, dict):
-                        raise BadResponseError("response is not a JSON object", provider=self.name, model=model)
-                    if data.get("error"):
-                        detail, code = _error_detail(data)
-                        raise self._classify(code or 502, detail, model)
-                    result = self._parse_completion(data, model)
-                    yield result.text
-                    yield result
-                    return
+            while True:
+                payload = self._payload(messages, model, max_tokens, temperature, stream=True)
+                async with self._http.stream("POST", self._url, json=payload, headers=headers) as response:
+                    if response.status_code != 200:
+                        body = await response.aread()
+                        try:
+                            data = json.loads(body)
+                        except ValueError:
+                            data = None
+                        detail = _error_detail(data)[0] if data is not None else body[:300].decode("utf-8", "replace")
+                        if self._drop_reasoning(payload, response.status_code, detail, model):
+                            continue
+                        raise self._classify(
+                            response.status_code,
+                            detail,
+                            model,
+                            retry_after=_parse_retry_after(response.headers.get("retry-after")),
+                        )
+                    if "text/event-stream" not in response.headers.get("content-type", ""):
+                        # Сервер проигнорировал stream — пришёл обычный JSON-ответ.
+                        try:
+                            data = json.loads(await response.aread())
+                        except ValueError as exc:
+                            raise BadResponseError("response is not JSON", provider=self.name, model=model) from exc
+                        if not isinstance(data, dict):
+                            raise BadResponseError("response is not a JSON object", provider=self.name, model=model)
+                        if data.get("error"):
+                            detail, code = _error_detail(data)
+                            raise self._classify(code or 502, detail, model)
+                        result = self._parse_completion(data, model)
+                        yield result.text
+                        yield result
+                        return
 
-                async for line in response.aiter_lines():
-                    line = line.strip()
-                    if not line.startswith("data:"):
-                        continue
-                    chunk_raw = line[5:].strip()
-                    if chunk_raw == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(chunk_raw)
-                    except ValueError:
-                        continue
-                    if not isinstance(chunk, dict):
-                        continue
-                    if chunk.get("error"):
-                        detail, code = _error_detail(chunk)
-                        raise self._classify(code or 502, detail, model)
-                    served_model = str(chunk.get("model") or served_model)
-                    choices = chunk.get("choices")
-                    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-                        continue
-                    choice = choices[0]
-                    finish_reason = choice.get("finish_reason") or finish_reason
-                    delta = choice.get("delta") or {}
-                    piece = _extract_text(delta.get("content")) if isinstance(delta, dict) else ""
-                    if not piece:
-                        continue
-                    raw_parts.append(piece)
-                    visible = _visible_text("".join(raw_parts))
-                    if visible.startswith(shown) and len(visible) > len(shown):
-                        yield visible[len(shown):]
-                        shown = visible
+                    async for line in response.aiter_lines():
+                        line = line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        chunk_raw = line[5:].strip()
+                        if chunk_raw == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(chunk_raw)
+                        except ValueError:
+                            continue
+                        if not isinstance(chunk, dict):
+                            continue
+                        if chunk.get("error"):
+                            detail, code = _error_detail(chunk)
+                            raise self._classify(code or 502, detail, model)
+                        served_model = str(chunk.get("model") or served_model)
+                        choices = chunk.get("choices")
+                        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                            continue
+                        choice = choices[0]
+                        finish_reason = choice.get("finish_reason") or finish_reason
+                        delta = choice.get("delta") or {}
+                        piece = _extract_text(delta.get("content")) if isinstance(delta, dict) else ""
+                        if not piece:
+                            continue
+                        raw_parts.append(piece)
+                        visible = _visible_text("".join(raw_parts))
+                        if visible.startswith(shown) and len(visible) > len(shown):
+                            yield visible[len(shown):]
+                            shown = visible
+                break  # ответ прочитан целиком
         except httpx.HTTPError as exc:
             raise self._network_error(exc, model) from exc
 
