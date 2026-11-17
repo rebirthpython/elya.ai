@@ -11,6 +11,7 @@ Contents: Read and write и, чтобы создавать репозитори�
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -159,6 +160,8 @@ class GitHubService:
         self._bundles: OrderedDict[int, Bundle] = OrderedDict()
         self._next_bundle = 0
         self._tree_cache: dict[str, tuple[float, list[str]]] = {}
+        # Фоновые обновления списка файлов (ключ репозитория → задача).
+        self._refreshing: dict[str, asyncio.Task] = {}
 
     # ---------- HTTP ----------
 
@@ -417,13 +420,33 @@ class GitHubService:
                 return bundle_id, self._bundles[bundle_id]
         return None
 
+    async def _prompt_tree(self, user_id: int) -> list[str]:
+        """Список файлов для промпта без ожидания GitHub: устаревший кэш отдаётся сразу,
+        а свежий список загружается в фоне к следующему сообщению."""
+        _, repo, branch = await self._need_repo(user_id)
+        key = f"{repo}@{branch}"
+        cached = self._tree_cache.get(key)
+        if cached is None:
+            return await self.tree(user_id)
+        if time.monotonic() - cached[0] >= 60 and key not in self._refreshing:
+            task = asyncio.create_task(self.tree(user_id))
+            self._refreshing[key] = task
+
+            def done(finished: asyncio.Task) -> None:
+                self._refreshing.pop(key, None)
+                if not finished.cancelled() and finished.exception() is not None:
+                    logger.warning("GitHub file list refresh failed: %s", finished.exception())
+
+            task.add_done_callback(done)
+        return cached[1]
+
     async def prompt_block(self, user_id: int) -> str:
         """Раздел системного промпта: какой репозиторий подключён и какие в нём файлы."""
         status = await self.status(user_id)
         if not status.connected or not status.repo:
             return ""
         try:
-            paths = await self.tree(user_id)
+            paths = await self._prompt_tree(user_id)
         except GitHubError:
             paths = []
         listing = ", ".join(paths[:80]) + (" …" if len(paths) > 80 else "") if paths else "репозиторий пока пустой"

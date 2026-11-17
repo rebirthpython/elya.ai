@@ -8,7 +8,7 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import aclosing
+from dataclasses import dataclass
 
 from ai.providers.base import (
     BadResponseError,
@@ -24,6 +24,21 @@ from ai.providers.base import (
 from services.usage import UsageTracker
 
 logger = logging.getLogger(__name__)
+
+_END = object()  # поток модели закончился
+
+
+@dataclass(eq=False)
+class _Attempt:
+    """Один запущенный потоковый запрос к модели."""
+
+    provider: BaseProvider
+    model: str
+    started: float  # по часам клиента — для лога
+    launched: float  # по часам event loop — для таймаутов
+    events: AsyncIterator[str | CompletionResult]
+    # Ждёт первое решающее событие потока: текст, CompletionResult, ошибку или _END.
+    task: asyncio.Task | None = None
 
 
 class AIError(Exception):
@@ -70,6 +85,8 @@ class AIClient:
         max_cooldown: float = 3600.0,
         missing_model_cooldown: float = 6 * 3600.0,
         first_token_timeout: float = 0.0,
+        hedge_delay: float = 0.0,
+        max_parallel: int = 2,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if not providers:
@@ -83,6 +100,10 @@ class AIClient:
         # Сколько ждать первый кусок ответа, прежде чем перейти к следующей модели.
         # 0 — без отдельного ограничения (действует только общий таймаут HTTP-запроса).
         self._first_token_timeout = first_token_timeout
+        # Если модель молчит дольше hedge_delay, параллельно запускается следующая,
+        # и отвечает та, что начнёт первой (0 — модели пробуются строго по очереди).
+        self._hedge_delay = hedge_delay
+        self._max_parallel = max(1, max_parallel)
         # Модель, которой нет в каталоге провайдера, проверяется заново раз в несколько часов.
         self._missing_model_cooldown = missing_model_cooldown
         self._clock = clock
@@ -163,12 +184,25 @@ class AIClient:
         остальные пробуются в обычном порядке. temperature и max_tokens
         переопределяют значения по умолчанию для служебных запросов.
         """
-        result: CompletionResult | None = None
-        async for event in self._attempts(messages, prefer, temperature, max_tokens, streaming=False):
-            if isinstance(event, CompletionResult):
-                result = event
-        assert result is not None
-        return result
+        vision = any(m.images for m in messages)
+        if vision and not self.has_vision:
+            raise NoVisionModelError
+        errors: list[ProviderError] = []
+        for provider, model in self._candidates(prefer, vision):
+            if self._skip_paused(provider, model, errors):
+                continue
+            await self._consume()
+            started = self._clock()
+            try:
+                result = await provider.complete(
+                    messages, **self._options(provider, model, temperature, max_tokens)
+                )
+            except ProviderError as exc:
+                self._record_failure(provider, model, exc, errors)
+                continue
+            self._record_success(provider, model, result, started, "")
+            return result
+        raise AllProvidersFailedError(errors)
 
     async def stream(
         self,
@@ -180,116 +214,188 @@ class AIClient:
     ) -> AsyncIterator[str | CompletionResult]:
         """Ответ по частям: строки — новый текст по мере генерации, последним — CompletionResult.
 
-        Пока модель не начала отвечать, при ошибке пробуется следующая. Если поток
-        оборвался на середине, бросается AllProvidersFailedError: часть ответа уже
-        показана, и незаметно подменить модель нельзя.
+        Пока модель не начала отвечать, при ошибке пробуется следующая; если она молчит
+        дольше hedge_delay, следующая запускается параллельно, и ответ даёт та, что начнёт
+        первой (остальные отменяются). Если поток оборвался на середине, бросается
+        AllProvidersFailedError: часть ответа уже показана, и незаметно подменить модель нельзя.
         """
-        # aclosing: если ответ перестали читать (обрыв, служебная строка поиска),
-        # поток провайдера и его HTTP-соединение закрываются сразу, а не сборщиком мусора.
-        async with aclosing(
-            self._attempts(messages, prefer, temperature, max_tokens, streaming=True)
-        ) as events:
-            async for event in events:
-                yield event
-
-    async def _attempts(
-        self,
-        messages: list[ChatMessage],
-        prefer: tuple[str, str] | None,
-        temperature: float | None,
-        max_tokens: int | None,
-        *,
-        streaming: bool,
-    ) -> AsyncIterator[str | CompletionResult]:
         vision = any(m.images for m in messages)
         if vision and not self.has_vision:
             raise NoVisionModelError
+        loop = asyncio.get_running_loop()
+        candidates = iter(self._candidates(prefer, vision))
         errors: list[ProviderError] = []
+        running: list[_Attempt] = []  # ещё не начали отвечать
+        launched: list[_Attempt] = []  # все запущенные — чтобы закрыть в конце
+        exhausted = False
+        last_launch = 0.0
+        winner: _Attempt | None = None
+        item: object = None
 
-        for provider, model in self._candidates(prefer, vision):
-            key = (provider.name, model)
-            paused = self._cooling_error((provider.name, None)) or self._cooling_error(key)
-            if paused is not None:
-                # Пауза провайдера даёт одну и ту же ошибку для всех его моделей.
-                if not any(paused is seen for seen in errors):
-                    errors.append(paused)
-                continue
-            if self._usage and not await self._usage.try_consume():
-                raise DailyLimitExceededError(self._usage.daily_limit)
+        async def launch() -> bool:
+            nonlocal exhausted, last_launch
+            for provider, model in candidates:
+                if self._skip_paused(provider, model, errors):
+                    continue
+                await self._consume()
+                options = self._options(provider, model, temperature, max_tokens)
+                attempt = _Attempt(provider, model, self._clock(), loop.time(), provider.stream(messages, **options))
+                attempt.task = asyncio.create_task(self._first_event(attempt.events))
+                running.append(attempt)
+                launched.append(attempt)
+                last_launch = attempt.launched
+                return True
+            exhausted = True
+            return False
 
-            limit = max_tokens if max_tokens is not None else self._max_tokens
-            if provider.max_output_tokens:
-                limit = min(limit, provider.max_output_tokens)
-            options = {
-                "model": model,
-                "max_tokens": limit,
-                "temperature": temperature if temperature is not None else self._temperature,
-            }
-            started = self._clock()
-            emitted = False
-            result: CompletionResult | None = None
-            try:
-                if streaming:
-                    async with aclosing(provider.stream(messages, **options)) as stream:
-                        events = stream.__aiter__()
-                        while True:
-                            try:
-                                # Пока ответа нет, модель, которая «зависла», не держит пользователя
-                                # до общего таймаута запроса: через first_token_timeout — следующая модель.
-                                event = await asyncio.wait_for(
-                                    events.__anext__(),
-                                    None if emitted or not self._first_token_timeout else self._first_token_timeout,
-                                )
-                            except StopAsyncIteration:
-                                break
-                            except TimeoutError as exc:
-                                raise ProviderTimeoutError(
-                                    f"no first token within {self._first_token_timeout:g}s",
-                                    provider=provider.name,
-                                    model=model,
-                                ) from exc
-                            if isinstance(event, CompletionResult):
-                                result = event
-                            elif event:
-                                emitted = True
-                                yield event
-                    if result is None:
-                        raise BadResponseError("stream ended without a result", provider=provider.name, model=model)
-                else:
-                    result = await provider.complete(messages, **options)
-            except ProviderError as exc:
-                logger.warning("AI request failed: %s", exc)
-                errors.append(exc)
-                if exc.provider_level:
-                    # Остальные модели этого провайдера будут пропущены как «на паузе».
-                    self._cool_down((provider.name, None), exc, self._base_cooldown * 10)
-                elif isinstance(exc, RateLimitError):
-                    self._cool_down(key, exc, exc.retry_after)
-                elif isinstance(exc, ModelNotFoundError):
-                    # Модель убрали из бесплатного каталога: не тратить на неё каждый запрос.
-                    delay = self._missing_model_cooldown
-                    self._cool_down(key, exc, delay, cap=delay)
-                elif isinstance(exc, ProviderUnreachableError):
-                    # Сервер недоступен целиком (сеть, DNS, блокировка): его модели не ждём.
-                    self._cool_down((provider.name, None), exc)
-                elif isinstance(exc, ProviderTimeoutError):
-                    # Зависшая модель: следующие запросы не ждут её таймаута.
-                    self._cool_down(key, exc)
-                if emitted:
-                    raise AllProvidersFailedError([exc]) from exc
-                continue
+        try:
+            while winner is None:
+                hedging = (
+                    self._hedge_delay > 0 and not exhausted and 0 < len(running) < self._max_parallel
+                )
+                if not running or (hedging and loop.time() - last_launch >= self._hedge_delay):
+                    if not await launch() and not running:
+                        raise AllProvidersFailedError(errors)
+                    continue
 
-            self._cooldowns.pop(key, None)
-            self._cooldowns.pop((provider.name, None), None)
-            logger.info(
-                "AI response: provider=%s model=%s chars=%d time=%.1fs%s",
-                result.provider,
-                result.model,
-                len(result.text),
-                self._clock() - started,
-                " (stream)" if streaming else "",
+                deadlines = [last_launch + self._hedge_delay] if hedging else []
+                if self._first_token_timeout:
+                    deadlines += [a.launched + self._first_token_timeout for a in running]
+                timeout = max(0.0, min(deadlines) - loop.time()) if deadlines else None
+                await asyncio.wait([a.task for a in running], timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+
+                now = loop.time()
+                for attempt in list(running):  # по порядку запуска: при равенстве — приоритетная модель
+                    if attempt.task.done():
+                        item = attempt.task.result()
+                        error = self._as_error(attempt, item)
+                        if error is None:
+                            winner = attempt
+                            break
+                        running.remove(attempt)
+                        self._record_failure(attempt.provider, attempt.model, error, errors)
+                    elif self._first_token_timeout and now - attempt.launched >= self._first_token_timeout:
+                        # Зависшая модель: дальше её не ждём.
+                        attempt.task.cancel()
+                        running.remove(attempt)
+                        error = ProviderTimeoutError(
+                            f"no first token within {self._first_token_timeout:g}s",
+                            provider=attempt.provider.name,
+                            model=attempt.model,
+                        )
+                        self._record_failure(attempt.provider, attempt.model, error, errors)
+
+            # Победитель начал отвечать — остальные больше не нужны.
+            for attempt in running:
+                if attempt is not winner:
+                    attempt.task.cancel()
+            while True:
+                if isinstance(item, CompletionResult):
+                    self._record_success(winner.provider, winner.model, item, winner.started, " (stream)")
+                    yield item
+                    return
+                error = self._as_error(winner, item)
+                if error is not None:
+                    self._record_failure(winner.provider, winner.model, error, errors)
+                    raise AllProvidersFailedError([error]) from error
+                yield item
+                # Дальше поток победителя читается напрямую: модель не генерирует впрок,
+                # и если ответ перестали читать, она останавливается сразу.
+                item = await self._first_event(winner.events)
+        finally:
+            # Ответ дочитан или его перестали читать: запросы и HTTP-соединения закрываются сразу.
+            for attempt in launched:
+                attempt.task.cancel()
+            await asyncio.gather(*(a.task for a in launched), return_exceptions=True)
+            for attempt in launched:
+                close = getattr(attempt.events, "aclose", None)
+                if close is not None:
+                    try:
+                        await close()
+                    except Exception:  # noqa: BLE001 — закрытие не должно ломать ответ
+                        logger.debug("Closing a model stream failed", exc_info=True)
+
+    @staticmethod
+    async def _first_event(events: AsyncIterator[str | CompletionResult]) -> object:
+        """Следующее значимое событие потока: текст, CompletionResult, ошибка или _END."""
+        try:
+            async for event in events:  # выход из цикла не закрывает поток
+                if isinstance(event, CompletionResult) or event:
+                    return event
+            return _END
+        except Exception as exc:  # noqa: BLE001 — разбирается в stream()
+            return exc
+
+    @staticmethod
+    def _as_error(attempt: _Attempt, item: object) -> ProviderError | None:
+        """None — это часть ответа; иначе ошибка попытки (не ProviderError пробрасывается)."""
+        if item is _END:
+            return BadResponseError(
+                "stream ended without a result", provider=attempt.provider.name, model=attempt.model
             )
-            yield result
-            return
+        if isinstance(item, ProviderError):
+            return item
+        if isinstance(item, BaseException):
+            raise item
+        return None
 
-        raise AllProvidersFailedError(errors)
+    def _skip_paused(self, provider: BaseProvider, model: str, errors: list[ProviderError]) -> bool:
+        paused = self._cooling_error((provider.name, None)) or self._cooling_error((provider.name, model))
+        if paused is None:
+            return False
+        # Пауза провайдера даёт одну и ту же ошибку для всех его моделей.
+        if not any(paused is seen for seen in errors):
+            errors.append(paused)
+        return True
+
+    async def _consume(self) -> None:
+        if self._usage and not await self._usage.try_consume():
+            raise DailyLimitExceededError(self._usage.daily_limit)
+
+    def _options(
+        self, provider: BaseProvider, model: str, temperature: float | None, max_tokens: int | None
+    ) -> dict:
+        limit = max_tokens if max_tokens is not None else self._max_tokens
+        if provider.max_output_tokens:
+            limit = min(limit, provider.max_output_tokens)
+        return {
+            "model": model,
+            "max_tokens": limit,
+            "temperature": temperature if temperature is not None else self._temperature,
+        }
+
+    def _record_failure(
+        self, provider: BaseProvider, model: str, exc: ProviderError, errors: list[ProviderError]
+    ) -> None:
+        logger.warning("AI request failed: %s", exc)
+        errors.append(exc)
+        key = (provider.name, model)
+        if exc.provider_level:
+            # Остальные модели этого провайдера будут пропущены как «на паузе».
+            self._cool_down((provider.name, None), exc, self._base_cooldown * 10)
+        elif isinstance(exc, RateLimitError):
+            self._cool_down(key, exc, exc.retry_after)
+        elif isinstance(exc, ModelNotFoundError):
+            # Модель убрали из бесплатного каталога: не тратить на неё каждый запрос.
+            delay = self._missing_model_cooldown
+            self._cool_down(key, exc, delay, cap=delay)
+        elif isinstance(exc, ProviderUnreachableError):
+            # Сервер недоступен целиком (сеть, DNS, блокировка): его модели не ждём.
+            self._cool_down((provider.name, None), exc)
+        elif isinstance(exc, ProviderTimeoutError):
+            # Зависшая модель: следующие запросы не ждут её таймаута.
+            self._cool_down(key, exc)
+
+    def _record_success(
+        self, provider: BaseProvider, model: str, result: CompletionResult, started: float, note: str
+    ) -> None:
+        self._cooldowns.pop((provider.name, model), None)
+        self._cooldowns.pop((provider.name, None), None)
+        logger.info(
+            "AI response: provider=%s model=%s chars=%d time=%.1fs%s",
+            result.provider,
+            result.model,
+            len(result.text),
+            self._clock() - started,
+            note,
+        )

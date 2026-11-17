@@ -32,8 +32,8 @@ class LiveMessage:
         bot: Bot,
         message: Message,
         *,
-        first_delay: float = 0.8,
-        interval: float = 1.5,
+        first_delay: float = 0.3,
+        interval: float = 1.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._bot = bot

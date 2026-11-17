@@ -1,3 +1,4 @@
+import asyncio
 """GitHub и файлы с кодом: шифрование токена, подключение, репозитории, коммит из нескольких
 файлов (в том числе в пустой репозиторий), чтение файла, бот (/github, /repo, /push, /pull,
 кнопка под ответом) и приложение (/api/github, кнопка под ответом)."""
@@ -210,6 +211,22 @@ async def test_prompt_block_lists_repository_files(db):
     await github.use_repo(1, "anna/my-bot")
     block = await github.prompt_block(1)
     assert "anna/my-bot" in block and "README.md" in block and "Файл `bot.py`:" in block
+
+
+async def test_prompt_block_uses_stale_file_list_and_refreshes_in_background(db):
+    github, fake = _service(db)
+    await github.connect(1, TOKEN)
+    await github.use_repo(1, "anna/my-bot")
+    await github.prompt_block(1)
+    # Список устарел, а в репозитории появился файл: ответ не ждёт GitHub.
+    key = next(iter(github._tree_cache))
+    stamp, paths = github._tree_cache[key]
+    github._tree_cache[key] = (stamp - 120, paths)
+    fake.files["new_module.py"] = "x = 1"
+    block = await github.prompt_block(1)
+    assert "new_module.py" not in block
+    await asyncio.gather(*github._refreshing.values())
+    assert "new_module.py" in await github.prompt_block(1)
 
 
 # ---------- бот ----------
