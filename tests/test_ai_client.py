@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import httpx
@@ -222,3 +223,30 @@ async def test_preferred_model_is_tried_first_then_usual_order():
 
     # незнакомая модель ничего не меняет
     assert (await client.complete(MESSAGES, prefer=("zzz", "nope"))).text == "from a1"
+
+
+class StalledStreamProvider(BaseProvider):
+    """Модель «a1» не отдаёт ни байта, «a2» отвечает сразу."""
+
+    def __init__(self):
+        super().__init__("stall", "Stall", ("a1", "a2"))
+        self.calls: list[str] = []
+
+    async def complete(self, messages, *, model, max_tokens, temperature):
+        raise AssertionError("streaming only")
+
+    async def stream(self, messages, *, model, max_tokens, temperature):
+        self.calls.append(model)
+        if model == "a1":
+            await asyncio.sleep(3600)
+        yield "ответ"
+        yield CompletionResult(text="ответ", provider=self.name, model=model)
+
+
+async def test_stalled_model_is_skipped_after_first_token_timeout():
+    provider = StalledStreamProvider()
+    client = AIClient([provider], max_tokens=10, temperature=0.1, first_token_timeout=0.2)
+    events = [event async for event in client.stream(MESSAGES)]
+    assert events[-1].text == "ответ"
+    assert provider.calls == ["a1", "a2"]
+

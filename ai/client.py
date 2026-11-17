@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator, Callable
@@ -68,6 +69,7 @@ class AIClient:
         base_cooldown: float = 60.0,
         max_cooldown: float = 3600.0,
         missing_model_cooldown: float = 6 * 3600.0,
+        first_token_timeout: float = 0.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if not providers:
@@ -78,6 +80,9 @@ class AIClient:
         self._usage = usage
         self._base_cooldown = base_cooldown
         self._max_cooldown = max_cooldown
+        # Сколько ждать первый кусок ответа, прежде чем перейти к следующей модели.
+        # 0 — без отдельного ограничения (действует только общий таймаут HTTP-запроса).
+        self._first_token_timeout = first_token_timeout
         # Модель, которой нет в каталоге провайдера, проверяется заново раз в несколько часов.
         self._missing_model_cooldown = missing_model_cooldown
         self._clock = clock
@@ -226,7 +231,23 @@ class AIClient:
             try:
                 if streaming:
                     async with aclosing(provider.stream(messages, **options)) as stream:
-                        async for event in stream:
+                        events = stream.__aiter__()
+                        while True:
+                            try:
+                                # Пока ответа нет, модель, которая «зависла», не держит пользователя
+                                # до общего таймаута запроса: через first_token_timeout — следующая модель.
+                                event = await asyncio.wait_for(
+                                    events.__anext__(),
+                                    None if emitted or not self._first_token_timeout else self._first_token_timeout,
+                                )
+                            except StopAsyncIteration:
+                                break
+                            except TimeoutError as exc:
+                                raise ProviderTimeoutError(
+                                    f"no first token within {self._first_token_timeout:g}s",
+                                    provider=provider.name,
+                                    model=model,
+                                ) from exc
                             if isinstance(event, CompletionResult):
                                 result = event
                             elif event:

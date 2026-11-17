@@ -203,6 +203,7 @@ async def run(settings: Settings) -> None:
         max_tokens=settings.max_output_tokens,
         temperature=settings.temperature,
         usage=usage,
+        first_token_timeout=settings.first_token_timeout,
     )
     chats = ChatStore(session_factory)
     memory = MemoryManager(
