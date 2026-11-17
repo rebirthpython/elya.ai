@@ -1,3 +1,4 @@
+import re
 """Mini App: проверка initData и HTTP API поверх настоящего aiohttp-приложения."""
 
 import hashlib
@@ -921,3 +922,21 @@ async def test_instructions_are_private(env):
     assert other["instructions"]["about"] == ""
     assert (await client.post("/api/instructions", json={"about": "x"})).status == 401
     assert (await client.post("/api/instructions", json={"about": "x"}, headers=auth(sign_init_data(STRANGER_ID)))).status == 403
+
+
+async def test_stream_done_carries_speed_line(env):
+    client, _ = await env["make"](providers=[StreamingProvider("alpha", ["При", "вет, ", "Аня!"])])
+    events = await _ndjson(await client.post("/api/chat/stream", json={"text": "привет"}, headers=auth()))
+    speed = events[-1]["reply"]["speed"]
+    assert speed.startswith("⚡ ") and speed.endswith("с до ответа") and "alpha1" not in speed
+
+
+async def test_index_pins_asset_versions_so_updates_are_not_cached(env):
+    client, _ = await env["make"]()
+    response = await client.get("/")
+    html = await response.text()
+    assert response.headers["Cache-Control"] == "no-cache"
+    assert re.search(r'src="assets/app\.js\?v=[0-9a-f]{10}"', html)
+    assert re.search(r'href="assets/styles\.css\?v=[0-9a-f]{10}"', html)
+    version = re.search(r"app\.js\?v=([0-9a-f]+)", html).group(1)
+    assert (await client.get(f"/assets/app.js?v={version}")).status == 200

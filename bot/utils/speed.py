@@ -13,7 +13,7 @@ def _short_model(model: str) -> str:
     return model.split("/")[-1].removesuffix(":free").replace("_", "-").replace("*", "")
 
 
-def speed_line(result: CompletionResult) -> str:
+def speed_line(result: CompletionResult, *, with_model: bool = True) -> str:
     """«⚡ ~85 ток/с · 1.2 с до ответа · gpt-oss-120b»; пустая строка — замеров нет (напоминания,
     ответ целиком одним куском)."""
     if result.tokens <= 0 or result.first_token_s <= 0:
@@ -23,6 +23,6 @@ def speed_line(result: CompletionResult) -> str:
         rate = result.tokens / result.generation_s
         parts.append(f"{'~' if result.tokens_estimated else ''}{rate:.0f} ток/с")
     parts.append(f"{result.first_token_s:.1f} с до ответа")
-    if result.model:
+    if with_model and result.model:
         parts.append(_short_model(result.model))
     return "⚡ " + " · ".join(parts)
