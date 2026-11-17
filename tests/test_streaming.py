@@ -171,7 +171,8 @@ async def test_complete_only_providers_stream_in_one_piece():
             return CompletionResult("целиком", "p", model)
 
     events = await collect(AIClient([Plain("p", "P", ("m",))], max_tokens=10, temperature=0.1).stream(MESSAGES))
-    assert events == ["целиком", CompletionResult("целиком", "p", "m")]
+    assert events[0] == "целиком" and len(events) == 2
+    assert (events[1].text, events[1].provider, events[1].model) == ("целиком", "p", "m")
 
 
 # ---------------------------------------------------------------- диалог ----

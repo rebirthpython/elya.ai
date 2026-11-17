@@ -96,6 +96,8 @@ class Settings:
     first_token_timeout: float = 20.0
     # Через сколько секунд молчания модели параллельно запускать следующую (0 — не запускать).
     hedge_delay: float = 3.0
+    # Строка «⚡ 85 ток/с · 1.2 с до ответа» под ответом бота в чате.
+    show_speed: bool = True
     # Конспекты и презентации: длина ответа модели и максимальный размер материала.
     study_max_output_tokens: int = 8192
     study_max_input_chars: int = 60000
@@ -646,6 +648,7 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         request_timeout=_get_float("REQUEST_TIMEOUT", 60.0, minimum=5.0, maximum=600.0),
         first_token_timeout=_get_float("FIRST_TOKEN_TIMEOUT", 20.0, minimum=3.0, maximum=600.0),
         hedge_delay=_get_float("HEDGE_DELAY", 3.0, minimum=0.0, maximum=600.0),
+        show_speed=_get_bool("SHOW_SPEED", True),
         rate_limit_per_minute=_get_int("RATE_LIMIT_PER_MINUTE", 10, minimum=1),
         daily_request_limit=_get_int("DAILY_REQUEST_LIMIT", 300, minimum=0),
         log_level=_get_str("LOG_LEVEL", "INFO").upper() or "INFO",
