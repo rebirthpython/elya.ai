@@ -26,6 +26,7 @@ from bot.handlers.documents import receive_document
 from bot.handlers.github import offer_push
 from bot.handlers.draw import DrawStates, draw_and_send, edit_and_send, maybe_draw, maybe_edit
 from bot.utils.live import LiveMessage
+from bot.utils.speed import speed_line
 from bot.utils.text import close_open_fence
 from config.settings import Settings
 from services.chat import ChatService
@@ -376,6 +377,9 @@ async def send_reply(
         # Оборванный блок кода закрывается, иначе пометка попала бы внутрь кода.
         reply = close_open_fence(reply)
         reply += "\n\n_(ответ обрезан из-за ограничения длины — напиши «продолжи»)_"
+    # Скорость — только в показанном сообщении: в историю разговора она не попадает.
+    if chat_service.settings.show_speed and (line := speed_line(result)):
+        reply += f"\n\n_{line}_"
     await live.finish(reply)
     files = result.files
     # Код — файлами (небольшой проект — и файлами, и архивом; большой — только архивом).

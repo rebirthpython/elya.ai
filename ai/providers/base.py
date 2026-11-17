@@ -28,6 +28,11 @@ class CompletionResult:
     files: tuple = ()
     # Файлы из ответа, которые можно отправить в GitHub кнопкой (id набора в GitHubService).
     push: int | None = None
+    # Скорость ответа (заполняет AIClient при потоковой генерации; 0 — неизвестно).
+    tokens: int = 0  # токенов в ответе
+    tokens_estimated: bool = False  # провайдер не сообщил число токенов — оценка по длине текста
+    first_token_s: float = 0.0  # от запроса до первого слова
+    generation_s: float = 0.0  # от первого слова до конца ответа
 
 
 class ProviderError(Exception):

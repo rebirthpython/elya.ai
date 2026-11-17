@@ -70,6 +70,7 @@ def _settings(**overrides) -> Settings:
         database_url="", assistant_name="Эля", history_max_messages=30, history_max_chars=12000,
         max_output_tokens=256, temperature=0.5, request_timeout=30,
         rate_limit_per_minute=10, daily_request_limit=100, log_level="INFO",
+        show_speed=False,  # строка скорости проверяется отдельно, в test_speed.py
     )
     values.update(overrides)
     return Settings(**values)
@@ -196,6 +197,24 @@ async def test_chat_uses_history_and_formats_reply(env):
         "первый вопрос", "**Ответ** на: первый вопрос", "второй вопрос",
     ]
     assert len(await env["memory"].get_history(OWNER_ID)) == 4
+
+
+async def test_speed_line_is_shown_under_the_reply_but_not_saved(env):
+    dp = env["make"](_settings(show_speed=True))
+    await dp.feed_update(env["bot"], _message_update("вопрос"))
+
+    reply = [m for m in env["session"].requests if isinstance(m, SendMessage)][-1]
+    assert reply.text.startswith("<b>Ответ</b> на: вопрос\n\n<i>⚡ ")
+    assert "с до ответа" in reply.text and reply.text.endswith("echo-1</i>")
+    # В историю (и значит в контекст модели) строка скорости не попадает.
+    assert [m.content for m in await env["memory"].get_history(OWNER_ID)][-1] == "**Ответ** на: вопрос"
+
+
+async def test_speed_line_can_be_turned_off(env):
+    dp = env["make"](_settings(show_speed=False))
+    await dp.feed_update(env["bot"], _message_update("вопрос"))
+    reply = [m for m in env["session"].requests if isinstance(m, SendMessage)][-1]
+    assert "⚡" not in reply.text
 
 
 async def test_clear_with_confirmation(env):
