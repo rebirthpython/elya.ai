@@ -89,6 +89,8 @@ class Settings:
     rate_limit_per_minute: int
     daily_request_limit: int
     log_level: str
+    # Сколько ждать первый кусок ответа от модели, прежде чем перейти к следующей.
+    first_token_timeout: float = 20.0
     # Конспекты и презентации: длина ответа модели и максимальный размер материала.
     study_max_output_tokens: int = 8192
     study_max_input_chars: int = 60000
@@ -613,6 +615,7 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         max_output_tokens=_get_int("MAX_OUTPUT_TOKENS", 2048, minimum=64),
         temperature=_get_float("TEMPERATURE", 0.7, minimum=0.0, maximum=2.0),
         request_timeout=_get_float("REQUEST_TIMEOUT", 60.0, minimum=5.0, maximum=600.0),
+        first_token_timeout=_get_float("FIRST_TOKEN_TIMEOUT", 20.0, minimum=3.0, maximum=600.0),
         rate_limit_per_minute=_get_int("RATE_LIMIT_PER_MINUTE", 10, minimum=1),
         daily_request_limit=_get_int("DAILY_REQUEST_LIMIT", 300, minimum=0),
         log_level=_get_str("LOG_LEVEL", "INFO").upper() or "INFO",
