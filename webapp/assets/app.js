@@ -1458,6 +1458,7 @@
         if (message.drawing_id) meta.append(againChip(message.drawing_id));
         if (message.drawing_id && state.images && state.images.edit) meta.append(editChip(message.drawing_id));
       } else {
+        if (message.speed) meta.append(el('span', 'msg__speed', message.speed));
         meta.append(copyChip(message.content, 'Копировать'));
         if (!(options && options.reveal)) bubble.append(window.ElyaMarkdown.render(message.content));
       }
@@ -1614,6 +1615,7 @@
       model.title = reply.model;
       meta.insertBefore(model, copy);
     }
+    if (reply.speed) meta.insertBefore(el('span', 'msg__speed', reply.speed), copy);
     live.view.end(reply.content);
     if (reply.push) live.item.root.insertBefore(pushButton(reply.push), meta);
     if (reply.files && reply.files.length) {
