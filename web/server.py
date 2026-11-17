@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -692,7 +694,8 @@ async def _reply_payload(app: web.Application, result: CompletionResult) -> dict
         "model": result.model,
         "truncated": result.truncated,
     }
-    if app[SETTINGS].show_speed and (line := speed_line(result)):
+    # Модель в Mini App и так подписана рядом — в строке скорости её не повторяем.
+    if app[SETTINGS].show_speed and (line := speed_line(result, with_model=False)):
         reply["speed"] = line
     files = [stored.as_dict() for _, stored in result.files if stored is not None]
     if files:
@@ -1300,8 +1303,29 @@ async def post_project_files(request: web.Request) -> web.Response:
     return web.json_response({"files": files})
 
 
-async def index(request: web.Request) -> web.FileResponse:
-    return web.FileResponse(WEBAPP_DIR / "index.html")
+_ASSET_RE = re.compile(r'(["\'])assets/([\w.-]+\.(?:js|css))\1')
+
+
+def _versioned_index() -> str:
+    """index.html, где у скриптов и стилей в адресе версия по содержимому (assets/app.js?v=…):
+    после обновления бота Telegram загружает новые файлы, а не берёт старые из кэша."""
+    html = (WEBAPP_DIR / "index.html").read_text(encoding="utf-8")
+
+    def versioned(match: re.Match) -> str:
+        path = WEBAPP_DIR / "assets" / match.group(2)
+        if not path.is_file():
+            return match.group(0)
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()[:10]
+        return f"{match.group(1)}assets/{match.group(2)}?v={digest}{match.group(1)}"
+
+    return _ASSET_RE.sub(versioned, html)
+
+
+async def index(request: web.Request) -> web.Response:
+    # Страницу браузер каждый раз сверяет с сервером, файлы по версии — кэширует сколько угодно.
+    return web.Response(
+        text=_versioned_index(), content_type="text/html", headers={"Cache-Control": "no-cache"}
+    )
 
 
 async def health(request: web.Request) -> web.Response:

@@ -1104,6 +1104,7 @@ body.is-thinking .glow--think {
 
 .msg__meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
   min-height: 26px;
@@ -1113,14 +1114,7 @@ body.is-thinking .glow--think {
 }
 
 .msg__speed {
-  opacity: 0.75;
-  font-size: 0.85em;
   white-space: nowrap;
-}
-
-.msg__speed::before {
-  content: "·";
-  margin-right: 4px;
 }
 
 .msg__model {
