@@ -224,3 +224,32 @@ def test_settings(monkeypatch):
     monkeypatch.setenv("SANDBOX_BACKEND", "vm")
     with pytest.raises(ConfigError, match="SANDBOX_BACKEND"):
         load_settings(env_file=None)
+
+
+@posix_only
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="/proc/self/status and mmap flags are Linux-specific")
+async def test_works_when_the_process_reserves_gigabytes_at_start_like_android(tmp_path):
+    """На Android (Scudo) любой процесс сразу резервирует гигабайты адресного пространства:
+    лимит памяти не должен ломать запуск, но по-прежнему должен останавливать большие выделения."""
+    wrapper = tmp_path / "android-python"
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        "import ctypes, runpy, sys\n"
+        "libc = ctypes.CDLL(None)\n"
+        "libc.mmap.restype = ctypes.c_void_p\n"
+        "libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]\n"
+        "libc.mmap(None, 6 << 30, 0, 0x02 | 0x20 | 0x4000, -1, 0)  # PROT_NONE, MAP_PRIVATE|ANONYMOUS|NORESERVE\n"
+        "args = sys.argv[1:]\n"
+        "while args and args[0].startswith('-'):\n"
+        "    args = args[2:] if args[0] == '-X' else args[1:]\n"
+        "sys.argv = args\n"
+        "runpy.run_path(args[0], run_name='__main__')\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    sandbox = Sandbox("process", SandboxLimits(timeout=10, memory_mb=256), python=str(wrapper), root=tmp_path / "sbx")
+    await sandbox.start()
+    result = await sandbox.run("import decimal, json\nprint(json.dumps([str(decimal.Decimal(1) / 3)]))")
+    assert result.ok, result.stderr
+    big = await sandbox.run("data = bytearray(1024 ** 3)\nprint(len(data))")
+    assert big.exit_code == 1 and "MemoryError" in big.stderr

@@ -19,6 +19,18 @@ MAIN = "main.py"
 FIGURE_NAME = "figure_{}.png"
 
 
+def _address_space_mb() -> int:
+    """Сколько адресного пространства процесс уже занял (VmSize), МБ; 0 — неизвестно."""
+    try:
+        with open("/proc/self/status", encoding="ascii", errors="replace") as status:
+            for line in status:
+                if line.startswith("VmSize:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
 def _limit_resources() -> None:
     try:
         import resource
@@ -39,10 +51,17 @@ def _limit_resources() -> None:
             pass
 
     mb = 1024 * 1024
+    memory = int(CONFIG.get("memory", 512))
+    # На Android (распределитель Scudo) процесс уже на старте резервирует гигабайты адресного
+    # пространства. Лимит ниже этого ломает любое новое выделение памяти и даже импорт модулей,
+    # поэтому тогда лимит адресного пространства отсчитывается сверх уже занятого. Настоящую
+    # память всё равно ограничивает RLIMIT_DATA.
+    reserved = _address_space_mb()
+    address_space = memory + reserved if reserved > memory // 2 else memory
     # Сначала SIGXCPU (понятная причина остановки), через секунду — SIGKILL.
     cap("RLIMIT_CPU", int(CONFIG.get("cpu", 10)), slack=1)
-    cap("RLIMIT_AS", int(CONFIG.get("memory", 512)) * mb)
-    cap("RLIMIT_DATA", int(CONFIG.get("memory", 512)) * mb)
+    cap("RLIMIT_AS", address_space * mb)
+    cap("RLIMIT_DATA", memory * mb)
     cap("RLIMIT_FSIZE", int(CONFIG.get("file", 16)) * mb)
     cap("RLIMIT_NOFILE", 128)
     try:

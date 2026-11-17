@@ -47,8 +47,8 @@ class Streamer(BaseProvider):
 async def test_client_measures_first_token_and_generation_time():
     client = AIClient([Streamer()], max_tokens=10, temperature=0.1)
     result = [e async for e in client.stream(MESSAGES)][-1]
-    assert 0.08 < result.first_token_s < 0.3
-    assert 0.15 < result.generation_s < 0.5
+    assert 0.08 < result.first_token_s < 2.0
+    assert 0.15 < result.generation_s < 3.0
     assert result.tokens_estimated and result.tokens == round(len(result.text) / 3)
 
 

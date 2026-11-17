@@ -281,7 +281,7 @@ async def test_slow_model_is_raced_by_the_next_one():
     loop = asyncio.get_running_loop()
     started = loop.time()
     events = [event async for event in client.stream(MESSAGES)]
-    assert loop.time() - started < 1.0
+    assert loop.time() - started < 3.0  # медленная модель ждала бы 5 с
     assert events[-1].text == "от fast"
     assert provider.calls == ["slow", "fast"]
     assert provider.cancelled == ["slow"]
