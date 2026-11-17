@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from collections.abc import AsyncIterator, Callable
@@ -26,6 +27,25 @@ from services.usage import UsageTracker
 logger = logging.getLogger(__name__)
 
 _END = object()  # поток модели закончился
+
+
+# Оценка, когда провайдер не прислал usage: в среднем ~3 символа на токен (русский текст и код).
+_CHARS_PER_TOKEN = 3.0
+
+
+def _with_speed(result: CompletionResult, launched: float, first_token_at: float, ended: float) -> CompletionResult:
+    """Результат с замерами: сколько ждали первое слово и сколько шла генерация."""
+    tokens = result.tokens
+    estimated = not tokens
+    if estimated:
+        tokens = max(1, round(len(result.text) / _CHARS_PER_TOKEN))
+    return dataclasses.replace(
+        result,
+        tokens=tokens,
+        tokens_estimated=estimated,
+        first_token_s=max(0.0, first_token_at - launched),
+        generation_s=max(0.0, ended - first_token_at),
+    )
 
 
 @dataclass(eq=False)
@@ -231,6 +251,7 @@ class AIClient:
         last_launch = 0.0
         winner: _Attempt | None = None
         item: object = None
+        first_token_at = 0.0
 
         async def launch() -> bool:
             nonlocal exhausted, last_launch
@@ -286,13 +307,14 @@ class AIClient:
                         self._record_failure(attempt.provider, attempt.model, error, errors)
 
             # Победитель начал отвечать — остальные больше не нужны.
+            first_token_at = loop.time()
             for attempt in running:
                 if attempt is not winner:
                     attempt.task.cancel()
             while True:
                 if isinstance(item, CompletionResult):
                     self._record_success(winner.provider, winner.model, item, winner.started, " (stream)")
-                    yield item
+                    yield _with_speed(item, winner.launched, first_token_at, loop.time())
                     return
                 error = self._as_error(winner, item)
                 if error is not None:

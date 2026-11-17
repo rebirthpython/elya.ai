@@ -99,6 +99,16 @@ def _wire_message(message: ChatMessage) -> dict[str, Any]:
     return {"role": message.role, "content": parts}
 
 
+def _usage_tokens(payload: dict[str, Any]) -> int:
+    """Число токенов ответа из поля usage (если провайдер его прислал), иначе 0."""
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):  # Groq кладёт usage в x_groq
+        group = payload.get("x_groq")
+        usage = group.get("usage") if isinstance(group, dict) else None
+    value = usage.get("completion_tokens") if isinstance(usage, dict) else None
+    return value if isinstance(value, int) and value > 0 else 0
+
+
 _THINK_OPEN = "<think>"
 
 
@@ -243,6 +253,7 @@ class OpenAICompatibleProvider(BaseProvider):
         shown = ""
         finish_reason = None
         served_model = model
+        tokens = 0
         try:
             while True:
                 payload = self._payload(messages, model, max_tokens, temperature, stream=True)
@@ -295,6 +306,7 @@ class OpenAICompatibleProvider(BaseProvider):
                             detail, code = _error_detail(chunk)
                             raise self._classify(code or 502, detail, model)
                         served_model = str(chunk.get("model") or served_model)
+                        tokens = _usage_tokens(chunk) or tokens
                         choices = chunk.get("choices")
                         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
                             continue
@@ -319,7 +331,8 @@ class OpenAICompatibleProvider(BaseProvider):
                 else f"empty response (finish_reason={finish_reason})"
             raise BadResponseError(reason, provider=self.name, model=model)
         yield CompletionResult(
-            text=text, provider=self.name, model=served_model, truncated=finish_reason == "length"
+            text=text, provider=self.name, model=served_model, truncated=finish_reason == "length",
+            tokens=tokens,
         )
 
     def _parse_completion(self, data: dict[str, Any], model: str) -> CompletionResult:
@@ -342,6 +355,7 @@ class OpenAICompatibleProvider(BaseProvider):
             provider=self.name,
             model=str(data.get("model") or model),
             truncated=finish_reason == "length",
+            tokens=_usage_tokens(data),
         )
 
     def _classify(
