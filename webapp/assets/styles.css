@@ -1112,6 +1112,17 @@ body.is-thinking .glow--think {
   font-size: 12px;
 }
 
+.msg__speed {
+  opacity: 0.75;
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.msg__speed::before {
+  content: "·";
+  margin-right: 4px;
+}
+
 .msg__model {
   max-width: 180px;
   overflow: hidden;

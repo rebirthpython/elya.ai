@@ -27,6 +27,7 @@ from ai.client import (
 )
 from ai.providers.base import CompletionResult
 from bot.handlers.draw import deliver_drawing
+from bot.utils.speed import speed_line
 from config.settings import Settings
 from database.models import Message
 from memory.manager import MemoryManager
@@ -691,6 +692,8 @@ async def _reply_payload(app: web.Application, result: CompletionResult) -> dict
         "model": result.model,
         "truncated": result.truncated,
     }
+    if app[SETTINGS].show_speed and (line := speed_line(result)):
+        reply["speed"] = line
     files = [stored.as_dict() for _, stored in result.files if stored is not None]
     if files:
         reply["files"] = files
